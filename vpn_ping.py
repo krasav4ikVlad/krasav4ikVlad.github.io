@@ -214,6 +214,7 @@ def fmt_ms(v: float | None) -> str:
 SMART_RE = re.compile(r"\bsmart\b", re.IGNORECASE)
 # "плейсхолдеры" в подписке (хост — короткое число вроде "1111", "3333", "❗️..."):
 PLACEHOLDER_RE = re.compile(r"^\d{1,4}$")
+DEFAULT_HOST_SUFFIX = "rscore.app"
 
 
 def is_smart(srv: Server) -> bool:
@@ -222,6 +223,12 @@ def is_smart(srv: Server) -> bool:
 
 def is_placeholder(srv: Server) -> bool:
     return bool(PLACEHOLDER_RE.match(srv.host)) or "❗" in srv.name
+
+
+def host_matches(srv: Server, suffix: str) -> bool:
+    h = srv.host.lower()
+    s = suffix.lower().lstrip(".")
+    return h == s or h.endswith("." + s)
 
 
 def print_table(results: list[CheckResult], color: bool = True) -> None:
@@ -274,6 +281,10 @@ def main(argv: list[str]) -> int:
                     help="не печатать таблицу, только сводку")
     ap.add_argument("--include-smart", action="store_true",
                     help="не отфильтровывать Smart-сервера (по умолчанию пропускаются)")
+    ap.add_argument("--host-suffix", default=DEFAULT_HOST_SUFFIX,
+                    help=f"оставлять только сервера с этим доменом-суффиксом "
+                         f"(по умолчанию '{DEFAULT_HOST_SUFFIX}'; "
+                         f"передай пустую строку, чтобы не фильтровать)")
     args = ap.parse_args(argv)
 
     try:
@@ -290,16 +301,25 @@ def main(argv: list[str]) -> int:
 
     skipped_smart = sum(1 for s in all_servers if is_smart(s))
     skipped_placeholder = sum(1 for s in all_servers if is_placeholder(s))
+    suffix = args.host_suffix.strip()
     servers = [
         s for s in all_servers
-        if not is_placeholder(s) and (args.include_smart or not is_smart(s))
+        if not is_placeholder(s)
+        and (args.include_smart or not is_smart(s))
+        and (not suffix or host_matches(s, suffix))
     ]
+    skipped_host = (
+        len(all_servers) - skipped_smart - skipped_placeholder - len(servers)
+        if suffix else 0
+    )
 
     msg = f"Найдено серверов: {len(all_servers)}"
     if not args.include_smart and skipped_smart:
         msg += f", пропущено Smart: {skipped_smart}"
     if skipped_placeholder:
         msg += f", пропущено плейсхолдеров: {skipped_placeholder}"
+    if suffix and skipped_host > 0:
+        msg += f", пропущено не-{suffix}: {skipped_host}"
     msg += f". Проверяю {len(servers)}..."
     print(msg, file=sys.stderr)
 
