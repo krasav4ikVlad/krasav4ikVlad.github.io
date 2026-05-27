@@ -212,13 +212,27 @@ def fmt_ms(v: float | None) -> str:
 
 
 SMART_RE = re.compile(r"\bsmart\b", re.IGNORECASE)
+BYPASS_RE = re.compile(r"bypass", re.IGNORECASE)
 # "плейсхолдеры" в подписке (хост — короткое число вроде "1111", "3333", "❗️..."):
 PLACEHOLDER_RE = re.compile(r"^\d{1,4}$")
 DEFAULT_HOST_SUFFIX = "rscore.app"
 
+# Группы для отчёта: (метка, шаблон для поиска в имени сервера).
+# Порядок важен — Bypass первым, чтобы "ByPass-4 | Германия+Игры" не уехал в Германию.
+GROUPS: list[tuple[str, re.Pattern[str]]] = [
+    ("Bypass",   re.compile(r"bypass", re.IGNORECASE)),
+    ("Германия", re.compile(r"герман", re.IGNORECASE)),
+    ("Польша",   re.compile(r"польш", re.IGNORECASE)),
+]
+OTHER_GROUP = "Прочее"
+
 
 def is_smart(srv: Server) -> bool:
     return bool(SMART_RE.search(srv.name))
+
+
+def is_bypass(srv: Server) -> bool:
+    return bool(BYPASS_RE.search(srv.name))
 
 
 def is_placeholder(srv: Server) -> bool:
@@ -229,6 +243,13 @@ def host_matches(srv: Server, suffix: str) -> bool:
     h = srv.host.lower()
     s = suffix.lower().lstrip(".")
     return h == s or h.endswith("." + s)
+
+
+def group_for(name: str) -> str:
+    for label, pat in GROUPS:
+        if pat.search(name):
+            return label
+    return OTHER_GROUP
 
 
 def print_table(results: list[CheckResult], color: bool = True) -> None:
@@ -249,25 +270,47 @@ def print_table(results: list[CheckResult], color: bool = True) -> None:
         print(line)
 
 
+def _pct_color(pct: float) -> str:
+    return "\033[92m" if pct >= 80 else "\033[93m" if pct >= 50 else "\033[91m"
+
+
+def group_stats(results: list[CheckResult]) -> list[tuple[str, int, int, float]]:
+    """Возвращает список (label, active, total, percent) в порядке GROUPS + 'Прочее'."""
+    order = [label for label, _ in GROUPS] + [OTHER_GROUP]
+    buckets: dict[str, list[CheckResult]] = {label: [] for label in order}
+    for r in results:
+        buckets[group_for(r.name)].append(r)
+    out = []
+    for label in order:
+        rs = buckets[label]
+        if not rs:
+            continue
+        active = sum(1 for r in rs if r.tcp_ok)
+        total = len(rs)
+        out.append((label, active, total, active / total * 100))
+    return out
+
+
 def print_summary(results: list[CheckResult], color: bool = True) -> None:
     total = len(results)
     # «активен» = принимает TCP-подключение на VPN-порт. ICMP не считаем —
     # его часто блокируют на самом VPN-хосте.
     active = sum(1 for r in results if r.tcp_ok)
-    inactive = total - active
     pct = (active / total * 100) if total else 0.0
-    line1 = f"Всего серверов:      {total}"
-    line2 = f"Активных (TCP):      {active}"
-    line3 = f"Неактивных:          {inactive}"
-    line4 = f"Общий статус:        {pct:.1f}%  работает"
-    if color:
-        col = "\033[92m" if pct >= 80 else "\033[93m" if pct >= 50 else "\033[91m"
-        line4 = f"{col}{line4}{RESET}"
     print()
-    print(line1)
-    print(line2)
-    print(line3)
-    print(line4)
+    print(f"Всего серверов:      {total}")
+    print(f"Активных (TCP):      {active}")
+    print(f"Неактивных:          {total - active}")
+    overall = f"Общий статус:        {pct:.1f}%  работает"
+    print(f"{_pct_color(pct)}{overall}{RESET}" if color else overall)
+
+    stats = group_stats(results)
+    if stats:
+        print()
+        label_w = max(len(s[0]) for s in stats)
+        for label, g_active, g_total, g_pct in stats:
+            line = f"{label:<{label_w}} - {g_pct:.0f}%  ({g_active}/{g_total})"
+            print(f"{_pct_color(g_pct)}{line}{RESET}" if color else line)
 
 
 def main(argv: list[str]) -> int:
@@ -299,22 +342,28 @@ def main(argv: list[str]) -> int:
         print("В подписке не нашлось ни одного сервера.", file=sys.stderr)
         return 3
 
-    skipped_smart = sum(1 for s in all_servers if is_smart(s))
-    skipped_placeholder = sum(1 for s in all_servers if is_placeholder(s))
     suffix = args.host_suffix.strip()
-    servers = [
-        s for s in all_servers
-        if not is_placeholder(s)
-        and (args.include_smart or not is_smart(s))
-        and (not suffix or host_matches(s, suffix))
-    ]
-    skipped_host = (
-        len(all_servers) - skipped_smart - skipped_placeholder - len(servers)
-        if suffix else 0
+
+    def keep(s: Server) -> bool:
+        if is_placeholder(s):
+            return False
+        if not args.include_smart and is_smart(s):
+            return False
+        # Bypass-сервера не подпадают под фильтр по домену (часто отдельные IP).
+        if is_bypass(s):
+            return True
+        return not suffix or host_matches(s, suffix)
+
+    servers = [s for s in all_servers if keep(s)]
+
+    skipped_smart = sum(
+        1 for s in all_servers if is_smart(s) and not args.include_smart
     )
+    skipped_placeholder = sum(1 for s in all_servers if is_placeholder(s))
+    skipped_host = len(all_servers) - skipped_smart - skipped_placeholder - len(servers)
 
     msg = f"Найдено серверов: {len(all_servers)}"
-    if not args.include_smart and skipped_smart:
+    if skipped_smart:
         msg += f", пропущено Smart: {skipped_smart}"
     if skipped_placeholder:
         msg += f", пропущено плейсхолдеров: {skipped_placeholder}"
@@ -334,6 +383,10 @@ def main(argv: list[str]) -> int:
             "active": active,
             "inactive": total - active,
             "percent": round((active / total * 100) if total else 0.0, 1),
+            "groups": [
+                {"name": label, "active": a, "total": t, "percent": round(p, 1)}
+                for label, a, t, p in group_stats(results)
+            ],
             "servers": [asdict(r) for r in results],
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
