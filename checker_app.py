@@ -235,12 +235,24 @@ def _tls_from(security: str | None, port: int) -> bool:
     return port in (443, 8443)
 
 
+# протоколы/транспорты, работающие поверх UDP/QUIC — TCP-проверка к ним неприменима
+UDP_PROTOCOLS = {"hysteria", "hysteria2", "hy2", "tuic", "wireguard", "wg", "juicity"}
+UDP_NETWORKS = {"quic", "hysteria", "kcp", "mkcp"}
+
+
+def is_udp(proto: str | None, network: str | None) -> bool:
+    return ((proto or "").lower() in UDP_PROTOCOLS) or (
+        (network or "").lower() in UDP_NETWORKS
+    )
+
+
 def parse_vless(link: str) -> list[dict]:
     u = urlsplit(link.strip())
     if not u.hostname or not u.port:
         return []
     q = parse_qs(u.query)
     security = (q.get("security") or [None])[0]
+    net = (q.get("type") or [None])[0]  # ws/grpc/tcp/xhttp/…
     label = ""
     if u.fragment:
         from urllib.parse import unquote
@@ -250,22 +262,31 @@ def parse_vless(link: str) -> list[dict]:
         "host": u.hostname,
         "port": int(u.port),
         "tls": _tls_from(security, int(u.port)),
+        "proto": "vless",
+        "net": (net or "tcp"),
+        "udp": is_udp("vless", net),
         "label": label or u.hostname,
     }]
 
 
-def _walk_json_targets(obj, security_hint=None, out=None):
-    """Рекурсивно ищем (host, port) в любых формах xray/v2ray-конфигов."""
+def _walk_json_targets(obj, ctx=("", "", ""), out=None):
+    """Рекурсивно ищем (host, port) в любых формах xray/v2ray-конфигов,
+    протягивая контекст (protocol, network, security) с уровня outbound вниз."""
     if out is None:
         out = []
+    proto, net, sec = ctx
     if isinstance(obj, dict):
-        # security может лежать рядом (streamSettings.security)
-        sec = obj.get("security")
-        stream = obj.get("streamSettings")
-        if isinstance(stream, dict) and stream.get("security"):
-            sec = stream.get("security")
-        sec = sec or security_hint
-        host = obj.get("address") or obj.get("add") or obj.get("server") or obj.get("host")
+        if isinstance(obj.get("protocol"), str):
+            proto = obj["protocol"]
+        ss = obj.get("streamSettings")
+        if isinstance(ss, dict):
+            if isinstance(ss.get("network"), str):
+                net = ss["network"]
+            if isinstance(ss.get("security"), str):
+                sec = ss["security"]
+        if isinstance(obj.get("security"), str):
+            sec = obj["security"]
+        host = obj.get("address") or obj.get("add") or obj.get("server")
         port = obj.get("port")
         if isinstance(host, str) and host and port not in (None, ""):
             try:
@@ -274,16 +295,20 @@ def _walk_json_targets(obj, security_hint=None, out=None):
                 out.append({
                     "host": host,
                     "port": p,
-                    "tls": _tls_from(sec if isinstance(sec, str) else None, p),
+                    "tls": _tls_from(sec, p),
+                    "proto": proto or "?",
+                    "net": net or "tcp",
+                    "udp": is_udp(proto, net),
                     "label": str(label)[:80],
                 })
             except (ValueError, TypeError):
                 pass
+        new_ctx = (proto, net, sec)
         for v in obj.values():
-            _walk_json_targets(v, sec if isinstance(sec, str) else security_hint, out)
+            _walk_json_targets(v, new_ctx, out)
     elif isinstance(obj, list):
         for v in obj:
-            _walk_json_targets(v, security_hint, out)
+            _walk_json_targets(v, ctx, out)
     return out
 
 
@@ -418,9 +443,42 @@ async def check_http(client: httpx.AsyncClient, method: str, host: str, port: in
         return {"ok": False, "info": str(e)[:60]}
 
 
+async def check_udp(host: str, port: int) -> dict:
+    """Грубая UDP-проверка: «connected» сокет ловит ICMP port-unreachable.
+    Закрыт -> ConnectionRefused; нет ответа -> открыт/фильтруется (норма для QUIC)."""
+    loop = asyncio.get_event_loop()
+
+    def probe():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(TCP_TIMEOUT)
+        try:
+            s.connect((host, port))
+            s.send(b"\x00")
+            try:
+                s.recv(64)
+                return {"ok": True, "info": "ответ получен"}
+            except socket.timeout:
+                return {"ok": True, "info": "открыт/фильтруется"}
+            except ConnectionRefusedError:
+                return {"ok": False, "info": "порт закрыт"}
+        except Exception as e:
+            return {"ok": False, "info": str(e)[:50]}
+        finally:
+            s.close()
+
+    return await loop.run_in_executor(None, probe)
+
+
+NA = {"na": True, "info": "не применимо (UDP/QUIC)"}
+
+
 async def check_target(sem: asyncio.Semaphore, target: dict) -> dict:
     host, port, tls = target["host"], target["port"], target["tls"]
-    result = {"host": host, "port": port, "tls": tls, "label": target.get("label", host)}
+    result = {
+        "host": host, "port": port, "tls": tls,
+        "proto": target.get("proto", "?"), "net": target.get("net", "tcp"),
+        "udp": target.get("udp", False), "label": target.get("label", host),
+    }
     ips, err = resolve_safe(host)
     if err:
         result["blocked"] = err
@@ -429,18 +487,22 @@ async def check_target(sem: asyncio.Semaphore, target: dict) -> dict:
         return result
     result["ip"] = ips[0]
     async with sem:
-        verify = False  # ноды часто self-signed / reality
-        async with httpx.AsyncClient(
-            timeout=HTTP_TIMEOUT, verify=verify, follow_redirects=False,
-            headers={"User-Agent": "nodewiki-checker/1.0"},
-        ) as client:
-            icmp, tcp, get, post = await asyncio.gather(
-                check_icmp(host),
-                check_tcp(host, port),
-                check_http(client, "GET", host, port, tls),
-                check_http(client, "POST", host, port, tls),
-            )
-    result.update(icmp=icmp, tcp=tcp, get=get, post=post)
+        if result["udp"]:
+            # UDP-протокол: TCP/HTTP неприменимы, проверяем ICMP + UDP
+            icmp, udp = await asyncio.gather(check_icmp(host), check_udp(host, port))
+            result.update(icmp=icmp, tcp=udp, get=dict(NA), post=dict(NA), udp_check=True)
+        else:
+            async with httpx.AsyncClient(
+                timeout=HTTP_TIMEOUT, verify=False, follow_redirects=False,
+                headers={"User-Agent": "nodewiki-checker/1.0"},
+            ) as client:
+                icmp, tcp, get, post = await asyncio.gather(
+                    check_icmp(host),
+                    check_tcp(host, port),
+                    check_http(client, "GET", host, port, tls),
+                    check_http(client, "POST", host, port, tls),
+                )
+            result.update(icmp=icmp, tcp=tcp, get=get, post=post)
     return result
 
 
@@ -589,6 +651,7 @@ textarea::placeholder{color:#494842}
 .chk-ok .chk-val::before{background:var(--lime);box-shadow:0 0 8px rgba(198,242,63,.6)}
 .chk-bad .chk-val::before{background:var(--coral)}
 .chk-ok .chk-val{color:var(--ink)} .chk-bad .chk-val{color:var(--coral)}
+.chk-na{opacity:.65} .chk-na .chk-val::before{background:var(--line-bright)} .chk-na .chk-val{color:var(--muted)}
 /* история */
 .job-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border:1px solid var(--line);border-radius:2px;background:var(--panel);margin-bottom:8px;font-size:13px;animation:rise .5s ease both}
 .job-row a{color:var(--lime);text-decoration:none} .job-row a:hover{color:var(--lime-soft)}
@@ -642,7 +705,12 @@ async def with_balance(user: dict) -> dict:
 
 
 def render_check(c: dict) -> str:
-    cls = "chk-ok" if c.get("ok") else "chk-bad"
+    if c.get("na"):
+        cls = "chk-na"
+    elif c.get("ok"):
+        cls = "chk-ok"
+    else:
+        cls = "chk-bad"
     return f'<div class="chk {cls}"><div class="chk-name">{c["_n"]}</div><div class="chk-val">{html.escape(c.get("info",""))}</div></div>'
 
 
@@ -651,21 +719,27 @@ def render_results(results: list[dict]) -> str:
     for r in results:
         addr = f'{html.escape(r["host"])}:{r["port"]}'
         ipinfo = f' · {html.escape(r["ip"])}' if r.get("ip") else ""
-        tls = " · tls" if r.get("tls") else ""
+        # метка протокола/транспорта: vless · reality · xhttp
+        bits = [b for b in (r.get("proto"), ("tls" if r.get("tls") else None), r.get("net")) if b and b != "?"]
+        proto = (" · " + " · ".join(html.escape(str(b)) for b in bits)) if bits else ""
+        udp_note = ""
+        if r.get("udp"):
+            udp_note = '<div class="note" style="margin:0 0 12px">UDP/QUIC-протокол: вместо TCP проверяется UDP-доступность; HTTP-проверки неприменимы.</div>'
         if r.get("blocked"):
             checks = f'<div class="note" style="margin:0">{html.escape(r["blocked"])}</div>'
         else:
             items = []
-            for key, name in (("icmp", "ICMP"), ("tcp", "TCP"), ("get", "GET"), ("post", "POST")):
+            tcp_name = "UDP" if r.get("udp_check") else "TCP"
+            for key, name in (("icmp", "ICMP"), ("tcp", tcp_name), ("get", "GET"), ("post", "POST")):
                 c = dict(r.get(key, {"ok": False, "info": "—"}))
                 c["_n"] = name
                 items.append(render_check(c))
-            checks = f'<div class="checks">{"".join(items)}</div>'
+            checks = f'{udp_note}<div class="checks">{"".join(items)}</div>'
         cards.append(f"""
 <div class="ep">
   <div class="ep-top">
     <span class="ep-name">{html.escape(r.get("label", r["host"]))}</span>
-    <span class="ep-addr">{addr}{ipinfo}{tls}</span>
+    <span class="ep-addr">{addr}{ipinfo}{proto}</span>
   </div>
   {checks}
 </div>""")
