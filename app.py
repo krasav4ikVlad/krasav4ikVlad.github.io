@@ -34,6 +34,7 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "")
 DB_PATH = os.environ.get("DB_PATH", "scripts.db")
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 PORT = int(os.environ.get("PORT", "8000"))
+HOST = os.environ.get("HOST", "0.0.0.0")  # за nginx ставьте 127.0.0.1
 
 COOKIE_NAME = "session"
 SESSION_TTL = 60 * 60 * 24 * 30  # 30 дней
@@ -696,4 +697,4 @@ def raw(slug: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host=HOST, port=PORT)
