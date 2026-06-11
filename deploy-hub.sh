@@ -28,6 +28,18 @@ die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "Run as root (sudo)."
 
+# ---- preflight: no other vhost may claim our domain -------------------------
+# (this is exactly what broke scripts.nodewiki.info before: a legacy config
+#  held the domain and won over the new vhost)
+# -R (а не -r): sites-enabled состоит из симлинков, -r их пропускает
+conflicts="$(grep -Rls "server_name.*\b$DOMAIN\b" /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null \
+  | grep -v "nodewiki-hub" || true)"
+if [ -n "$conflicts" ]; then
+  warn "Эти конфиги уже объявляют $DOMAIN и будут конфликтовать с хабом:"
+  echo "$conflicts" >&2
+  die "Отключите их (rm симлинк из sites-enabled) и запустите скрипт снова."
+fi
+
 # ---- packages (nginx + certbot are usually already there from scripts) -----
 if ! command -v nginx >/dev/null 2>&1 || ! command -v certbot >/dev/null 2>&1; then
   log "Installing nginx + certbot..."
