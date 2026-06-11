@@ -34,6 +34,8 @@ apt-get install -y nginx git curl ca-certificates \
                    certbot python3-certbot-nginx
 
 echo "==> 2. Репозиторий в $WEBROOT (ветка: $BRANCH)"
+# репо принадлежит www-data, а git мы запускаем от root — нужен safe.directory
+git config --global --add safe.directory "$WEBROOT"
 if [[ -d "$WEBROOT/.git" ]]; then
   git -C "$WEBROOT" fetch --quiet origin "$BRANCH"
   git -C "$WEBROOT" checkout "$BRANCH"
@@ -53,6 +55,18 @@ echo "==> 4. nginx"
 install -m 0644 "$WEBROOT/deploy/nginx.conf" /etc/nginx/sites-available/nodewiki.info
 ln -sf /etc/nginx/sites-available/nodewiki.info /etc/nginx/sites-enabled/nodewiki.info
 rm -f /etc/nginx/sites-enabled/default
+
+# чужие конфиги с server_name nodewiki.info / scripts.nodewiki.info будут
+# конфликтовать (duplicate server_name) — снимаем символьную ссылку, файл
+# остаётся в sites-available на случай отката.
+for conf in /etc/nginx/sites-enabled/*; do
+  [[ "$conf" == */nodewiki.info ]] && continue
+  if grep -qE 'server_name[[:space:]]+(nodewiki\.info|scripts\.nodewiki\.info|www\.nodewiki\.info)' "$conf" 2>/dev/null; then
+    echo "  убираю конфликтующий $conf"
+    rm "$conf"
+  fi
+done
+
 nginx -t
 systemctl reload nginx
 
