@@ -43,7 +43,7 @@ import socket
 import sys
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit, parse_qs, quote as urlquote
 
 import httpx
@@ -99,6 +99,12 @@ XRAY_PROTOS = {"vless", "vmess", "trojan", "shadowsocks"}  # что умеет x
 JOBS_TTL_DAYS = 7  # автоудаление заявок (в них лежат пользовательские конфиги)
 xray_sem: "asyncio.Semaphore" = None  # type: ignore
 
+# residential-зонд: агент на домашнем/мобильном канале сам опрашивает чекер
+# и гоняет туннель-тест «как конечный пользователь».
+AGENT_TOKEN = os.environ.get("CHECKER_AGENT_TOKEN", "")
+AGENT_TIMEOUT = int(os.environ.get("CHECKER_AGENT_TIMEOUT", "120"))  # сек до фолбэка
+LOCAL_FALLBACK = os.environ.get("CHECKER_LOCAL_FALLBACK", "1") == "1"
+
 COOKIE_NAME = "session"
 SESSION_TTL = 60 * 60 * 24 * 30
 
@@ -113,6 +119,7 @@ cluster = AsyncIOMotorClient(TOKEN_DB)
 db = cluster["RS_2"]
 users_col = db["users"]
 jobs_col = db["checker_jobs"]
+tunnel_tasks = db["checker_tunnel_tasks"]  # задачи туннель-теста для residential-зондов
 
 # очередь задач (id) + воркеры; создаётся в lifespan
 job_queue: "asyncio.Queue[str]" = None  # type: ignore
@@ -720,7 +727,7 @@ async def check_udp(host: str, port: int) -> dict:
 NA = {"na": True, "info": "не применимо (UDP/QUIC)"}
 
 
-async def check_target(sem: asyncio.Semaphore, target: dict, deep: bool = False) -> dict:
+async def check_target(sem: asyncio.Semaphore, target: dict) -> dict:
     host, port, tls = target["host"], target["port"], target["tls"]
     result = {
         "host": host, "port": port, "tls": tls,
@@ -751,23 +758,39 @@ async def check_target(sem: asyncio.Semaphore, target: dict, deep: bool = False)
                     check_http(client, "POST", host, port, tls),
                 )
             result.update(icmp=icmp, tcp=tcp, get=get, post=post)
-
-    # глубокая проверка — реальный прогон через туннель (xray), вне общего sem,
-    # под отдельным семафором, чтобы не плодить xray-процессы
-    if deep:
-        if result["udp"]:
-            result["tunnel"] = {"na": True, "info": "нужен sing-box (xray не поддерживает)"}
-        elif not target.get("_xray"):
-            result["tunnel"] = {"na": True, "info": "протокол не поддержан для туннеля"}
-        else:
-            async with xray_sem:
-                result["tunnel"] = await tunnel_check(target["_xray"])
     return result
 
 
 # ----------------------------------------------------------------------------
 # Очередь и воркеры
 # ----------------------------------------------------------------------------
+
+
+def tunnel_unsupported(target: dict) -> dict | None:
+    """Если туннель к цели невозможен — вернуть готовый na-результат, иначе None."""
+    if target.get("udp"):
+        return {"na": True, "info": "нужен sing-box (xray не поддерживает)"}
+    if not target.get("_xray"):
+        return {"na": True, "info": "протокол не поддержан для туннеля"}
+    return None
+
+
+async def finalize_if_ready(job_id: str) -> None:
+    """Если все туннель-задачи заявки завершены — перевести её в done."""
+    try:
+        oid = ObjectId(job_id)
+    except (InvalidId, TypeError):
+        return
+    job = await jobs_col.find_one({"_id": oid})
+    if not job or job.get("status") != "probing":
+        return
+    remaining = await tunnel_tasks.count_documents(
+        {"job_id": job_id, "status": {"$ne": "done"}}
+    )
+    if remaining == 0:
+        await jobs_col.update_one(
+            {"_id": oid}, {"$set": {"status": "done", "finished_at": now_iso()}}
+        )
 
 
 async def run_job(job_id: str) -> None:
@@ -779,19 +802,77 @@ async def run_job(job_id: str) -> None:
     )
     sem = asyncio.Semaphore(PER_JOB_CONCURRENCY)
     deep = bool(doc.get("deep"))
+    targets = doc["targets"]
     try:
-        results = await asyncio.gather(
-            *(check_target(sem, t, deep=deep) for t in doc["targets"])
-        )
-        await jobs_col.update_one(
-            {"_id": doc["_id"]},
-            {"$set": {"status": "done", "results": results, "finished_at": now_iso()}},
-        )
+        results = await asyncio.gather(*(check_target(sem, t) for t in targets))
+
+        if not deep:
+            await jobs_col.update_one(
+                {"_id": doc["_id"]},
+                {"$set": {"status": "done", "results": results, "finished_at": now_iso()}},
+            )
+            return
+
+        # глубокая проверка: ставим задачи-туннели для residential-зондов
+        pending = []
+        for i, (t, r) in enumerate(zip(targets, results)):
+            na = tunnel_unsupported(t)
+            if na is not None:
+                r["tunnel"] = na
+                continue
+            if AGENT_TOKEN:
+                r["tunnel"] = {"pending": True, "info": "ожидает residential-зонд…"}
+                await tunnel_tasks.insert_one({
+                    "job_id": job_id, "idx": i, "owner": doc["owner"],
+                    "outbound": t["_xray"], "status": "queued",
+                    "created_dt": datetime.now(timezone.utc),
+                })
+                pending.append(i)
+            else:
+                # зонды не настроены — меряем локально (из ДЦ), как раньше
+                async with xray_sem:
+                    res = await tunnel_check(t["_xray"])
+                res["via"] = "дата-центр"
+                r["tunnel"] = res
+
+        status = "probing" if pending else "done"
+        upd = {"status": status, "results": results}
+        if status == "done":
+            upd["finished_at"] = now_iso()
+        await jobs_col.update_one({"_id": doc["_id"]}, {"$set": upd})
     except Exception as e:
         await jobs_col.update_one(
             {"_id": doc["_id"]},
             {"$set": {"status": "error", "error": str(e)[:200], "finished_at": now_iso()}},
         )
+
+
+async def reaper() -> None:
+    """Фолбэк: задачи, не взятые зондом за AGENT_TIMEOUT, добиваем сами (из ДЦ)
+    либо помечаем «зонд офлайн». Чтобы заявки не висели вечно."""
+    while True:
+        await asyncio.sleep(20)
+        try:
+            stale = datetime.now(timezone.utc) - timedelta(seconds=AGENT_TIMEOUT)
+            async for task in tunnel_tasks.find(
+                {"status": {"$in": ["queued", "claimed"]}, "created_dt": {"$lt": stale}}
+            ):
+                if LOCAL_FALLBACK:
+                    async with xray_sem:
+                        res = await tunnel_check(task["outbound"])
+                    res["via"] = "дата-центр (зонд офлайн)"
+                else:
+                    res = {"na": True, "info": "residential-зонд офлайн"}
+                await tunnel_tasks.update_one(
+                    {"_id": task["_id"]}, {"$set": {"status": "done", "result": res}}
+                )
+                await jobs_col.update_one(
+                    {"_id": ObjectId(task["job_id"])},
+                    {"$set": {f"results.{task['idx']}.tunnel": res}},
+                )
+                await finalize_if_ready(task["job_id"])
+        except Exception as e:
+            print(f"[!] reaper: {e}", file=sys.stderr)
 
 
 async def worker(name: int) -> None:
@@ -814,6 +895,8 @@ async def lifespan(app: FastAPI):
         await jobs_col.create_index([("owner", 1), ("created_at", -1)])
         # TTL: заявки (с пользовательскими конфигами) автоудаляются
         await jobs_col.create_index("created_dt", expireAfterSeconds=JOBS_TTL_DAYS * 86400)
+        await tunnel_tasks.create_index([("status", 1), ("created_dt", 1)])
+        await tunnel_tasks.create_index("created_dt", expireAfterSeconds=JOBS_TTL_DAYS * 86400)
     except Exception as e:
         print(f"[!] индекс jobs: {e}", file=sys.stderr)
     # восстановление после рестарта: незавершённые -> обратно в очередь
@@ -827,8 +910,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[!] восстановление очереди: {e}", file=sys.stderr)
     workers = [asyncio.create_task(worker(i)) for i in range(CHECKER_WORKERS)]
+    bg = [asyncio.create_task(reaper())]
     yield
-    for w in workers:
+    for w in workers + bg:
         w.cancel()
 
 
@@ -924,6 +1008,8 @@ textarea::placeholder{color:#494842}
 .tn-bad{border-left:3px solid var(--coral)} .tn-bad .tn-head{color:var(--coral)}
 .tn-na{border-left:3px solid var(--line-bright);opacity:.7} .tn-na .tn-head{color:var(--muted)}
 .tn-warn{border-left:3px solid #ffb627} .tn-warn .tn-head{color:#ffb627}
+.tn-pend{border-left:3px solid var(--cyan)} .tn-pend .tn-head{color:var(--cyan);display:inline-flex;align-items:center;gap:7px}
+.tn-via{color:var(--lime-dim);font-size:11px}
 /* история */
 .job-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border:1px solid var(--line);border-radius:2px;background:var(--panel);margin-bottom:8px;font-size:13px;animation:rise .5s ease both}
 .job-row a{color:var(--lime);text-decoration:none} .job-row a:hover{color:var(--lime-soft)}
@@ -1011,7 +1097,9 @@ def render_results(results: list[dict]) -> str:
         tunnel = ""
         if r.get("tunnel"):
             tw = r["tunnel"]
-            if tw.get("na"):
+            if tw.get("pending"):
+                cls, head = "tn-pend", '<span class="spin"></span>прогон через зонд'
+            elif tw.get("na"):
                 cls, head = "tn-na", "туннель"
             elif tw.get("warn"):
                 cls, head = "tn-warn", "работает медленно"
@@ -1019,11 +1107,14 @@ def render_results(results: list[dict]) -> str:
                 cls, head = "tn-ok", "выход в сеть есть"
             else:
                 cls, head = "tn-bad", "выхода нет"
+            via = ""
+            if tw.get("via"):
+                via = f' <span class="tn-via">через {html.escape(tw["via"])}</span>'
             tunnel = f"""
   <div class="tunnel {cls}">
     <span class="tn-label">⟿ туннель</span>
     <span class="tn-head">{head}</span>
-    <span class="tn-info">{html.escape(tw.get("info",""))}</span>
+    <span class="tn-info">{html.escape(tw.get("info",""))}{via}</span>
   </div>"""
         cards.append(f"""
 <div class="ep">
@@ -1061,6 +1152,76 @@ async def security_headers(request: Request, call_next):
 @app.get("/health")
 async def health():
     return PlainTextResponse("ok")
+
+
+# ---- residential-зонды: outbound-поллинг агентами ---------------------------
+
+
+def _agent_ok(request: Request) -> bool:
+    if not AGENT_TOKEN:
+        return False
+    tok = request.headers.get("x-agent-token", "")
+    return hmac.compare_digest(tok, AGENT_TOKEN)
+
+
+@app.post("/agent/poll")
+async def agent_poll(request: Request):
+    if not _agent_ok(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    now = datetime.now(timezone.utc)
+    stale = now - timedelta(seconds=AGENT_TIMEOUT)
+    # атомарно забираем одну незанятую (или зависшую у мёртвого зонда) задачу
+    task = await tunnel_tasks.find_one_and_update(
+        {"$or": [{"status": "queued"},
+                 {"status": "claimed", "claimed_at": {"$lt": stale}}]},
+        {"$set": {"status": "claimed", "claimed_at": now}},
+        sort=[("created_dt", 1)],
+        return_document=True,  # ReturnDocument.AFTER
+    )
+    if not task:
+        return JSONResponse({"task": None})
+    return JSONResponse({"task": {
+        "task_id": str(task["_id"]),
+        "outbound": task["outbound"],
+        "probe_url": TUNNEL_PROBE_URL,
+        "speed_url": TUNNEL_SPEED_URL,
+        "params": {
+            "window": SPEED_WINDOW, "max_bytes": SPEED_MAX_BYTES,
+            "min_mbps": SPEED_MIN_MBPS, "slow_mbps": SPEED_SLOW_MBPS,
+            "start_timeout": XRAY_START_TIMEOUT, "probe_timeout": TUNNEL_PROBE_TIMEOUT,
+        },
+    }})
+
+
+@app.post("/agent/result")
+async def agent_result(request: Request):
+    if not _agent_ok(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    task_id = body.get("task_id", "")
+    result = body.get("result") or {}
+    try:
+        toid = ObjectId(task_id)
+    except (InvalidId, TypeError):
+        return JSONResponse({"error": "bad task_id"}, status_code=400)
+    task = await tunnel_tasks.find_one({"_id": toid})
+    if not task:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if task.get("status") == "done":
+        return JSONResponse({"ok": True})
+    result["via"] = "residential"
+    await tunnel_tasks.update_one(
+        {"_id": toid}, {"$set": {"status": "done", "result": result}}
+    )
+    await jobs_col.update_one(
+        {"_id": ObjectId(task["job_id"])},
+        {"$set": {f"results.{task['idx']}.tunnel": result}},
+    )
+    await finalize_if_ready(task["job_id"])
+    return JSONResponse({"ok": True})
 
 
 @app.get("/")
@@ -1199,6 +1360,19 @@ async def job_view(request: Request, job_id: str = Path(...)):
         return page("Ошибка", body, user=user)
 
     results = job.get("results", [])
+
+    # probing: доступность готова, ждём residential-зонды по туннелю — авторефреш
+    if status == "probing":
+        body = f"""
+<div class="page-head">
+  <div><span class="kicker">прогон через residential-зонд…</span><h1>Заявка #{html.escape(job_id[-6:])}</h1></div>
+  <span class="status s-running">probing</span>
+</div>
+{note}
+{render_results(results)}
+<div class="form-actions"><a class="btn" href="/">← Новая проверка</a></div>"""
+        return page("Прогон через зонд…", body, user=user, refresh=4)
+
     body = f"""
 <div class="page-head">
   <div><span class="kicker">результат · {html.escape(fmt_dt(job.get("finished_at","")))}</span><h1>Заявка #{html.escape(job_id[-6:])}</h1></div>

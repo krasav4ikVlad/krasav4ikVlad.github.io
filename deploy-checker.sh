@@ -30,6 +30,8 @@ TOKEN_DB="${TOKEN_DB:-}"
 SECRET_KEY="${SECRET_KEY:-}"
 CHECKER_WORKERS="${CHECKER_WORKERS:-2}"
 CHECKER_ALLOW_PRIVATE="${CHECKER_ALLOW_PRIVATE:-0}"
+# токен для residential-зондов; если не задан — генерируется и печатается в конце
+AGENT_TOKEN="${AGENT_TOKEN:-}"
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
@@ -54,6 +56,19 @@ if ! command -v xray >/dev/null 2>&1; then
     || warn "Не удалось установить xray — глубокая проверка будет недоступна (xray не установлен)."
   # не держим их дефолтный xray-сервер запущенным: нам нужен только бинарь
   systemctl disable --now xray >/dev/null 2>&1 || true
+fi
+
+# ---- токен для residential-зондов ------------------------------------------
+GENERATED_AGENT=""
+if [ -z "$AGENT_TOKEN" ]; then
+  # переиспользуем уже сохранённый, если есть
+  if [ -f "$APP_DIR/nodewiki-checker.env" ]; then
+    AGENT_TOKEN="$(grep -h '^CHECKER_AGENT_TOKEN=' "$APP_DIR/nodewiki-checker.env" | head -1 | cut -d= -f2-)"
+  fi
+  if [ -z "$AGENT_TOKEN" ]; then
+    AGENT_TOKEN="$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))')"
+    GENERATED_AGENT="$AGENT_TOKEN"
+  fi
 fi
 
 # ---- app -------------------------------------------------------------------
@@ -81,6 +96,7 @@ CHECKER_WORKERS=$CHECKER_WORKERS
 CHECKER_ALLOW_PRIVATE=$CHECKER_ALLOW_PRIVATE
 XRAY_BIN=/usr/local/bin/xray
 CHECKER_XRAY_CONCURRENCY=1
+CHECKER_AGENT_TOKEN=$AGENT_TOKEN
 EOF
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 chmod 600 "$APP_DIR/nodewiki-checker.env"
@@ -162,3 +178,13 @@ log "VPN Checker deployed:  $SCHEME://$DOMAIN/"
 echo "  Вход — через хаб ($HUB_URL); сессия общая (.nodewiki.info)."
 echo "  Логи:    journalctl -u nodewiki-checker -f"
 echo "  Рестарт: systemctl restart nodewiki-checker"
+echo
+echo "  residential-зонд (мерить КАК У ПОЛЬЗОВАТЕЛЯ, а не из ДЦ):"
+echo "    запусти на машине с домашним/мобильным интернетом:"
+echo "      pip install 'httpx[socks]'   # + установи xray-core"
+echo "      CHECKER_URL=$SCHEME://$DOMAIN AGENT_TOKEN=<token> python3 probe_agent.py"
+if [ -n "$GENERATED_AGENT" ]; then
+  printf '\033[1;32m    AGENT_TOKEN (сгенерирован): %s\033[0m\n' "$GENERATED_AGENT"
+fi
+echo "    probe_agent.py: $RAW_BASE/probe_agent.py"
+echo "    Без зонда глубокая проверка работает из ДЦ (помечается «через дата-центр»)."
