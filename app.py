@@ -29,6 +29,7 @@ import secrets
 import sys
 import time
 from contextlib import asynccontextmanager
+from urllib.parse import quote as urlquote
 from datetime import datetime, timezone
 
 import uvicorn
@@ -56,6 +57,12 @@ TOKEN_DB = os.environ.get("TOKEN_DB", "mongodb://localhost:27017")
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 HUB_URL = os.environ.get("HUB_URL", "https://nodewiki.info").rstrip("/")
+# SSO: домен cookie (".nodewiki.info" => сессия видна всем поддоменам);
+# пусто = host-only cookie (локальная разработка)
+COOKIE_DOMAIN = os.environ.get("COOKIE_DOMAIN", "")
+# куда отправлять неавторизованных; по умолчанию локальный /login,
+# в проде — страница входа на хабе (https://nodewiki.info/login)
+LOGIN_URL = os.environ.get("LOGIN_URL", "/login")
 PORT = int(os.environ.get("PORT", "8000"))
 HOST = os.environ.get("HOST", "0.0.0.0")  # за nginx ставьте 127.0.0.1
 
@@ -372,7 +379,17 @@ def set_session(resp: RedirectResponse, user_id: str) -> None:
         samesite="lax",
         secure=BASE_URL.startswith("https"),
         path="/",
+        domain=COOKIE_DOMAIN or None,  # .nodewiki.info => SSO на поддоменах
     )
+
+
+def login_redirect(request: Request) -> RedirectResponse:
+    """Неавторизованный -> страница входа (локальная или на хабе, с возвратом)."""
+    if LOGIN_URL != "/login":
+        return RedirectResponse(
+            f"{LOGIN_URL}?next={urlquote(str(request.url), safe='')}", status_code=303
+        )
+    return login_redirect(request)
 
 
 def session_user_id(request: Request) -> str | None:
@@ -1210,6 +1227,8 @@ def auth_card(mode: str, error: str = "") -> str:
 async def login_form(request: Request, error: int = 0):
     if await current_user(request):
         return RedirectResponse("/", status_code=303)
+    if LOGIN_URL != "/login" and not error:  # вход живёт на хабе
+        return login_redirect(request)
     msg = "Неверный логин или пароль" if error else ""
     return page("Вход", auth_card("login", msg))
 
@@ -1234,6 +1253,10 @@ async def login(
 async def register_form(request: Request):
     if await current_user(request):
         return RedirectResponse("/", status_code=303)
+    if LOGIN_URL != "/login":  # регистрация тоже на хабе
+        return RedirectResponse(
+            LOGIN_URL.rsplit("/", 1)[0] + "/register", status_code=303
+        )
     return page("Регистрация", auth_card("register"))
 
 
@@ -1266,8 +1289,8 @@ async def register(
 
 @app.post("/logout")
 async def logout():
-    resp = RedirectResponse("/login", status_code=303)
-    resp.delete_cookie(COOKIE_NAME, path="/")
+    resp = RedirectResponse(LOGIN_URL, status_code=303)
+    resp.delete_cookie(COOKIE_NAME, path="/", domain=COOKIE_DOMAIN or None)
     return resp
 
 
@@ -1278,7 +1301,7 @@ async def logout():
 async def index(request: Request, q: str = "", folder: str = "", tag: str = ""):
     user = await current_user(request)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     uname = user["username"]
     owner = str(user["_id"])
     q, folder, tag = q.strip()[:100], folder.strip()[:64], tag.strip()[:32]
@@ -1459,7 +1482,7 @@ async def editor_meta_fields(
 async def new_form(request: Request):
     user = await current_user(request)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     body = f"""
 <div class="page-head"><div><span class="kicker">создание</span><h1>Новый скрипт</h1></div></div>
 <form class="editor" method="post" action="/scripts">
@@ -1492,7 +1515,7 @@ async def create_script(
 ):
     user = await current_user(request)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     name = name.strip() or "Без названия"
     ts = now_iso()
     slug = await new_slug()
@@ -1529,7 +1552,7 @@ async def _owned_script(request: Request, script_id: str):
 async def edit_form(request: Request, script_id: str = Path(...)):
     user, row = await _owned_script(request, script_id)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     if row is None:
         return page("Не найдено", "<h1>Скрипт не найден</h1>", user=user["username"])
 
@@ -1605,7 +1628,7 @@ async def update_script(
 ):
     user, row = await _owned_script(request, script_id)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     if row is None:
         return RedirectResponse("/", status_code=303)
     new_name = name.strip() or "Без названия"
@@ -1634,7 +1657,7 @@ async def update_script(
 async def delete_script(request: Request, script_id: str = Path(...)):
     user, row = await _owned_script(request, script_id)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     if row is not None:
         sid = str(row["_id"])
         await scripts_col.delete_one({"_id": row["_id"]})
@@ -1648,7 +1671,7 @@ async def duplicate_script(request: Request, script_id: str = Path(...)):
     """Копия скрипта: новый slug, чистые счётчики и история."""
     user, row = await _owned_script(request, script_id)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     if row is None:
         return RedirectResponse("/", status_code=303)
     ts = now_iso()
@@ -1675,7 +1698,7 @@ async def duplicate_script(request: Request, script_id: str = Path(...)):
 async def access_log_page(request: Request, script_id: str = Path(...)):
     user, row = await _owned_script(request, script_id)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     if row is None:
         return page("Не найдено", "<h1>Скрипт не найден</h1>", user=user["username"])
 
@@ -1734,7 +1757,7 @@ async def _owned_version(user: dict, script_id: str, version_id: str):
 async def versions_page(request: Request, script_id: str = Path(...)):
     user, row = await _owned_script(request, script_id)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     if row is None:
         return page("Не найдено", "<h1>Скрипт не найден</h1>", user=user["username"])
 
@@ -1790,7 +1813,7 @@ async def version_view(
 ):
     user, row = await _owned_script(request, script_id)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     if row is None:
         return page("Не найдено", "<h1>Скрипт не найден</h1>", user=user["username"])
     version = await _owned_version(user, script_id, version_id)
@@ -1820,7 +1843,7 @@ async def version_restore(
 ):
     user, row = await _owned_script(request, script_id)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     if row is None:
         return RedirectResponse("/", status_code=303)
     version = await _owned_version(user, script_id, version_id)
@@ -1941,7 +1964,7 @@ def variables_section(user: dict, error: str = "") -> str:
 async def settings_page(request: Request, saved: int = 0):
     user = await current_user(request)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     return page("Настройки", settings_body(user, saved=bool(saved)), user=user["username"])
 
 
@@ -1949,7 +1972,7 @@ async def settings_page(request: Request, saved: int = 0):
 async def settings_save_token(request: Request, anthropic_key: str = Form(...)):
     user = await current_user(request)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     key = anthropic_key.strip()
     if len(key) < 20 or any(c.isspace() for c in key):
         return page(
@@ -1967,7 +1990,7 @@ async def settings_save_token(request: Request, anthropic_key: str = Form(...)):
 async def settings_delete_token(request: Request):
     user = await current_user(request)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     await users_col.update_one({"_id": user["_id"]}, {"$unset": {"anthropic_key": ""}})
     return RedirectResponse("/settings", status_code=303)
 
@@ -1978,7 +2001,7 @@ async def settings_save_var(
 ):
     user = await current_user(request)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     name = var_name.strip().upper()
     value = var_value.strip()
     if not VAR_NAME_RE.match(name):
@@ -2004,7 +2027,7 @@ async def settings_save_var(
 async def settings_delete_var(request: Request, var_name: str = Form(...)):
     user = await current_user(request)
     if not user:
-        return RedirectResponse("/login", status_code=303)
+        return login_redirect(request)
     name = var_name.strip().upper()
     if VAR_NAME_RE.match(name):
         await users_col.update_one(
