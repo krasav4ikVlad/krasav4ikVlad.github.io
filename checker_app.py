@@ -1126,12 +1126,18 @@ async def job_view(request: Request, job_id: str = Path(...)):
 <div class="form-actions"><a class="btn" href="/">← Новая проверка</a></div>"""
         return page("Проверка…", body, user=user, refresh=3)
 
+    deep_label = " (глубокая)" if job.get("deep") else ""
+    rerun = f"""
+  <form method="post" action="/job/{job_id}/rerun" style="display:inline">
+    <button class="btn btn-primary" type="submit">↻ Повторить{deep_label}</button>
+  </form>"""
+
     if status == "error":
         body = f"""
 <div class="page-head"><div><span class="kicker">проверка</span><h1>Заявка #{html.escape(job_id[-6:])}</h1></div>
 <span class="status s-error">error</span></div>
 <div class="error">{html.escape(job.get("error","неизвестная ошибка"))}</div>
-<div class="form-actions"><a class="btn" href="/">← Новая проверка</a></div>"""
+<div class="form-actions">{rerun}<a class="btn" href="/">← Новая проверка</a></div>"""
         return page("Ошибка", body, user=user)
 
     results = job.get("results", [])
@@ -1142,8 +1148,48 @@ async def job_view(request: Request, job_id: str = Path(...)):
 </div>
 {note}
 {render_results(results)}
-<div class="form-actions"><a class="btn btn-primary" href="/">← Новая проверка</a></div>"""
+<div class="form-actions">{rerun}<a class="btn" href="/">← Новая проверка</a></div>"""
     return page("Результат", body, user=user)
+
+
+@app.post("/job/{job_id}/rerun")
+async def job_rerun(request: Request, job_id: str = Path(...)):
+    raw_user = await current_user(request)
+    if not raw_user:
+        return login_redirect(request)
+    try:
+        oid = ObjectId(job_id)
+    except (InvalidId, TypeError):
+        return RedirectResponse("/", status_code=303)
+    job = await jobs_col.find_one({"_id": oid, "owner": str(raw_user["_id"])})
+    if not job or not job.get("targets"):
+        return RedirectResponse("/", status_code=303)
+
+    is_deep = bool(job.get("deep"))
+    cost = len(job["targets"]) * (DEEP_COST if is_deep else 1)
+    ok, _bal = await take_tokens(raw_user, cost)
+    if not ok:
+        return RedirectResponse(
+            f"/?error={urlquote(f'Недостаточно токенов: нужно {cost}. Подождите дозаправки.')}",
+            status_code=303,
+        )
+    if job_queue.full():
+        return RedirectResponse(
+            f"/?error={urlquote('Очередь переполнена, попробуйте позже.')}", status_code=303
+        )
+    doc = {
+        "owner": str(raw_user["_id"]),
+        "status": "queued",
+        "targets": job["targets"],
+        "deep": is_deep,
+        "note": job.get("note", ""),
+        "created_at": now_iso(),
+        "created_dt": datetime.now(timezone.utc),
+    }
+    res = await jobs_col.insert_one(doc)
+    new_id = str(res.inserted_id)
+    await job_queue.put(new_id)
+    return RedirectResponse(f"/job/{new_id}", status_code=303)
 
 
 if __name__ == "__main__":

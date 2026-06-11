@@ -535,7 +535,7 @@ async def index(request: Request):
       <p class="lede">Хостинг установочных скриптов, проверка VPN-конфигов и мониторинг
       доступности нод. Один аккаунт — все инструменты.</p>
     </section>"""
-        body = hero + auth_card("login") + tools_grid(False)
+        body = hero + tools_grid(False)
     online = "scripts, checker — online · nodes — в разработке" if CHECKER_URL else "scripts — online · checker, nodes — в разработке"
     body += f"""
     <footer>
@@ -552,7 +552,7 @@ async def login_form(request: Request, error: int = 0, next: str = "/"):
     if user:
         return RedirectResponse(nxt, status_code=303)
     msg = "Неверный логин или пароль" if error else ""
-    return page("Вход", auth_card("login", msg, nxt) + tools_grid(False))
+    return page("Вход", auth_card("login", msg, nxt))
 
 
 @app.post("/login")
@@ -583,7 +583,7 @@ async def register_form(request: Request, next: str = "/"):
     nxt = safe_next(next)
     if await current_user(request):
         return RedirectResponse(nxt, status_code=303)
-    return page("Регистрация", auth_card("register", "", nxt) + tools_grid(False))
+    return page("Регистрация", auth_card("register", "", nxt))
 
 
 @app.post("/register")
