@@ -10,6 +10,35 @@ Self-hosted хостинг скриптов для команды. Один фа
 Каждый пользователь добавляет **свой** Anthropic API-ключ в настройках
 (`/settings`) — общего серверного ключа нет.
 
+## Архитектура: хаб + поддомены
+
+Платформа разбита на независимые сервисы за одним nginx, по поддоменам:
+
+| Поддомен                 | Сервис            | Где живёт            |
+|--------------------------|-------------------|----------------------|
+| `nodewiki.info`          | Главная-хаб       | основной сервер (статика, `hub/index.html`) |
+| `scripts.nodewiki.info`  | Script Vault      | основной сервер (`app.py`, порт 8000) |
+| `checker.nodewiki.info`  | VPN-чекер         | отдельный РУ-сервер (в планах) |
+| `nodes.nodewiki.info`    | Чекер нод         | в планах |
+
+В Cloudflare для каждого поддомена — A-запись на нужный IP (grey cloud / DNS-only,
+как у `scripts`). Хаб — статическая страница, деплой:
+
+```bash
+bash <(curl -fsSL \
+  https://raw.githubusercontent.com/krasav4ikVlad/krasav4ikVlad.github.io/refs/heads/claude/script-hosting-app-msq5fe/deploy-hub.sh)
+```
+
+`deploy-hub.sh` кладёт страницу в `/var/www/nodewiki-hub`, добавляет nginx-vhost
+для `nodewiki.info` + `www` и получает TLS — существующий vhost `scripts` не
+трогается (разные `server_name`).
+
+**Единый вход (SSO) между серверами** — заложен на будущее: cookie сессии ставится
+на домен `.nodewiki.info`, поэтому валидна на всех поддоменах. Чтобы сервис на
+другом сервере (например РУ-чекер) принимал ту же сессию, ему нужны: тот же
+`SECRET_KEY` (проверка HMAC-подписи) и та же MongoDB (`TOKEN_DB`) для поиска
+пользователя. Логин — один раз на любом сервисе.
+
 ## Запуск
 
 ```bash
