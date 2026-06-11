@@ -162,247 +162,303 @@ def raw_url(request: Request, slug: str) -> str:
 
 CSS = """
 :root {
-  --bg: #0a0d14;
-  --surface: rgba(255, 255, 255, 0.035);
-  --surface-hover: rgba(255, 255, 255, 0.06);
-  --border: rgba(255, 255, 255, 0.09);
-  --text: #e7ecf3;
-  --muted: #8b95a7;
-  --accent: #6c8cff;
-  --accent-2: #38e1c2;
-  --danger: #ff5c7a;
-  --radius: 14px;
-  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --bg: #0b0b0c;
+  --panel: #121214;
+  --panel-2: #171719;
+  --line: #25252b;
+  --line-bright: #36363f;
+  --ink: #ece9e0;
+  --muted: #817e75;
+  --lime: #c6f23f;
+  --lime-soft: #d6ff52;
+  --lime-dim: #9cbf33;
+  --coral: #ff5d4e;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --display: "Syne", "JetBrains Mono", sans-serif;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html { color-scheme: dark; }
+html { color-scheme: dark; -webkit-text-size-adjust: 100%; }
+::selection { background: var(--lime); color: #0c0d07; }
 body {
-  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 15px/1.6 var(--mono);
   background: var(--bg);
-  color: var(--text);
+  color: var(--ink);
   min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
 }
-/* живой фон: два дрейфующих цветовых пятна */
-body::before, body::after {
+/* blueprint grid + glow, faded toward the bottom */
+body::before {
   content: "";
-  position: fixed;
-  z-index: -1;
-  width: 60vmax; height: 60vmax;
-  border-radius: 50%;
-  filter: blur(90px);
-  opacity: .14;
-  animation: drift 26s ease-in-out infinite alternate;
+  position: fixed; inset: 0; z-index: -2;
+  background:
+    linear-gradient(var(--line) 1px, transparent 1px) 0 0 / 100% 64px,
+    linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0 / 64px 100%,
+    radial-gradient(120% 75% at 82% -8%, rgba(198,242,63,.12), transparent 58%),
+    radial-gradient(120% 80% at -12% 112%, rgba(255,93,78,.08), transparent 55%),
+    var(--bg);
+  -webkit-mask-image: radial-gradient(150% 120% at 50% 0%, #000 55%, transparent 100%);
+          mask-image: radial-gradient(150% 120% at 50% 0%, #000 55%, transparent 100%);
 }
-body::before { background: var(--accent); top: -25vmax; left: -15vmax; }
-body::after  { background: var(--accent-2); bottom: -30vmax; right: -15vmax; animation-delay: -13s; }
-@keyframes drift {
-  from { transform: translate(0, 0) scale(1); }
-  to   { transform: translate(8vmax, 6vmax) scale(1.15); }
+/* CRT scanlines */
+body::after {
+  content: "";
+  position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
+  opacity: .4; mix-blend-mode: multiply;
 }
 
-.container { max-width: 860px; margin: 0 auto; padding: 0 20px 64px; }
+.container { max-width: 880px; margin: 0 auto; padding: 0 22px 80px; }
 
+/* header */
 header {
-  position: sticky; top: 0; z-index: 10;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  background: rgba(10, 13, 20, 0.7);
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 32px;
+  position: sticky; top: 0; z-index: 20;
+  backdrop-filter: blur(11px) saturate(1.3);
+  -webkit-backdrop-filter: blur(11px) saturate(1.3);
+  background: rgba(11, 11, 12, .8);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 42px;
 }
 .header-inner {
-  max-width: 860px; margin: 0 auto; padding: 14px 20px;
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  max-width: 880px; margin: 0 auto; padding: 15px 22px;
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
 }
 .logo {
-  font-weight: 700; font-size: 18px; letter-spacing: .3px;
-  text-decoration: none;
-  background: linear-gradient(90deg, var(--accent), var(--accent-2));
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent; color: transparent;
+  font-family: var(--display);
+  font-weight: 800; font-size: 19px; letter-spacing: -.6px;
+  color: var(--ink); text-decoration: none;
+  display: inline-flex; align-items: center;
 }
+.logo b { color: var(--lime); font-weight: 800; }
+.logo::after {
+  content: "_"; color: var(--lime); margin-left: 2px;
+  animation: blink 1.1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
 .header-actions { display: flex; gap: 10px; align-items: center; }
+.header-actions form { display: inline; }
 
-h1 { font-size: 26px; font-weight: 700; }
+/* headings */
+h1 {
+  font-family: var(--display);
+  font-size: 31px; font-weight: 800; letter-spacing: -1.2px; line-height: 1.04;
+}
+.kicker {
+  display: block; font-size: 11px; letter-spacing: 3px; text-transform: uppercase;
+  color: var(--lime-dim); margin-bottom: 9px;
+}
+.kicker::before { content: "> "; }
 .page-head {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; flex-wrap: wrap; margin-bottom: 24px;
-  animation: rise .5s ease both;
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 14px; flex-wrap: wrap; margin-bottom: 30px;
+  animation: rise .55s cubic-bezier(.2, .7, .2, 1) both;
 }
-.muted { color: var(--muted); font-size: 14px; }
+.muted { color: var(--muted); font-size: 12.5px; letter-spacing: .3px; }
 
-/* кнопки */
+/* buttons — hard-edged, brutalist */
 .btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 9px 16px; border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  font: inherit; font-size: 14px; font-weight: 600;
-  text-decoration: none; cursor: pointer;
-  transition: transform .15s ease, box-shadow .15s ease, background .15s ease, border-color .15s ease;
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 10px 16px; border-radius: 2px;
+  border: 1px solid var(--line-bright);
+  background: var(--panel-2);
+  color: var(--ink);
+  font-family: var(--mono); font-size: 13px; font-weight: 600;
+  letter-spacing: .3px; text-transform: lowercase;
+  text-decoration: none; cursor: pointer; white-space: nowrap;
+  transition: transform .12s ease, box-shadow .12s ease, background .15s, border-color .15s, color .15s;
 }
-.btn:hover { background: var(--surface-hover); transform: translateY(-1px); }
-.btn:active { transform: translateY(0) scale(.98); }
+.btn:hover { border-color: var(--lime); color: var(--lime); transform: translate(-2px, -2px); box-shadow: 4px 4px 0 #000; }
+.btn:active { transform: translate(0, 0); box-shadow: 0 0 0 #000; }
 .btn-primary {
-  border: none;
-  background: linear-gradient(135deg, var(--accent), #4f6df5);
-  box-shadow: 0 4px 18px rgba(108, 140, 255, .35);
+  background: var(--lime); color: #11130a; border-color: var(--lime);
+  font-weight: 700; box-shadow: 4px 4px 0 #000;
 }
-.btn-primary:hover {
-  background: linear-gradient(135deg, #7d99ff, #5f7bff);
-  box-shadow: 0 6px 24px rgba(108, 140, 255, .5);
-}
-.btn-danger { color: var(--danger); }
-.btn-danger:hover { border-color: var(--danger); box-shadow: 0 0 14px rgba(255, 92, 122, .25); }
-.btn-sm { padding: 6px 12px; font-size: 13px; }
+.btn-primary:hover { background: var(--lime-soft); color: #11130a; border-color: var(--lime-soft); box-shadow: 6px 6px 0 #000; }
+.btn-danger:hover { border-color: var(--coral); color: var(--coral); box-shadow: 4px 4px 0 #000; }
+.btn-sm { padding: 7px 12px; font-size: 12px; }
 
-/* карточки скриптов */
+/* script cards */
 .card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 18px 20px;
-  margin-bottom: 14px;
-  animation: rise .5s ease both;
-  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-bright);
+  border-radius: 3px;
+  padding: 20px 22px;
+  margin-bottom: 16px;
+  animation: rise .55s cubic-bezier(.2, .7, .2, 1) both;
+  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
 }
 .card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(108, 140, 255, .45);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+  transform: translate(-3px, -3px);
+  border-color: var(--line-bright);
+  border-left-color: var(--lime);
+  box-shadow: 7px 7px 0 #000;
 }
 .card-top {
   display: flex; align-items: baseline; justify-content: space-between;
-  gap: 10px; flex-wrap: wrap;
+  gap: 12px; flex-wrap: wrap;
 }
-.card-name { font-size: 17px; font-weight: 700; word-break: break-word; }
+.card-name {
+  font-family: var(--display); font-size: 18px; font-weight: 700;
+  letter-spacing: -.3px; word-break: break-word;
+}
 .card-url {
-  font-family: var(--mono); font-size: 13px; color: var(--accent-2);
+  font-family: var(--mono); font-size: 12.5px; color: var(--lime);
   text-decoration: none; word-break: break-all;
-  display: inline-block; margin: 8px 0 12px;
+  display: inline-block; margin: 11px 0 15px;
+  border-bottom: 1px dashed rgba(198, 242, 63, .35); padding-bottom: 1px;
 }
-.card-url:hover { text-decoration: underline; }
+.card-url::before { content: "\\21B3  "; color: var(--muted); }
+.card-url:hover { color: var(--lime-soft); border-bottom-color: var(--lime-soft); }
 .card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.card-actions form { display: inline; }
 
-/* формы */
-form.editor { animation: rise .5s ease both; }
-label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin: 18px 0 6px; }
+/* forms */
+form.editor { animation: rise .55s cubic-bezier(.2, .7, .2, 1) both; }
+label {
+  display: block; font-size: 11px; font-weight: 600; letter-spacing: 2px;
+  text-transform: uppercase; color: var(--muted); margin: 22px 0 8px;
+}
+label::before { content: "// "; color: var(--lime-dim); }
 input[type=text], input[type=password], textarea {
   width: 100%;
-  padding: 11px 14px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: rgba(0, 0, 0, .25);
-  color: var(--text);
-  font: inherit;
+  padding: 12px 14px;
+  border-radius: 2px;
+  border: 1px solid var(--line-bright);
+  background: #0d0d0f;
+  color: var(--ink);
+  font-family: var(--mono); font-size: 14px;
   transition: border-color .15s ease, box-shadow .15s ease;
 }
 textarea {
-  font-family: var(--mono); font-size: 13.5px; line-height: 1.6;
-  min-height: 380px; resize: vertical;
+  font-size: 13px; line-height: 1.65;
+  min-height: 400px; resize: vertical;
   white-space: pre; overflow-wrap: normal; overflow-x: auto;
   tab-size: 4;
 }
+input::placeholder, textarea::placeholder { color: #494842; }
 input:focus, textarea:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(108, 140, 255, .22);
+  border-color: var(--lime);
+  box-shadow: 0 0 0 1px var(--lime), 0 0 24px rgba(198, 242, 63, .13);
 }
-.form-actions { display: flex; gap: 10px; margin-top: 22px; flex-wrap: wrap; }
+.form-actions { display: flex; gap: 12px; margin-top: 26px; flex-wrap: wrap; }
 
-/* блок ссылки на странице редактирования */
+/* share / curl block on the edit page */
 .share {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px 18px;
-  margin-bottom: 24px;
-  animation: rise .5s ease both;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 18px 20px;
+  margin-bottom: 28px;
+  animation: rise .55s cubic-bezier(.2, .7, .2, 1) both;
 }
+.share .kicker { margin: 0 0 6px; }
+.share .kicker + .kicker { margin-top: 16px; }
 .share code {
   display: block;
-  font-family: var(--mono); font-size: 13px;
-  background: rgba(0, 0, 0, .35);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  margin: 8px 0;
+  font-family: var(--mono); font-size: 12.5px; color: var(--lime);
+  background: #0d0d0f;
+  border: 1px solid var(--line-bright);
+  border-radius: 2px;
+  padding: 12px 14px;
+  margin: 8px 0 16px;
   word-break: break-all;
-  color: var(--accent-2);
 }
+.share .btn { margin-right: 8px; }
 
-/* заглушка пустого списка */
+/* empty state */
 .empty {
-  text-align: center; padding: 70px 20px;
-  border: 1px dashed var(--border); border-radius: var(--radius);
-  animation: rise .5s ease both;
+  text-align: center; padding: 80px 24px;
+  border: 1px dashed var(--line-bright); border-radius: 4px;
+  background: repeating-linear-gradient(135deg, transparent 0 14px, rgba(255, 255, 255, .012) 14px 28px);
+  animation: rise .55s cubic-bezier(.2, .7, .2, 1) both;
 }
-.empty .glyph { font-size: 44px; animation: float 3s ease-in-out infinite; }
-.empty p { color: var(--muted); margin: 12px 0 20px; }
-@keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-8px); }
+.empty .glyph {
+  font-family: var(--display); font-size: 38px; font-weight: 800;
+  color: var(--lime); letter-spacing: -1px;
 }
+.empty .glyph::after { content: "_"; animation: blink 1.1s steps(1) infinite; }
+.empty p { color: var(--muted); margin: 16px auto 24px; max-width: 440px; }
 
-/* логин */
-.login-wrap { min-height: 80vh; display: flex; align-items: center; justify-content: center; }
+/* login — terminal window */
+.login-wrap { min-height: 82vh; display: flex; align-items: center; justify-content: center; }
 .login-card {
-  width: 100%; max-width: 380px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 34px 30px;
-  animation: rise .6s ease both;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, .45);
+  width: 100%; max-width: 400px;
+  background: var(--panel);
+  border: 1px solid var(--line-bright);
+  border-radius: 4px;
+  overflow: hidden;
+  animation: rise .6s cubic-bezier(.2, .7, .2, 1) both;
+  box-shadow: 10px 10px 0 #000;
 }
-.login-card h1 { text-align: center; margin-bottom: 4px; }
-.login-card .muted { text-align: center; display: block; }
+.login-bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 12px 15px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+  font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted);
+}
+.login-bar i { width: 9px; height: 9px; border-radius: 50%; background: var(--line-bright); }
+.login-bar i:nth-child(1) { background: var(--coral); }
+.login-bar i:nth-child(3) { background: var(--lime); }
+.login-bar span { margin-left: auto; }
+.login-body { padding: 32px 30px 36px; }
+.login-body h1 { font-size: 25px; }
+.login-body .muted { display: block; margin-top: 6px; }
+
 .error {
-  background: rgba(255, 92, 122, .12);
-  border: 1px solid rgba(255, 92, 122, .4);
-  color: var(--danger);
-  border-radius: 10px;
-  padding: 10px 14px;
-  font-size: 14px;
-  margin-top: 16px;
+  background: rgba(255, 93, 78, .1);
+  border: 1px solid rgba(255, 93, 78, .45);
+  border-left: 2px solid var(--coral);
+  color: var(--coral);
+  border-radius: 2px;
+  padding: 11px 14px;
+  font-size: 13px;
+  margin-top: 18px;
   animation: shake .4s ease;
 }
+.error::before { content: "\\2717  "; }
 @keyframes shake {
   0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-6px); }
-  75% { transform: translateX(6px); }
+  20% { transform: translateX(-7px); } 40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); } 80% { transform: translateX(3px); }
 }
 
 /* toast */
 #toast {
-  position: fixed; left: 50%; bottom: 28px; z-index: 100;
-  transform: translate(-50%, 80px);
-  background: #141a26;
-  border: 1px solid var(--accent);
-  color: var(--text);
-  padding: 11px 22px;
-  border-radius: 999px;
-  font-size: 14px; font-weight: 600;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, .5), 0 0 18px rgba(108, 140, 255, .25);
+  position: fixed; left: 50%; bottom: 30px; z-index: 100;
+  transform: translate(-50%, 90px);
+  background: #0d0d0f;
+  border: 1px solid var(--lime);
+  border-left: 3px solid var(--lime);
+  color: var(--ink);
+  padding: 12px 20px;
+  border-radius: 2px;
+  font-family: var(--mono); font-size: 13px; font-weight: 600;
+  box-shadow: 6px 6px 0 #000;
   opacity: 0;
   pointer-events: none;
   transition: transform .3s cubic-bezier(.2, .9, .3, 1.3), opacity .25s ease;
 }
+#toast::before { content: "\\2713  "; color: var(--lime); }
 #toast.show { transform: translate(-50%, 0); opacity: 1; }
 
 @keyframes rise {
-  from { opacity: 0; transform: translateY(14px); }
+  from { opacity: 0; transform: translateY(16px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
 @media (max-width: 560px) {
-  body { font-size: 15px; }
-  .container { padding: 0 14px 48px; }
-  .card { padding: 15px 16px; }
+  body { font-size: 14px; }
+  .container { padding: 0 15px 56px; }
+  h1 { font-size: 25px; }
+  header { margin-bottom: 30px; }
+  .card { padding: 16px 17px; }
   .card-actions .btn { flex: 1; justify-content: center; }
   .form-actions .btn { flex: 1; justify-content: center; }
-  textarea { min-height: 300px; }
+  textarea { min-height: 320px; }
 }
 """
 
@@ -444,7 +500,7 @@ def page(title: str, body: str, *, authed: bool = False) -> HTMLResponse:
         header = """
 <header>
   <div class="header-inner">
-    <a class="logo" href="/">⚡ Script Vault</a>
+    <a class="logo" href="/">script<b>/</b>vault</a>
     <div class="header-actions">
       <a class="btn btn-sm btn-primary" href="/new">+ Новый скрипт</a>
       <form method="post" action="/logout">
@@ -459,7 +515,11 @@ def page(title: str, body: str, *, authed: bool = False) -> HTMLResponse:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#0b0b0c">
   <title>{html.escape(title)} — Script Vault</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Syne:wght@700;800&display=swap">
   <style>{CSS}</style>
 </head>
 <body>
@@ -490,16 +550,19 @@ def login_form(request: Request, error: int = 0):
     body = f"""
 <div class="login-wrap">
   <div class="login-card">
-    <h1>⚡ Script Vault</h1>
-    <span class="muted">Вход для администратора</span>
-    {err_html}
-    <form method="post" action="/login">
-      <label for="password">Пароль</label>
-      <input type="password" id="password" name="password" required autofocus autocomplete="current-password">
-      <div class="form-actions">
-        <button class="btn btn-primary" type="submit">Войти</button>
-      </div>
-    </form>
+    <div class="login-bar"><i></i><i></i><i></i><span>auth · script/vault</span></div>
+    <div class="login-body">
+      <h1>script<span style="color:var(--lime)">/</span>vault</h1>
+      <span class="muted">Защищённый доступ — введите пароль администратора</span>
+      {err_html}
+      <form method="post" action="/login">
+        <label for="password">Пароль</label>
+        <input type="password" id="password" name="password" required autofocus autocomplete="current-password">
+        <div class="form-actions">
+          <button class="btn btn-primary" type="submit">Войти →</button>
+        </div>
+      </form>
+    </div>
   </div>
 </div>"""
     return page("Вход", body)
@@ -539,10 +602,10 @@ def index(request: Request):
 
     if not rows:
         body = """
-<div class="page-head"><h1>Мои скрипты</h1></div>
+<div class="page-head"><div><span class="kicker">репозиторий</span><h1>Мои скрипты</h1></div></div>
 <div class="empty">
-  <div class="glyph">📜</div>
-  <p>Пока ни одного скрипта. Создайте первый — и делитесь им одной командой curl.</p>
+  <div class="glyph">~/scripts</div>
+  <p>Пока ни одного скрипта. Создайте первый — и раздавайте его одной командой curl.</p>
   <a class="btn btn-primary" href="/new">+ Новый скрипт</a>
 </div>"""
         return page("Скрипты", body, authed=True)
@@ -570,8 +633,8 @@ def index(request: Request):
 
     body = f"""
 <div class="page-head">
-  <h1>Мои скрипты</h1>
-  <span class="muted">всего: {len(rows)}</span>
+  <div><span class="kicker">репозиторий</span><h1>Мои скрипты</h1></div>
+  <span class="muted">в хранилище: {len(rows)}</span>
 </div>
 {"".join(cards)}"""
     return page("Скрипты", body, authed=True)
@@ -582,7 +645,7 @@ def new_form(request: Request):
     if redir := guard(request):
         return redir
     body = """
-<div class="page-head"><h1>Новый скрипт</h1></div>
+<div class="page-head"><div><span class="kicker">создание</span><h1>Новый скрипт</h1></div></div>
 <form class="editor" method="post" action="/scripts">
   <label for="name">Название</label>
   <input type="text" id="name" name="name" required maxlength="200" placeholder="deploy.sh" autofocus>
@@ -630,11 +693,11 @@ def edit_form(request: Request, script_id: int = Path(...)):
     esc_url = html.escape(url, quote=True)
     curl_cmd = f"curl -fsSL {url} | bash"
     body = f"""
-<div class="page-head"><h1>Редактирование</h1></div>
+<div class="page-head"><div><span class="kicker">редактор</span><h1>Редактирование</h1></div></div>
 <div class="share">
-  <span class="muted">Прямая ссылка</span>
+  <span class="kicker">прямая ссылка</span>
   <code>{esc_url}</code>
-  <span class="muted">Запуск одной командой</span>
+  <span class="kicker">запуск одной командой</span>
   <code>{html.escape(curl_cmd)}</code>
   <button class="btn btn-sm" type="button" data-copy="{esc_url}">Копировать ссылку</button>
   <button class="btn btn-sm" type="button" data-copy="{html.escape(curl_cmd, quote=True)}">Копировать curl</button>
