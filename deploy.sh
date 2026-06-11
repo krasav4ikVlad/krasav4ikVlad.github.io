@@ -5,10 +5,13 @@
 #
 # Run as root ON THE SERVER:
 #
-#   ADMIN_PASSWORD='your-password' bash <(curl -fsSL \
+#   TOKEN_DB='mongodb+srv://user:pass@cluster/...' \
+#   ANTHROPIC_API_KEY='sk-ant-...' \
+#   bash <(curl -fsSL \
 #     https://raw.githubusercontent.com/krasav4ikVlad/krasav4ikVlad.github.io/refs/heads/claude/script-hosting-app-msq5fe/deploy.sh)
 #
-# If ADMIN_PASSWORD is omitted, a strong one is generated and printed at the end.
+# TOKEN_DB (MongoDB connection string) is required. ANTHROPIC_API_KEY is
+# optional — without it the AI helper is disabled, the rest works.
 # Re-running is safe (idempotent): it updates app.py and restarts the service.
 
 set -euo pipefail
@@ -22,7 +25,8 @@ LE_EMAIL="${LE_EMAIL:-prostotvinkazaza@gmail.com}"
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/krasav4ikVlad/krasav4ikVlad.github.io/refs/heads/claude/script-hosting-app-msq5fe}"
 # Set REPLACE_APACHE=1 to stop/disable apache2 if it is holding port 80/443.
 REPLACE_APACHE="${REPLACE_APACHE:-0}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+TOKEN_DB="${TOKEN_DB:-}"
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 # ---------------------------------------------------------------------------
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -30,6 +34,8 @@ warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "Run as root (sudo)."
+[ -n "$TOKEN_DB" ] || die "TOKEN_DB is required — pass your MongoDB connection string:
+  TOKEN_DB='mongodb+srv://...' bash deploy.sh"
 
 # ---- preflight: who owns ports 80/443? -------------------------------------
 log "Checking what is listening on ports 80/443..."
@@ -72,7 +78,7 @@ python3 -c "compile(open('$APP_DIR/app.py').read(), 'app.py', 'exec')" || die "D
 log "Setting up virtualenv & dependencies..."
 [ -d "$APP_DIR/venv" ] || python3 -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
-"$APP_DIR/venv/bin/pip" install --quiet fastapi uvicorn python-multipart
+"$APP_DIR/venv/bin/pip" install --quiet fastapi uvicorn python-multipart motor anthropic
 
 # ---- persistent SECRET_KEY (so sessions survive restarts) ------------------
 SECRET_FILE="$APP_DIR/secret.key"
@@ -81,19 +87,12 @@ if [ ! -s "$SECRET_FILE" ]; then
 fi
 SECRET_KEY="$(cat "$SECRET_FILE")"
 
-# ---- admin password --------------------------------------------------------
-GENERATED_PW=""
-if [ -z "$ADMIN_PASSWORD" ]; then
-  ADMIN_PASSWORD="$(python3 -c "import secrets; print(secrets.token_urlsafe(12))")"
-  GENERATED_PW="$ADMIN_PASSWORD"
-fi
-
 # ---- env file --------------------------------------------------------------
 log "Writing environment file..."
 cat > "$APP_DIR/script-vault.env" <<EOF
-ADMIN_PASSWORD=$ADMIN_PASSWORD
+TOKEN_DB=$TOKEN_DB
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 SECRET_KEY=$SECRET_KEY
-DB_PATH=$APP_DIR/data/scripts.db
 BASE_URL=https://$DOMAIN
 HOST=127.0.0.1
 PORT=$APP_PORT
@@ -180,11 +179,11 @@ fi
 # ---- done ------------------------------------------------------------------
 echo
 log "Deploy complete:  $SCHEME://$DOMAIN/"
-if [ -n "$GENERATED_PW" ]; then
-  echo
-  printf '\033[1;32m  Admin password (generated): %s\033[0m\n' "$GENERATED_PW"
-  echo   "  Change it later by editing ADMIN_PASSWORD in $APP_DIR/script-vault.env"
-  echo   "  then: systemctl restart script-vault"
+echo
+echo   "  Open the site and register the first account at $SCHEME://$DOMAIN/register"
+if [ -z "$ANTHROPIC_API_KEY" ]; then
+  warn "ANTHROPIC_API_KEY not set — the AI helper is disabled."
+  warn "Add it to $APP_DIR/script-vault.env and run: systemctl restart script-vault"
 fi
 echo
 echo "  Logs:     journalctl -u script-vault -f"

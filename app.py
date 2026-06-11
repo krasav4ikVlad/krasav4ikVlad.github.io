@@ -1,40 +1,63 @@
 #!/usr/bin/env python3
 """
-Script Vault — self-hosted хостинг скриптов для одного разработчика.
+Script Vault — self-hosted хостинг скриптов для команды.
 
-Один файл, FastAPI + SQLite. Вход по паролю (ADMIN_PASSWORD), сессия —
-HMAC-подписанная cookie. Каждый скрипт доступен по неугадываемой ссылке
-GET /raw/{slug} без авторизации — удобно для `curl -fsSL <url> | bash`.
+Один файл, FastAPI + MongoDB (Motor, async). Многопользовательский режим:
+регистрация и вход по логину/паролю, у каждого пользователя свои скрипты.
+Каждый скрипт доступен по неугадываемой ссылке GET /raw/{slug} без авторизации
+— удобно для `curl -fsSL <url> | bash`.
 
-Запуск:  ADMIN_PASSWORD=... SECRET_KEY=... python app.py
+ИИ-помощник: загрузите .md с описанием ноды — Claude (Anthropic) сгенерирует
+готовый установочный bash-скрипт прямо в редактор.
+
+Переменные окружения:
+  TOKEN_DB           строка подключения к MongoDB (база RS_2)
+  SECRET_KEY         секрет для подписи cookie-сессий
+  ANTHROPIC_API_KEY  ключ Claude API для ИИ-помощника
+  BASE_URL           внешний адрес для ссылок (если пуст — из заголовков)
+  HOST, PORT         адрес/порт uvicorn (по умолчанию 0.0.0.0:8000)
+
+Запуск:  TOKEN_DB=... SECRET_KEY=... ANTHROPIC_API_KEY=... python app.py
 """
 
-import hmac
 import hashlib
+import hmac
 import html
 import os
 import secrets
-import sqlite3
 import sys
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import uvicorn
-from fastapi import FastAPI, Form, Path, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi import FastAPI, File, Form, Path, Request, UploadFile
+from fastapi.responses import (
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
+from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId
+from bson.errors import InvalidId
+
+try:  # ИИ-помощник опционален — без ключа приложение работает как обычно
+    from anthropic import AsyncAnthropic
+except ImportError:
+    AsyncAnthropic = None
 
 # ----------------------------------------------------------------------------
 # Конфигурация
 # ----------------------------------------------------------------------------
 
-DEFAULT_PASSWORD = "admin"
-
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", DEFAULT_PASSWORD)
+TOKEN_DB = os.environ.get("TOKEN_DB", "mongodb://localhost:27017")
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
-DB_PATH = os.environ.get("DB_PATH", "scripts.db")
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 PORT = int(os.environ.get("PORT", "8000"))
 HOST = os.environ.get("HOST", "0.0.0.0")  # за nginx ставьте 127.0.0.1
+
+AI_MODEL = "claude-opus-4-8"
 
 COOKIE_NAME = "session"
 SESSION_TTL = 60 * 60 * 24 * 30  # 30 дней
@@ -47,96 +70,55 @@ if not SECRET_KEY:
         file=sys.stderr,
     )
 
-if ADMIN_PASSWORD == DEFAULT_PASSWORD:
+if not os.environ.get("TOKEN_DB"):
     print(
-        "[!] ВНИМАНИЕ: используется пароль по умолчанию. "
-        "Задайте переменную окружения ADMIN_PASSWORD!",
+        "[!] TOKEN_DB не задан — используется mongodb://localhost:27017. "
+        "Укажите строку подключения к вашему MongoDB в TOKEN_DB.",
         file=sys.stderr,
     )
 
 # ----------------------------------------------------------------------------
-# База данных (SQLite, только параметризованные запросы)
+# MongoDB (Motor, async)
 # ----------------------------------------------------------------------------
 
-
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_db() -> None:
-    with db() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS scripts (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                slug        TEXT NOT NULL UNIQUE,
-                name        TEXT NOT NULL,
-                content     TEXT NOT NULL,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
-            )
-            """
-        )
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def new_slug(conn: sqlite3.Connection) -> str:
-    while True:
-        slug = secrets.token_urlsafe(8)
-        row = conn.execute("SELECT 1 FROM scripts WHERE slug = ?", (slug,)).fetchone()
-        if row is None:
-            return slug
-
-
-def normalize_newlines(text: str) -> str:
-    # textarea по спецификации HTML отправляет CRLF; bash спотыкается о \r
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def fmt_dt(iso: str) -> str:
-    try:
-        return datetime.fromisoformat(iso).strftime("%d.%m.%Y %H:%M")
-    except ValueError:
-        return iso
-
+cluster = AsyncIOMotorClient(TOKEN_DB)
+db = cluster["RS_2"]
+users_col = db["users"]
+scripts_col = db["scripts"]
 
 # ----------------------------------------------------------------------------
-# Сессии: HMAC-подписанная cookie вида "<timestamp>.<signature>"
+# Anthropic (ИИ-помощник)
 # ----------------------------------------------------------------------------
 
+aclient = None
+if AsyncAnthropic is not None and os.environ.get("ANTHROPIC_API_KEY"):
+    aclient = AsyncAnthropic()
+else:
+    print(
+        "[i] ИИ-помощник выключен (нет ANTHROPIC_API_KEY или пакета anthropic). "
+        "Скрипты можно вести вручную.",
+        file=sys.stderr,
+    )
 
-def _sign(payload: str) -> str:
-    return hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
-
-
-def make_session_cookie() -> str:
-    ts = str(int(time.time()))
-    return f"{ts}.{_sign(ts)}"
-
-
-def is_authed(request: Request) -> bool:
-    cookie = request.cookies.get(COOKIE_NAME, "")
-    ts, _, sig = cookie.partition(".")
-    if not ts or not sig:
-        return False
-    if not hmac.compare_digest(_sign(ts), sig):
-        return False
-    try:
-        return time.time() - int(ts) < SESSION_TTL
-    except ValueError:
-        return False
+AI_SYSTEM = (
+    "Ты — опытный DevOps-инженер. По предоставленной документации (Markdown) о "
+    "ноде или сервисе сгенерируй полностью готовый bash-скрипт для установки и "
+    "запуска ноды на чистом Linux-сервере (Ubuntu/Debian). Требования к скрипту: "
+    "начинается с #!/usr/bin/env bash и set -euo pipefail; устанавливает все "
+    "зависимости; идемпотентен (повторный запуск безопасен); снабжён краткими "
+    "комментариями на русском. ВЫВОДИ ТОЛЬКО тело скрипта — без ограждений ```"
+    " и без каких-либо пояснений до или после кода."
+)
 
 
-def guard(request: Request) -> RedirectResponse | None:
-    """Вернуть редирект на /login, если пользователь не авторизован."""
-    if not is_authed(request):
-        return RedirectResponse("/login", status_code=303)
-    return None
+def build_ai_prompt(doc_text: str, instructions: str) -> str:
+    parts = []
+    if instructions.strip():
+        parts.append("Дополнительные требования:\n" + instructions.strip())
+    if doc_text.strip():
+        parts.append("Документация ноды (Markdown):\n\n" + doc_text.strip())
+    parts.append("Сгенерируй установочный bash-скрипт для этой ноды.")
+    return "\n\n".join(parts)
 
 
 # ----------------------------------------------------------------------------
@@ -144,16 +126,116 @@ def guard(request: Request) -> RedirectResponse | None:
 # ----------------------------------------------------------------------------
 
 
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def fmt_dt(iso: str) -> str:
+    try:
+        return datetime.fromisoformat(iso).strftime("%d.%m.%Y %H:%M")
+    except (ValueError, TypeError):
+        return str(iso)
+
+
+def normalize_newlines(text: str) -> str:
+    # textarea по спецификации HTML отправляет CRLF; bash спотыкается о \r
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+async def new_slug() -> str:
+    while True:
+        slug = secrets.token_urlsafe(8)
+        if await scripts_col.find_one({"slug": slug}) is None:
+            return slug
+
+
 def external_base(request: Request) -> str:
     if BASE_URL:
         return BASE_URL
     proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
+    host = request.headers.get(
+        "x-forwarded-host", request.headers.get("host", request.url.netloc)
+    )
     return f"{proto}://{host}"
 
 
 def raw_url(request: Request, slug: str) -> str:
     return f"{external_base(request)}/raw/{slug}"
+
+
+# ----------------------------------------------------------------------------
+# Пароли (PBKDF2-HMAC-SHA256, только стандартная библиотека)
+# ----------------------------------------------------------------------------
+
+PBKDF2_ROUNDS = 200_000
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ROUNDS)
+    return f"{salt.hex()}${dk.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        salt_hex, dk_hex = stored.split("$", 1)
+        salt = bytes.fromhex(salt_hex)
+    except (ValueError, AttributeError):
+        return False
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ROUNDS)
+    return hmac.compare_digest(dk.hex(), dk_hex)
+
+
+# ----------------------------------------------------------------------------
+# Сессии: HMAC-подписанная cookie "<user_id>.<timestamp>.<signature>"
+# ----------------------------------------------------------------------------
+
+
+def _sign(payload: str) -> str:
+    return hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+
+def make_session_cookie(user_id: str) -> str:
+    payload = f"{user_id}.{int(time.time())}"
+    return f"{payload}.{_sign(payload)}"
+
+
+def set_session(resp: RedirectResponse, user_id: str) -> None:
+    resp.set_cookie(
+        COOKIE_NAME,
+        make_session_cookie(user_id),
+        max_age=SESSION_TTL,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+def session_user_id(request: Request) -> str | None:
+    cookie = request.cookies.get(COOKIE_NAME, "")
+    parts = cookie.split(".")
+    if len(parts) != 3:
+        return None
+    user_id, ts, sig = parts
+    if not hmac.compare_digest(_sign(f"{user_id}.{ts}"), sig):
+        return None
+    try:
+        if time.time() - int(ts) > SESSION_TTL:
+            return None
+    except ValueError:
+        return None
+    return user_id
+
+
+async def current_user(request: Request) -> dict | None:
+    uid = session_user_id(request)
+    if not uid:
+        return None
+    try:
+        oid = ObjectId(uid)
+    except (InvalidId, TypeError):
+        return None
+    return await users_col.find_one({"_id": oid})
 
 
 # ----------------------------------------------------------------------------
@@ -237,6 +319,11 @@ header {
 @keyframes blink { 50% { opacity: 0; } }
 .header-actions { display: flex; gap: 10px; align-items: center; }
 .header-actions form { display: inline; }
+.user-chip {
+  font-family: var(--mono); font-size: 12px; color: var(--lime-dim);
+  border: 1px solid var(--line-bright); border-radius: 2px; padding: 6px 11px;
+}
+.user-chip::before { content: "@"; color: var(--muted); }
 
 /* headings */
 h1 {
@@ -269,6 +356,7 @@ h1 {
 }
 .btn:hover { border-color: var(--lime); color: var(--lime); transform: translate(-2px, -2px); box-shadow: 4px 4px 0 #000; }
 .btn:active { transform: translate(0, 0); box-shadow: 0 0 0 #000; }
+.btn:disabled { opacity: .5; cursor: progress; transform: none; box-shadow: none; }
 .btn-primary {
   background: var(--lime); color: #11130a; border-color: var(--lime);
   font-weight: 700; box-shadow: 4px 4px 0 #000;
@@ -345,6 +433,28 @@ input:focus, textarea:focus {
 }
 .form-actions { display: flex; gap: 12px; margin-top: 26px; flex-wrap: wrap; }
 
+/* ИИ-помощник */
+.ai-box {
+  border: 1px solid var(--line-bright); border-left: 2px solid var(--lime);
+  border-radius: 3px; padding: 16px 18px; margin: 24px 0 4px;
+  background: rgba(198, 242, 63, .03);
+  animation: rise .55s cubic-bezier(.2, .7, .2, 1) both;
+}
+.ai-box p { margin: 6px 0 14px; }
+.ai-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.ai-row input[type=text] { flex: 1; min-width: 220px; }
+.ai-file {
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+  background: #0d0d0f; border: 1px solid var(--line-bright); border-radius: 2px;
+  padding: 9px 10px; max-width: 260px;
+}
+.ai-file::file-selector-button {
+  font-family: var(--mono); font-size: 12px; margin-right: 10px;
+  background: var(--panel-2); color: var(--ink); border: 1px solid var(--line-bright);
+  border-radius: 2px; padding: 5px 11px; cursor: pointer;
+}
+.ai-file::file-selector-button:hover { border-color: var(--lime); color: var(--lime); }
+
 /* share / curl block on the edit page */
 .share {
   background: var(--panel);
@@ -382,7 +492,7 @@ input:focus, textarea:focus {
 .empty .glyph::after { content: "_"; animation: blink 1.1s steps(1) infinite; }
 .empty p { color: var(--muted); margin: 16px auto 24px; max-width: 440px; }
 
-/* login — terminal window */
+/* login / register — terminal window */
 .login-wrap { min-height: 82vh; display: flex; align-items: center; justify-content: center; }
 .login-card {
   width: 100%; max-width: 400px;
@@ -407,6 +517,9 @@ input:focus, textarea:focus {
 .login-body { padding: 32px 30px 36px; }
 .login-body h1 { font-size: 25px; }
 .login-body .muted { display: block; margin-top: 6px; }
+.login-foot { margin-top: 20px; font-size: 12.5px; color: var(--muted); }
+.login-foot a { color: var(--lime); text-decoration: none; border-bottom: 1px dashed rgba(198,242,63,.4); }
+.login-foot a:hover { color: var(--lime-soft); }
 
 .error {
   background: rgba(255, 93, 78, .1);
@@ -458,7 +571,9 @@ input:focus, textarea:focus {
   .card { padding: 16px 17px; }
   .card-actions .btn { flex: 1; justify-content: center; }
   .form-actions .btn { flex: 1; justify-content: center; }
+  .ai-row input[type=text], .ai-file, .ai-row .btn { flex: 1 1 100%; max-width: none; }
   textarea { min-height: 320px; }
+  .user-chip { display: none; }
 }
 """
 
@@ -468,12 +583,12 @@ function toast(msg) {
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(t._timer);
-  t._timer = setTimeout(() => t.classList.remove('show'), 2200);
+  t._timer = setTimeout(() => t.classList.remove('show'), 2400);
 }
 function copyText(text) {
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(text)
-      .then(() => toast('Ссылка скопирована'))
+      .then(() => toast('Скопировано'))
       .catch(() => toast('Не удалось скопировать'));
   } else {
     const ta = document.createElement('textarea');
@@ -482,7 +597,7 @@ function copyText(text) {
     ta.style.opacity = '0';
     document.body.appendChild(ta);
     ta.select();
-    try { document.execCommand('copy'); toast('Ссылка скопирована'); }
+    try { document.execCommand('copy'); toast('Скопировано'); }
     catch (e) { toast('Не удалось скопировать'); }
     document.body.removeChild(ta);
   }
@@ -491,17 +606,71 @@ document.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-copy]');
   if (btn) copyText(btn.dataset.copy);
 });
+
+async function aiGenerate(btn) {
+  const file = document.getElementById('ai-file');
+  const instr = document.getElementById('ai-instructions');
+  const target = document.getElementById('content');
+  if ((!file.files || !file.files[0]) && !instr.value.trim()) {
+    toast('Прикрепите .md или опишите задачу');
+    return;
+  }
+  const fd = new FormData();
+  if (file.files && file.files[0]) fd.append('md', file.files[0]);
+  fd.append('instructions', instr.value || '');
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Генерирую…';
+  target.value = '';
+  try {
+    const resp = await fetch('/ai/generate', { method: 'POST', body: fd });
+    if (!resp.ok) {
+      const msg = await resp.text();
+      toast(msg || 'Ошибка генерации');
+    } else {
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        target.value += dec.decode(value, { stream: true });
+        target.scrollTop = target.scrollHeight;
+      }
+      toast('Скрипт сгенерирован');
+    }
+  } catch (e) {
+    toast('Ошибка сети');
+  }
+  btn.disabled = false;
+  btn.textContent = label;
+}
 """
 
 
-def page(title: str, body: str, *, authed: bool = False) -> HTMLResponse:
+def ai_panel() -> str:
+    if aclient is None:
+        return ""
+    return """
+<div class="ai-box">
+  <span class="kicker">ии-помощник</span>
+  <p class="muted">Загрузите .md с описанием ноды — Claude сгенерирует установочный bash-скрипт прямо в поле «Содержимое» ниже.</p>
+  <div class="ai-row">
+    <input class="ai-file" type="file" id="ai-file" accept=".md,.markdown,.txt">
+    <input type="text" id="ai-instructions" placeholder="доп. указания (необязательно): порт, версия, окружение…">
+    <button class="btn btn-primary" type="button" onclick="aiGenerate(this)">Сгенерировать</button>
+  </div>
+</div>"""
+
+
+def page(title: str, body: str, *, user: str | None = None) -> HTMLResponse:
     header = ""
-    if authed:
-        header = """
+    if user:
+        header = f"""
 <header>
   <div class="header-inner">
     <a class="logo" href="/">script<b>/</b>vault</a>
     <div class="header-actions">
+      <span class="user-chip">{html.escape(user)}</span>
       <a class="btn btn-sm btn-primary" href="/new">+ Новый скрипт</a>
       <form method="post" action="/logout">
         <button class="btn btn-sm" type="submit">Выйти</button>
@@ -538,67 +707,128 @@ def page(title: str, body: str, *, authed: bool = False) -> HTMLResponse:
 # Приложение и роуты
 # ----------------------------------------------------------------------------
 
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-init_db()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        await users_col.create_index("username", unique=True)
+        await scripts_col.create_index("slug", unique=True)
+        await scripts_col.create_index("owner")
+    except Exception as e:  # не валим старт, если БД временно недоступна
+        print(f"[!] Не удалось создать индексы MongoDB: {e}", file=sys.stderr)
+    yield
 
 
-@app.get("/login")
-def login_form(request: Request, error: int = 0):
-    if is_authed(request):
-        return RedirectResponse("/", status_code=303)
-    err_html = '<div class="error">Неверный пароль</div>' if error else ""
-    body = f"""
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+
+
+# ---- регистрация / вход ----------------------------------------------------
+
+
+def auth_card(mode: str, error: str = "") -> str:
+    err_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
+    if mode == "register":
+        title, action, btn = "Регистрация", "/register", "Создать аккаунт →"
+        foot = 'Уже есть аккаунт? <a href="/login">Войти</a>'
+        sub = "Создайте аккаунт для своих скриптов"
+        bar = "register · script/vault"
+    else:
+        title, action, btn = "Вход", "/login", "Войти →"
+        foot = 'Нет аккаунта? <a href="/register">Зарегистрироваться</a>'
+        sub = "Введите логин и пароль"
+        bar = "auth · script/vault"
+    return f"""
 <div class="login-wrap">
   <div class="login-card">
-    <div class="login-bar"><i></i><i></i><i></i><span>auth · script/vault</span></div>
+    <div class="login-bar"><i></i><i></i><i></i><span>{bar}</span></div>
     <div class="login-body">
       <h1>script<span style="color:var(--lime)">/</span>vault</h1>
-      <span class="muted">Защищённый доступ — введите пароль администратора</span>
+      <span class="muted">{sub}</span>
       {err_html}
-      <form method="post" action="/login">
+      <form method="post" action="{action}">
+        <label for="username">Логин</label>
+        <input type="text" id="username" name="username" required autofocus
+               autocomplete="username" maxlength="32">
         <label for="password">Пароль</label>
-        <input type="password" id="password" name="password" required autofocus autocomplete="current-password">
+        <input type="password" id="password" name="password" required
+               autocomplete="{'new-password' if mode == 'register' else 'current-password'}">
         <div class="form-actions">
-          <button class="btn btn-primary" type="submit">Войти →</button>
+          <button class="btn btn-primary" type="submit">{btn}</button>
         </div>
       </form>
+      <div class="login-foot">{foot}</div>
     </div>
   </div>
 </div>"""
-    return page("Вход", body)
+
+
+@app.get("/login")
+async def login_form(request: Request, error: int = 0):
+    if await current_user(request):
+        return RedirectResponse("/", status_code=303)
+    msg = "Неверный логин или пароль" if error else ""
+    return page("Вход", auth_card("login", msg))
 
 
 @app.post("/login")
-def login(password: str = Form(...)):
-    if not hmac.compare_digest(password.encode(), ADMIN_PASSWORD.encode()):
+async def login(username: str = Form(...), password: str = Form(...)):
+    user = await users_col.find_one({"username": username.strip().lower()})
+    if user is None or not verify_password(password, user.get("password", "")):
         return RedirectResponse("/login?error=1", status_code=303)
     resp = RedirectResponse("/", status_code=303)
-    resp.set_cookie(
-        COOKIE_NAME,
-        make_session_cookie(),
-        max_age=SESSION_TTL,
-        httponly=True,
-        samesite="lax",
-        path="/",
+    set_session(resp, str(user["_id"]))
+    return resp
+
+
+@app.get("/register")
+async def register_form(request: Request):
+    if await current_user(request):
+        return RedirectResponse("/", status_code=303)
+    return page("Регистрация", auth_card("register"))
+
+
+@app.post("/register")
+async def register(username: str = Form(...), password: str = Form(...)):
+    uname = username.strip().lower()
+    if not (3 <= len(uname) <= 32) or not all(c.isalnum() or c in "_-." for c in uname):
+        return page(
+            "Регистрация",
+            auth_card("register", "Логин: 3–32 символа, буквы/цифры/._-"),
+        )
+    if len(password) < 6:
+        return page("Регистрация", auth_card("register", "Пароль — минимум 6 символов"))
+    if await users_col.find_one({"username": uname}):
+        return page("Регистрация", auth_card("register", "Такой логин уже занят"))
+    result = await users_col.insert_one(
+        {"username": uname, "password": hash_password(password), "created_at": now_iso()}
     )
+    resp = RedirectResponse("/", status_code=303)
+    set_session(resp, str(result.inserted_id))
     return resp
 
 
 @app.post("/logout")
-def logout():
+async def logout():
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie(COOKIE_NAME, path="/")
     return resp
 
 
+# ---- список / редактор -----------------------------------------------------
+
+
 @app.get("/")
-def index(request: Request):
-    if redir := guard(request):
-        return redir
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT id, slug, name, updated_at FROM scripts ORDER BY updated_at DESC"
-        ).fetchall()
+async def index(request: Request):
+    user = await current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    uname = user["username"]
+    owner = str(user["_id"])
+    rows = (
+        await scripts_col.find({"owner": owner})
+        .sort("updated_at", -1)
+        .to_list(length=1000)
+    )
 
     if not rows:
         body = """
@@ -608,23 +838,24 @@ def index(request: Request):
   <p>Пока ни одного скрипта. Создайте первый — и раздавайте его одной командой curl.</p>
   <a class="btn btn-primary" href="/new">+ Новый скрипт</a>
 </div>"""
-        return page("Скрипты", body, authed=True)
+        return page("Скрипты", body, user=uname)
 
     cards = []
     for i, row in enumerate(rows):
         url = raw_url(request, row["slug"])
         esc_url = html.escape(url, quote=True)
+        sid = str(row["_id"])
         cards.append(f"""
 <div class="card" style="animation-delay: {min(i * 60, 480)}ms">
   <div class="card-top">
     <span class="card-name">{html.escape(row["name"])}</span>
-    <span class="muted">обновлён {html.escape(fmt_dt(row["updated_at"]))}</span>
+    <span class="muted">обновлён {html.escape(fmt_dt(row.get("updated_at")))}</span>
   </div>
   <a class="card-url" href="{esc_url}" target="_blank" rel="noopener">{esc_url}</a>
   <div class="card-actions">
     <button class="btn btn-sm" type="button" data-copy="{esc_url}">Копировать ссылку</button>
-    <a class="btn btn-sm" href="/scripts/{row["id"]}/edit">Изменить</a>
-    <form method="post" action="/scripts/{row["id"]}/delete"
+    <a class="btn btn-sm" href="/scripts/{sid}/edit">Изменить</a>
+    <form method="post" action="/scripts/{sid}/delete"
           onsubmit="return confirm('Удалить скрипт «{html.escape(row["name"], quote=True)}»? Это действие необратимо.')">
       <button class="btn btn-sm btn-danger" type="submit">Удалить</button>
     </form>
@@ -637,18 +868,20 @@ def index(request: Request):
   <span class="muted">в хранилище: {len(rows)}</span>
 </div>
 {"".join(cards)}"""
-    return page("Скрипты", body, authed=True)
+    return page("Скрипты", body, user=uname)
 
 
 @app.get("/new")
-def new_form(request: Request):
-    if redir := guard(request):
-        return redir
-    body = """
+async def new_form(request: Request):
+    user = await current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    body = f"""
 <div class="page-head"><div><span class="kicker">создание</span><h1>Новый скрипт</h1></div></div>
 <form class="editor" method="post" action="/scripts">
   <label for="name">Название</label>
-  <input type="text" id="name" name="name" required maxlength="200" placeholder="deploy.sh" autofocus>
+  <input type="text" id="name" name="name" required maxlength="200" placeholder="install-node.sh" autofocus>
+  {ai_panel()}
   <label for="content">Содержимое</label>
   <textarea id="content" name="content" spellcheck="false" placeholder="#!/usr/bin/env bash&#10;set -euo pipefail&#10;..."></textarea>
   <div class="form-actions">
@@ -656,38 +889,52 @@ def new_form(request: Request):
     <a class="btn" href="/">Отмена</a>
   </div>
 </form>"""
-    return page("Новый скрипт", body, authed=True)
+    return page("Новый скрипт", body, user=user["username"])
 
 
 @app.post("/scripts")
-def create_script(request: Request, name: str = Form(...), content: str = Form("")):
-    if redir := guard(request):
-        return redir
+async def create_script(
+    request: Request, name: str = Form(...), content: str = Form("")
+):
+    user = await current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
     name = name.strip() or "Без названия"
-    content = normalize_newlines(content)
     ts = now_iso()
-    with db() as conn:
-        slug = new_slug(conn)
-        cur = conn.execute(
-            "INSERT INTO scripts (slug, name, content, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (slug, name, content, ts, ts),
-        )
-        script_id = cur.lastrowid
-    return RedirectResponse(f"/scripts/{script_id}/edit", status_code=303)
+    slug = await new_slug()
+    result = await scripts_col.insert_one(
+        {
+            "slug": slug,
+            "name": name,
+            "content": normalize_newlines(content),
+            "owner": str(user["_id"]),
+            "created_at": ts,
+            "updated_at": ts,
+        }
+    )
+    return RedirectResponse(f"/scripts/{result.inserted_id}/edit", status_code=303)
+
+
+async def _owned_script(request: Request, script_id: str):
+    """Вернуть (user, script) или (user, None) — гарантирует владельца."""
+    user = await current_user(request)
+    if not user:
+        return None, None
+    try:
+        oid = ObjectId(script_id)
+    except (InvalidId, TypeError):
+        return user, None
+    script = await scripts_col.find_one({"_id": oid, "owner": str(user["_id"])})
+    return user, script
 
 
 @app.get("/scripts/{script_id}/edit")
-def edit_form(request: Request, script_id: int = Path(...)):
-    if redir := guard(request):
-        return redir
-    with db() as conn:
-        row = conn.execute(
-            "SELECT id, slug, name, content, updated_at FROM scripts WHERE id = ?",
-            (script_id,),
-        ).fetchone()
+async def edit_form(request: Request, script_id: str = Path(...)):
+    user, row = await _owned_script(request, script_id)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
     if row is None:
-        return page("Не найдено", "<h1>Скрипт не найден</h1>", authed=True)
+        return page("Не найдено", "<h1>Скрипт не найден</h1>", user=user["username"])
 
     url = raw_url(request, row["slug"])
     esc_url = html.escape(url, quote=True)
@@ -702,9 +949,10 @@ def edit_form(request: Request, script_id: int = Path(...)):
   <button class="btn btn-sm" type="button" data-copy="{esc_url}">Копировать ссылку</button>
   <button class="btn btn-sm" type="button" data-copy="{html.escape(curl_cmd, quote=True)}">Копировать curl</button>
 </div>
-<form class="editor" method="post" action="/scripts/{row["id"]}">
+<form class="editor" method="post" action="/scripts/{script_id}">
   <label for="name">Название</label>
   <input type="text" id="name" name="name" required maxlength="200" value="{html.escape(row["name"], quote=True)}">
+  {ai_panel()}
   <label for="content">Содержимое</label>
   <textarea id="content" name="content" spellcheck="false">{html.escape(row["content"])}</textarea>
   <div class="form-actions">
@@ -712,44 +960,95 @@ def edit_form(request: Request, script_id: int = Path(...)):
     <a class="btn" href="/">К списку</a>
   </div>
 </form>"""
-    return page(f"Редактирование — {row['name']}", body, authed=True)
+    return page(f"Редактирование — {row['name']}", body, user=user["username"])
 
 
 @app.post("/scripts/{script_id}")
-def update_script(
+async def update_script(
     request: Request,
-    script_id: int = Path(...),
+    script_id: str = Path(...),
     name: str = Form(...),
     content: str = Form(""),
 ):
-    if redir := guard(request):
-        return redir
-    name = name.strip() or "Без названия"
-    content = normalize_newlines(content)
-    with db() as conn:
-        conn.execute(
-            "UPDATE scripts SET name = ?, content = ?, updated_at = ? WHERE id = ?",
-            (name, content, now_iso(), script_id),
-        )
+    user, row = await _owned_script(request, script_id)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if row is None:
+        return RedirectResponse("/", status_code=303)
+    await scripts_col.update_one(
+        {"_id": row["_id"]},
+        {
+            "$set": {
+                "name": name.strip() or "Без названия",
+                "content": normalize_newlines(content),
+                "updated_at": now_iso(),
+            }
+        },
+    )
     return RedirectResponse(f"/scripts/{script_id}/edit", status_code=303)
 
 
 @app.post("/scripts/{script_id}/delete")
-def delete_script(request: Request, script_id: int = Path(...)):
-    if redir := guard(request):
-        return redir
-    with db() as conn:
-        conn.execute("DELETE FROM scripts WHERE id = ?", (script_id,))
+async def delete_script(request: Request, script_id: str = Path(...)):
+    user, row = await _owned_script(request, script_id)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if row is not None:
+        await scripts_col.delete_one({"_id": row["_id"]})
     return RedirectResponse("/", status_code=303)
 
 
+# ---- ИИ-помощник -----------------------------------------------------------
+
+
+@app.post("/ai/generate")
+async def ai_generate(
+    request: Request,
+    md: UploadFile = File(None),
+    instructions: str = Form(""),
+):
+    user = await current_user(request)
+    if not user:
+        return PlainTextResponse("Требуется вход", status_code=401)
+    if aclient is None:
+        return PlainTextResponse(
+            "ИИ недоступен: задайте ANTHROPIC_API_KEY", status_code=503
+        )
+
+    doc_text = ""
+    if md is not None:
+        raw = await md.read()
+        doc_text = raw.decode("utf-8", errors="replace")
+    if not doc_text.strip() and not instructions.strip():
+        return PlainTextResponse("Прикрепите .md или опишите задачу", status_code=400)
+
+    prompt = build_ai_prompt(doc_text, instructions)
+
+    async def gen():
+        try:
+            async with aclient.messages.stream(
+                model=AI_MODEL,
+                max_tokens=8000,
+                system=AI_SYSTEM,
+                thinking={"type": "adaptive"},
+                output_config={"effort": "medium"},
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                async for text in stream.text_stream:
+                    yield text
+        except Exception as e:  # ошибки Claude отдаём в поток как комментарий
+            yield f"\n# Ошибка генерации: {e}\n"
+
+    return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
+
+
+# ---- публичная выдача ------------------------------------------------------
+
+
 @app.get("/raw/{slug}")
-def raw(slug: str):
+async def raw(slug: str):
     """Публичная выдача скрипта — без авторизации, защищено неугадываемым slug."""
-    with db() as conn:
-        row = conn.execute(
-            "SELECT content FROM scripts WHERE slug = ?", (slug,)
-        ).fetchone()
+    row = await scripts_col.find_one({"slug": slug})
     if row is None:
         return PlainTextResponse("Not found\n", status_code=404)
     return PlainTextResponse(

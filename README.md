@@ -1,79 +1,62 @@
 # ⚡ Script Vault
 
-Self-hosted хостинг скриптов для одного разработчика. Один файл `app.py`:
-FastAPI + SQLite, HTML встроен в код. Вход по паролю, каждый скрипт доступен
-по неугадываемой ссылке для `curl -fsSL <url> | bash`.
+Self-hosted хостинг скриптов для команды. Один файл `app.py`: FastAPI + MongoDB
+(Motor, async), HTML встроен в код. Регистрация и вход по логину/паролю — у
+каждого пользователя свои скрипты. Каждый скрипт доступен по неугадываемой
+ссылке для `curl -fsSL <url> | bash`.
+
+Дополнительно: **ИИ-помощник** — загрузите `.md` с описанием ноды, и Claude
+(Anthropic) сгенерирует готовый установочный bash-скрипт прямо в редакторе.
 
 ## Запуск
 
 ```bash
-pip install fastapi uvicorn python-multipart
+pip install fastapi uvicorn python-multipart motor anthropic
 
-ADMIN_PASSWORD='ваш-пароль' \
+TOKEN_DB='mongodb+srv://user:pass@cluster/...' \
 SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+ANTHROPIC_API_KEY='sk-ant-...' \
 python app.py
 ```
 
-Приложение слушает `0.0.0.0:8000` (порт — переменная `PORT`).
+Приложение слушает `0.0.0.0:8000` (порт — переменная `PORT`). Откройте
+`/register`, создайте аккаунт — и можно добавлять скрипты.
 
 ## Переменные окружения
 
-| Переменная       | Назначение                                              | По умолчанию |
-|------------------|---------------------------------------------------------|--------------|
-| `ADMIN_PASSWORD` | Пароль для входа                                        | `admin` (с предупреждением в консоль) |
-| `SECRET_KEY`     | Секрет для подписи cookie-сессий                        | генерируется на старте (сессии слетают при рестарте) |
-| `DB_PATH`        | Путь к файлу SQLite                                     | `scripts.db` |
-| `BASE_URL`       | Внешний адрес для отображаемых ссылок                   | берётся из заголовков запроса |
-| `PORT`           | Порт HTTP                                               | `8000`       |
+| Переменная          | Назначение                                              | По умолчанию |
+|---------------------|---------------------------------------------------------|--------------|
+| `TOKEN_DB`          | Строка подключения к MongoDB (база `RS_2`)              | `mongodb://localhost:27017` (с предупреждением) |
+| `SECRET_KEY`        | Секрет для подписи cookie-сессий                        | генерируется на старте (сессии слетают при рестарте) |
+| `ANTHROPIC_API_KEY` | Ключ Claude API для ИИ-помощника                        | не задан → помощник выключен |
+| `BASE_URL`          | Внешний адрес для отображаемых ссылок                   | берётся из заголовков запроса |
+| `HOST` / `PORT`     | Адрес и порт uvicorn                                    | `0.0.0.0` / `8000` |
 
-## Деплой за Nginx
+Хранилище — MongoDB, база `RS_2`, коллекции `users` и `scripts`. Подключение
+создаётся как `AsyncIOMotorClient(TOKEN_DB)`; индексы (уникальные `username` и
+`slug`) создаются при старте.
 
-systemd-юнит (`/etc/systemd/system/script-vault.service`):
+ИИ-помощник использует модель `claude-opus-4-8` через официальный SDK
+`anthropic` (`AsyncAnthropic`) с потоковой генерацией — скрипт печатается в поле
+по мере генерации.
 
-```ini
-[Unit]
-Description=Script Vault
-After=network.target
+## Деплой за Nginx (одной командой)
 
-[Service]
-WorkingDirectory=/opt/script-vault
-Environment=ADMIN_PASSWORD=ваш-пароль
-Environment=SECRET_KEY=длинный-случайный-секрет
-Environment=BASE_URL=https://scripts.example.com
-Environment=PORT=8000
-ExecStart=/opt/script-vault/venv/bin/python app.py
-Restart=always
-User=www-data
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Конфиг Nginx:
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name scripts.example.com;
-
-    # ssl_certificate / ssl_certificate_key — например, от certbot
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-    }
-}
-```
-
-Затем:
+На сервере под root:
 
 ```bash
-systemctl enable --now script-vault
-nginx -t && systemctl reload nginx
+TOKEN_DB='mongodb+srv://...' ANTHROPIC_API_KEY='sk-ant-...' bash <(curl -fsSL \
+  https://raw.githubusercontent.com/krasav4ikVlad/krasav4ikVlad.github.io/refs/heads/claude/script-hosting-app-msq5fe/deploy.sh)
 ```
 
-Cookie сессии — HMAC-подписанная, страницы управления закрыты паролем,
-публичный только `GET /raw/{slug}` (slug — `secrets.token_urlsafe(8)`,
-перебором не угадывается).
+Скрипт `deploy.sh` ставит зависимости, создаёт venv и systemd-сервис на
+`127.0.0.1:8000`, настраивает nginx-vhost для `scripts.nodewiki.info` и получает
+TLS-сертификат Let's Encrypt. `TOKEN_DB` обязателен; `ANTHROPIC_API_KEY`
+опционален (без него помощник просто выключен). Если порты 80/443 уже заняты
+apache — перезапустите с `REPLACE_APACHE=1`.
+
+После деплоя зарегистрируйте первый аккаунт на `https://scripts.nodewiki.info/register`.
+
+Безопасность: cookie сессии HMAC-подписана, страницы управления закрыты
+авторизацией, пароли хранятся как PBKDF2-HMAC-SHA256. Публичный только
+`GET /raw/{slug}` (slug — `secrets.token_urlsafe(8)`, перебором не угадывается).
