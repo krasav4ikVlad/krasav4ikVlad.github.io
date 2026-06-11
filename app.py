@@ -198,19 +198,13 @@ AI_SYSTEM = (
 )
 
 
-def build_ai_prompt(doc_text: str, instructions: str, interpreter: str = "bash") -> str:
+def build_ai_prompt(doc_text: str, instructions: str) -> str:
     parts = []
-    label = INTERPRETERS[norm_interpreter(interpreter)]["label"]
-    if interpreter not in ("bash", "sh"):
-        parts.append(
-            f"ВАЖНО: целевой интерпретатор — {label}. Сгенерируй код именно для него "
-            "(требования к bash из системного промпта адаптируй под этот язык)."
-        )
     if instructions.strip():
         parts.append("Дополнительные требования:\n" + instructions.strip())
     if doc_text.strip():
         parts.append("Документация ноды (Markdown):\n\n" + doc_text.strip())
-    parts.append("Сгенерируй установочный скрипт для этой ноды.")
+    parts.append("Сгенерируй установочный bash-скрипт для этой ноды.")
     return "\n\n".join(parts)
 
 
@@ -254,40 +248,6 @@ def substitute_vars(content: str, variables: dict[str, str]) -> str:
     return VAR_PLACEHOLDER_RE.sub(
         lambda m: variables.get(m.group(1), m.group(0)), content
     )
-
-
-# ---- интерпретаторы: команда запуска + язык подсветки -------------------------
-
-INTERPRETERS: dict[str, dict] = {
-    "bash":   {"label": "Bash",        "pipe": "bash",    "hl": "bash"},
-    "sh":     {"label": "Sh (POSIX)",  "pipe": "sh",      "hl": "bash"},
-    "python": {"label": "Python 3",    "pipe": "python3", "hl": "python"},
-    "node":   {"label": "Node.js",     "pipe": "node",    "hl": "javascript"},
-    "ruby":   {"label": "Ruby",        "pipe": "ruby",    "hl": "ruby"},
-    "perl":   {"label": "Perl",        "pipe": "perl",    "hl": "perl"},
-    "yaml":   {"label": "YAML",        "pipe": "",        "hl": "yaml"},
-    "json":   {"label": "JSON",        "pipe": "",        "hl": "json"},
-    "ini":    {"label": "INI / conf",  "pipe": "",        "hl": "ini"},
-    "plain":  {"label": "Текст",       "pipe": "",        "hl": "plaintext"},
-}
-DEFAULT_INTERPRETER = "bash"
-
-
-def norm_interpreter(value: str) -> str:
-    return value if value in INTERPRETERS else DEFAULT_INTERPRETER
-
-
-def script_interp(row: dict) -> dict:
-    return INTERPRETERS[norm_interpreter(row.get("interpreter", DEFAULT_INTERPRETER))]
-
-
-def run_command(url: str, row: dict) -> str:
-    """Команда запуска/скачивания в зависимости от интерпретатора."""
-    interp = script_interp(row)
-    if interp["pipe"]:
-        return f"curl -fsSL {url} | {interp['pipe']}"
-    fname = re.sub(r"[^A-Za-z0-9._-]", "_", row.get("name", "script")) or "script"
-    return f"curl -fsSL {url} -o {fname}"
 
 
 # ---- теги и папки ------------------------------------------------------------
@@ -714,7 +674,7 @@ input[type=search]:focus {
 .card-chips .chip { font-size: 11px; padding: 3px 8px; }
 
 /* двухколоночные поля редактора и форма переменных */
-.field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .vars-hint { margin-top: 10px; }
 .vars-hint code {
   font-family: var(--mono); font-size: 12px; color: var(--lime);
@@ -737,97 +697,6 @@ input[type=search]:focus {
 }
 .var-value { color: var(--muted); font-family: var(--mono); font-size: 12.5px; flex: 1; overflow: hidden; text-overflow: ellipsis; }
 .var-row form { display: inline; }
-
-/* select интерпретатора */
-select {
-  width: 100%;
-  padding: 12px 14px;
-  border-radius: 2px;
-  border: 1px solid var(--line-bright);
-  background: #0d0d0f;
-  color: var(--ink);
-  font-family: var(--mono); font-size: 14px;
-  cursor: pointer;
-  appearance: none; -webkit-appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--lime-dim) 50%),
-                    linear-gradient(135deg, var(--lime-dim) 50%, transparent 50%);
-  background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
-  background-size: 5px 5px;
-  background-repeat: no-repeat;
-  transition: border-color .15s ease, box-shadow .15s ease;
-}
-select:focus {
-  outline: none; border-color: var(--lime);
-  box-shadow: 0 0 0 1px var(--lime), 0 0 24px rgba(198, 242, 63, .13);
-}
-.chip-lang {
-  border-style: solid; border-color: rgba(198, 242, 63, .4);
-  color: var(--lime-dim); cursor: default;
-}
-.chip-lang:hover { transform: none; box-shadow: none; color: var(--lime-dim); border-color: rgba(198,242,63,.4); }
-
-/* ====== редактор кода: подсветка под прозрачным textarea ====== */
-.code-editor { position: relative; }
-.code-editor .hl-pre {
-  position: absolute; inset: 0; z-index: 0;
-  margin: 0; padding: 12px 14px;
-  border: 1px solid transparent; /* те же метрики, что у textarea */
-  overflow: auto;
-  background: #0d0d0f;
-  border-radius: 2px;
-  pointer-events: none;
-}
-.code-editor .hl-pre code {
-  font-family: var(--mono); font-size: 13px; line-height: 1.65;
-  white-space: pre; tab-size: 4;
-  background: transparent; padding: 0; border: none;
-  display: block; min-width: max-content;
-}
-.code-editor textarea {
-  position: relative; z-index: 1;
-  background: transparent;
-  caret-color: var(--lime);
-}
-.code-editor.hl-on textarea {
-  color: transparent;             /* текст рисует подсветка под ним */
-  -webkit-text-fill-color: transparent;
-}
-.code-editor.hl-on textarea::selection {
-  background: rgba(198, 242, 63, .28);
-  color: transparent; -webkit-text-fill-color: transparent;
-}
-.code-editor textarea::placeholder { color: #494842; -webkit-text-fill-color: #494842; }
-
-/* просмотр версии с подсветкой */
-.code-view {
-  margin: 0; padding: 12px 14px;
-  background: #0d0d0f;
-  border: 1px solid var(--line-bright); border-radius: 2px;
-  overflow: auto; max-height: 70vh;
-  animation: rise .55s cubic-bezier(.2, .7, .2, 1) both;
-}
-.code-view code {
-  font-family: var(--mono); font-size: 13px; line-height: 1.65;
-  white-space: pre; tab-size: 4;
-  background: transparent; display: block;
-}
-
-/* ====== тема подсветки: фосфорный терминал ====== */
-.hljs { color: var(--ink); background: transparent; }
-.hljs-comment, .hljs-quote { color: #6b6960; font-style: italic; }
-.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-name { color: var(--lime); }
-.hljs-built_in, .hljs-type, .hljs-symbol { color: #38e1c2; }
-.hljs-string, .hljs-regexp, .hljs-addition { color: #ffd28a; }
-.hljs-number, .hljs-link { color: #7ee8fa; }
-.hljs-title, .hljs-section, .hljs-attribute, .hljs-attr { color: #9aa8ff; }
-.hljs-variable, .hljs-template-variable, .hljs-subst, .hljs-params { color: #ff9d8f; }
-.hljs-meta, .hljs-doctag { color: #817e75; }
-.hljs-meta .hljs-keyword, .hljs-meta-keyword { color: #9cbf33; }
-.hljs-deletion { color: var(--coral); }
-.hljs-emphasis { font-style: italic; }
-.hljs-strong { font-weight: 700; }
-.hljs-bullet, .hljs-selector-id, .hljs-selector-class { color: #38e1c2; }
-.hljs-formula, .hljs-code { color: #ffd28a; }
 
 @media (max-width: 560px) {
   .field-row { grid-template-columns: 1fr; }
@@ -975,8 +844,6 @@ async function aiGenerate(btn) {
   const fd = new FormData();
   if (file.files && file.files[0]) fd.append('md', file.files[0]);
   fd.append('instructions', instr.value || '');
-  const interp = document.getElementById('interpreter');
-  if (interp) fd.append('interpreter', interp.value);
   const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Генерирую…';
@@ -1000,51 +867,9 @@ async function aiGenerate(btn) {
   } catch (e) {
     toast('Ошибка сети');
   }
-  target.dispatchEvent(new Event('input'));  // перерисовать подсветку
   btn.disabled = false;
   btn.textContent = label;
 }
-
-/* живой редактор с подсветкой: pre/code под прозрачным textarea */
-function initCodeEditor() {
-  const ta = document.getElementById('content');
-  const codeEl = document.getElementById('hl-code');
-  if (!ta || !codeEl || typeof hljs === 'undefined') return;
-  const wrap = ta.closest('.code-editor');
-  const pre = codeEl.parentElement;
-  const sel = document.getElementById('interpreter');
-  const lang = () =>
-    (sel && sel.selectedOptions[0] && sel.selectedOptions[0].dataset.hl) ||
-    codeEl.dataset.hl || 'bash';
-  function render() {
-    let out;
-    try { out = hljs.highlight(ta.value, { language: lang(), ignoreIllegals: true }).value; }
-    catch (e) { out = ta.value.replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
-    codeEl.innerHTML = out + '\\n';
-    sync();
-  }
-  function sync() { pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft; }
-  ta.addEventListener('input', render);
-  ta.addEventListener('scroll', sync);
-  if (sel) sel.addEventListener('change', render);
-  ta.addEventListener('keydown', (e) => {   // Tab вставляет отступ, не уводит фокус
-    if (e.key === 'Tab' && !e.shiftKey) {
-      e.preventDefault();
-      const s = ta.selectionStart, en = ta.selectionEnd;
-      ta.value = ta.value.slice(0, s) + '    ' + ta.value.slice(en);
-      ta.selectionStart = ta.selectionEnd = s + 4;
-      render();
-    }
-  });
-  new ResizeObserver(sync).observe(ta);     // ручной resize textarea
-  wrap.classList.add('hl-on');              // текст textarea станет прозрачным
-  render();
-}
-document.addEventListener('DOMContentLoaded', () => {
-  initCodeEditor();
-  if (typeof hljs !== 'undefined')
-    document.querySelectorAll('.code-view code').forEach((el) => hljs.highlightElement(el));
-});
 """
 
 
@@ -1070,13 +895,7 @@ def ai_panel(user: dict) -> str:
 </div>"""
 
 
-HLJS_URL = "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"
-HLJS_SRI = "sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp"
-
-
-def page(
-    title: str, body: str, *, user: str | None = None, code: bool = False
-) -> HTMLResponse:
+def page(title: str, body: str, *, user: str | None = None) -> HTMLResponse:
     header = ""
     if user:
         header = f"""
@@ -1111,7 +930,6 @@ def page(
 {body}
 </div>
 <div id="toast"></div>
-{f'<script src="{HLJS_URL}" integrity="{HLJS_SRI}" crossorigin="anonymous"></script>' if code else ""}
 <script>{JS}</script>
 </body>
 </html>"""
@@ -1154,7 +972,7 @@ async def security_headers(request: Request, call_next):
             "default-src 'self'; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src https://fonts.gstatic.com; "
-            "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
+            "script-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; connect-src 'self'; "
             "frame-ancestors 'none'"
         )
@@ -1355,14 +1173,16 @@ async def index(request: Request, q: str = "", folder: str = "", tag: str = ""):
         sid = str(row["_id"])
         row_folder = row.get("folder", "")
         row_tags = row.get("tags", [])
-        chips = f'<span class="chip chip-lang">{html.escape(script_interp(row)["label"].lower())}</span>'
-        if row_folder:
-            chips += f'<a class="chip" href="{filt_url(folder=row_folder)}">▸ {html.escape(row_folder)}</a>'
-        chips += "".join(
-            f'<a class="chip chip-tag" href="{filt_url(tag=t)}">#{html.escape(t)}</a>'
-            for t in row_tags
-        )
-        meta_chips = f'<div class="chips-row card-chips">{chips}</div>'
+        meta_chips = ""
+        if row_folder or row_tags:
+            chips = ""
+            if row_folder:
+                chips += f'<a class="chip" href="{filt_url(folder=row_folder)}">▸ {html.escape(row_folder)}</a>'
+            chips += "".join(
+                f'<a class="chip chip-tag" href="{filt_url(tag=t)}">#{html.escape(t)}</a>'
+                for t in row_tags
+            )
+            meta_chips = f'<div class="chips-row card-chips">{chips}</div>'
         cards.append(f"""
 <div class="card" style="animation-delay: {min(i * 60, 480)}ms">
   <div class="card-top">
@@ -1397,14 +1217,8 @@ async def index(request: Request, q: str = "", folder: str = "", tag: str = ""):
     return page("Скрипты", body, user=uname)
 
 
-async def editor_meta_fields(
-    user: dict,
-    *,
-    folder: str = "",
-    tags: list | None = None,
-    interpreter: str = DEFAULT_INTERPRETER,
-) -> str:
-    """Папка, теги, интерпретатор + datalist папок + подсказка о переменных."""
+async def editor_meta_fields(user: dict, *, folder: str = "", tags: list | None = None) -> str:
+    """Поля «Папка» и «Теги» + datalist существующих папок + подсказка о переменных."""
     folders = sorted(
         f
         for f in await scripts_col.distinct("folder", {"owner": str(user["_id"])})
@@ -1412,11 +1226,6 @@ async def editor_meta_fields(
     )
     options = "".join(
         f'<option value="{html.escape(f, quote=True)}">' for f in folders
-    )
-    interpreter = norm_interpreter(interpreter)
-    interp_options = "".join(
-        f'<option value="{key}" data-hl="{meta["hl"]}"{" selected" if key == interpreter else ""}>{meta["label"]}</option>'
-        for key, meta in INTERPRETERS.items()
     )
     var_names = sorted(user_variables(user))
     if var_names:
@@ -1442,10 +1251,6 @@ async def editor_meta_fields(
       <input type="text" id="tags" name="tags" maxlength="400"
              value="{html.escape(", ".join(tags or []), quote=True)}" placeholder="mainnet, docker, v2">
     </div>
-    <div>
-      <label for="interpreter">Интерпретатор</label>
-      <select id="interpreter" name="interpreter">{interp_options}</select>
-    </div>
   </div>
   <p class="muted vars-hint">{vars_hint}</p>"""
 
@@ -1463,17 +1268,13 @@ async def new_form(request: Request):
   {await editor_meta_fields(user)}
   {ai_panel(user)}
   <label for="content">Содержимое</label>
-  <div class="code-editor">
-    <pre class="hl-pre" aria-hidden="true"><code id="hl-code" class="hljs" data-hl="bash"></code></pre>
-    <textarea id="content" name="content" spellcheck="false" autocomplete="off"
-              placeholder="#!/usr/bin/env bash&#10;set -euo pipefail&#10;..."></textarea>
-  </div>
+  <textarea id="content" name="content" spellcheck="false" placeholder="#!/usr/bin/env bash&#10;set -euo pipefail&#10;..."></textarea>
   <div class="form-actions">
     <button class="btn btn-primary" type="submit">Сохранить</button>
     <a class="btn" href="/">Отмена</a>
   </div>
 </form>"""
-    return page("Новый скрипт", body, user=user["username"], code=True)
+    return page("Новый скрипт", body, user=user["username"])
 
 
 @app.post("/scripts")
@@ -1483,7 +1284,6 @@ async def create_script(
     content: str = Form(""),
     folder: str = Form(""),
     tags: str = Form(""),
-    interpreter: str = Form(DEFAULT_INTERPRETER),
 ):
     user = await current_user(request)
     if not user:
@@ -1498,7 +1298,6 @@ async def create_script(
             "content": normalize_newlines(content),
             "folder": folder.strip()[:64],
             "tags": parse_tags(tags),
-            "interpreter": norm_interpreter(interpreter),
             "owner": str(user["_id"]),
             "created_at": ts,
             "updated_at": ts,
@@ -1530,8 +1329,7 @@ async def edit_form(request: Request, script_id: str = Path(...)):
 
     url = raw_url(request, row["slug"])
     esc_url = html.escape(url, quote=True)
-    curl_cmd = run_command(url, row)
-    interp = script_interp(row)
+    curl_cmd = f"curl -fsSL {url} | bash"
     downloads = row.get("downloads", 0)
     versions_count = await versions_col.count_documents({"script_id": script_id})
     body = f"""
@@ -1539,7 +1337,7 @@ async def edit_form(request: Request, script_id: str = Path(...)):
 <div class="share">
   <span class="kicker">прямая ссылка</span>
   <code>{esc_url}</code>
-  <span class="kicker">{"запуск одной командой" if interp["pipe"] else "скачивание"}</span>
+  <span class="kicker">запуск одной командой</span>
   <code>{html.escape(curl_cmd)}</code>
   <button class="btn btn-sm" type="button" data-copy="{esc_url}">Копировать ссылку</button>
   <button class="btn btn-sm" type="button" data-copy="{html.escape(curl_cmd, quote=True)}">Копировать curl</button>
@@ -1552,19 +1350,16 @@ async def edit_form(request: Request, script_id: str = Path(...)):
 <form class="editor" method="post" action="/scripts/{script_id}">
   <label for="name">Название</label>
   <input type="text" id="name" name="name" required maxlength="200" value="{html.escape(row["name"], quote=True)}">
-  {await editor_meta_fields(user, folder=row.get("folder", ""), tags=row.get("tags", []), interpreter=row.get("interpreter", DEFAULT_INTERPRETER))}
+  {await editor_meta_fields(user, folder=row.get("folder", ""), tags=row.get("tags", []))}
   {ai_panel(user)}
   <label for="content">Содержимое</label>
-  <div class="code-editor">
-    <pre class="hl-pre" aria-hidden="true"><code id="hl-code" class="hljs" data-hl="{interp["hl"]}"></code></pre>
-    <textarea id="content" name="content" spellcheck="false" autocomplete="off">{html.escape(row["content"])}</textarea>
-  </div>
+  <textarea id="content" name="content" spellcheck="false">{html.escape(row["content"])}</textarea>
   <div class="form-actions">
     <button class="btn btn-primary" type="submit">Сохранить</button>
     <a class="btn" href="/">К списку</a>
   </div>
 </form>"""
-    return page(f"Редактирование — {row['name']}", body, user=user["username"], code=True)
+    return page(f"Редактирование — {row['name']}", body, user=user["username"])
 
 
 async def snapshot_version(row: dict) -> None:
@@ -1596,7 +1391,6 @@ async def update_script(
     content: str = Form(""),
     folder: str = Form(""),
     tags: str = Form(""),
-    interpreter: str = Form(DEFAULT_INTERPRETER),
 ):
     user, row = await _owned_script(request, script_id)
     if not user:
@@ -1617,7 +1411,6 @@ async def update_script(
                 "content": new_content,
                 "folder": new_folder,
                 "tags": new_tags,
-                "interpreter": norm_interpreter(interpreter),
                 "updated_at": now_iso(),
             }
         },
@@ -1654,7 +1447,6 @@ async def duplicate_script(request: Request, script_id: str = Path(...)):
             "content": row["content"],
             "folder": row.get("folder", ""),
             "tags": row.get("tags", []),
-            "interpreter": row.get("interpreter", DEFAULT_INTERPRETER),
             "owner": str(user["_id"]),
             "created_at": ts,
             "updated_at": ts,
@@ -1792,13 +1584,15 @@ async def version_view(
     if version is None:
         return RedirectResponse(f"/scripts/{script_id}/versions", status_code=303)
 
-    hl_lang = script_interp(row)["hl"]
     body = f"""
 <div class="page-head">
   <div><span class="kicker">просмотр версии</span><h1>{html.escape(version.get("name", ""))}</h1></div>
   <span class="muted">сохранена {html.escape(fmt_dt(version.get("saved_at", "")))}</span>
 </div>
-<pre class="code-view"><code class="language-{hl_lang}">{html.escape(version.get("content", ""))}</code></pre>
+<form class="editor">
+  <label>Содержимое (только чтение)</label>
+  <textarea readonly spellcheck="false">{html.escape(version.get("content", ""))}</textarea>
+</form>
 <div class="form-actions">
   <form method="post" action="/scripts/{script_id}/versions/{version_id}/restore"
         onsubmit="return confirm('Откатить скрипт к этой версии? Текущее состояние сохранится в истории.')">
@@ -1806,7 +1600,7 @@ async def version_view(
   </form>
   <a class="btn" href="/scripts/{script_id}/versions">← К списку версий</a>
 </div>"""
-    return page(f"Версия — {row['name']}", body, user=user["username"], code=True)
+    return page(f"Версия — {row['name']}", body, user=user["username"])
 
 
 @app.post("/scripts/{script_id}/versions/{version_id}/restore")
@@ -2016,7 +1810,6 @@ async def ai_generate(
     request: Request,
     md: UploadFile = File(None),
     instructions: str = Form(""),
-    interpreter: str = Form(DEFAULT_INTERPRETER),
 ):
     user = await current_user(request)
     if not user:
@@ -2038,7 +1831,7 @@ async def ai_generate(
     if not doc_text.strip() and not instructions.strip():
         return PlainTextResponse("Прикрепите .md или опишите задачу", status_code=400)
 
-    prompt = build_ai_prompt(doc_text, instructions, interpreter)
+    prompt = build_ai_prompt(doc_text, instructions)
     aclient = AsyncAnthropic(api_key=key)
 
     async def gen():
