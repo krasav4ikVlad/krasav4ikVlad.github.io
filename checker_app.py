@@ -78,6 +78,19 @@ HTTP_TIMEOUT = 8.0
 PING_TIMEOUT = 4
 PER_JOB_CONCURRENCY = 8   # сколько проверок параллельно внутри одной заявки
 
+# глубокая проверка через туннель (xray)
+XRAY_BIN = os.environ.get("XRAY_BIN", "xray")
+XRAY_CONCURRENCY = int(os.environ.get("CHECKER_XRAY_CONCURRENCY", "1"))  # одновременных xray
+DEEP_COST = int(os.environ.get("CHECKER_DEEP_COST", "5"))   # токенов за эндпоинт в глубоком режиме
+XRAY_START_TIMEOUT = 10.0   # ждём готовности socks
+TUNNEL_PROBE_TIMEOUT = 14.0 # запрос через туннель
+TUNNEL_PROBE_URL = os.environ.get(
+    "CHECKER_PROBE_URL", "http://ip-api.com/json/?fields=status,country,countryCode,query"
+)
+XRAY_PROTOS = {"vless", "vmess", "trojan", "shadowsocks"}  # что умеет xray-core
+JOBS_TTL_DAYS = 7  # автоудаление заявок (в них лежат пользовательские конфиги)
+xray_sem: "asyncio.Semaphore" = None  # type: ignore
+
 COOKIE_NAME = "session"
 SESSION_TTL = 60 * 60 * 24 * 30
 
@@ -343,6 +356,24 @@ def parse_config(text: str) -> tuple[list[dict], str]:
         targets = _walk_json_targets(obj)
         if not targets:
             return [], "В JSON не найдено ни одного host:port (address/port)."
+        # для туннеля: подвязываем xray-outbound к целям по host:port
+        xray_map = _json_xray_outbounds(obj)
+        for t in targets:
+            ob = xray_map.get((t["host"], t["port"]))
+            if ob is not None:
+                t["_xray"] = ob
+
+    # для VLESS-ссылок строим outbound из параметров
+    if text.lower().startswith("vless://"):
+        for line in text.splitlines():
+            line = line.strip()
+            if line.lower().startswith("vless://"):
+                ob = vless_outbound(line)
+                if ob:
+                    for t in targets:
+                        if t["host"] == ob["settings"]["vnext"][0]["address"] and \
+                           t["port"] == ob["settings"]["vnext"][0]["port"]:
+                            t["_xray"] = ob
 
     # дедуп по host:port
     seen, uniq = set(), []
@@ -354,6 +385,92 @@ def parse_config(text: str) -> tuple[list[dict], str]:
     if len(uniq) > MAX_TARGETS:
         return uniq[:MAX_TARGETS], f"Слишком много эндпоинтов, проверим первые {MAX_TARGETS}."
     return uniq, ""
+
+
+# ---- генерация xray-конфига для прогона через туннель -----------------------
+
+
+def _outbound_hostport(o: dict) -> tuple[str, int] | None:
+    ts = _walk_json_targets(o)
+    return (ts[0]["host"], ts[0]["port"]) if ts else None
+
+
+def _json_xray_outbounds(obj) -> dict:
+    """{(host,port): outbound} для xray-поддерживаемых outbounds из JSON-конфига."""
+    res = {}
+    candidates = []
+    if isinstance(obj, dict):
+        if isinstance(obj.get("outbounds"), list):
+            candidates = obj["outbounds"]
+        elif obj.get("protocol"):
+            candidates = [obj]
+    for o in candidates:
+        if isinstance(o, dict) and o.get("protocol") in XRAY_PROTOS:
+            hp = _outbound_hostport(o)
+            if hp:
+                oo = {k: v for k, v in o.items() if k != "tag"}
+                oo["tag"] = "proxy"
+                res[hp] = oo
+    return res
+
+
+def vless_outbound(link: str) -> dict | None:
+    """Построить xray-outbound из VLESS share-ссылки."""
+    u = urlsplit(link.strip())
+    if not u.hostname or not u.port or not u.username:
+        return None
+    q = parse_qs(u.query)
+
+    def g(k, d=None):
+        return (q.get(k) or [d])[0]
+
+    net = g("type", "tcp")
+    sec = g("security", "none")
+    stream: dict = {"network": net, "security": sec}
+    if sec == "reality":
+        stream["realitySettings"] = {
+            "serverName": g("sni", ""), "fingerprint": g("fp", "chrome"),
+            "publicKey": g("pbk", ""), "shortId": g("sid", ""), "spiderX": g("spx", "/"),
+        }
+    elif sec in ("tls", "xtls"):
+        tls = {"serverName": g("sni", ""), "fingerprint": g("fp", "chrome")}
+        if g("alpn"):
+            from urllib.parse import unquote
+            tls["alpn"] = unquote(g("alpn")).split(",")
+        stream["tlsSettings"] = tls
+    if net == "ws":
+        from urllib.parse import unquote
+        stream["wsSettings"] = {"path": unquote(g("path", "/")), "headers": {"Host": g("host", "")}}
+    elif net == "grpc":
+        stream["grpcSettings"] = {"serviceName": g("serviceName", "")}
+    elif net in ("xhttp", "splithttp"):
+        from urllib.parse import unquote
+        stream["xhttpSettings"] = {"path": unquote(g("path", "/")), "host": g("host", "")}
+    elif net in ("http", "h2"):
+        from urllib.parse import unquote
+        stream["httpSettings"] = {"path": unquote(g("path", "/")),
+                                  "host": [g("host")] if g("host") else []}
+    user = {"id": u.username, "encryption": g("encryption", "none")}
+    if g("flow"):
+        user["flow"] = g("flow")
+    return {
+        "protocol": "vless",
+        "settings": {"vnext": [{"address": u.hostname, "port": int(u.port), "users": [user]}]},
+        "streamSettings": stream,
+        "tag": "proxy",
+    }
+
+
+def tunnel_config(outbound: dict, socks_port: int) -> dict:
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [{
+            "listen": "127.0.0.1", "port": socks_port, "protocol": "socks",
+            "settings": {"udp": True},
+        }],
+        # без routing => весь трафик идёт в первый (единственный) outbound = proxy
+        "outbounds": [outbound],
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -427,6 +544,86 @@ async def check_tcp(host: str, port: int) -> dict:
         return {"ok": False, "info": str(e)[:60]}
 
 
+def _free_port() -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+async def _wait_port(port: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            fut = asyncio.open_connection("127.0.0.1", port)
+            _, writer = await asyncio.wait_for(fut, timeout=1.0)
+            writer.close()
+            return True
+        except Exception:
+            await asyncio.sleep(0.25)
+    return False
+
+
+async def tunnel_check(outbound: dict) -> dict:
+    """Поднять xray с этим outbound и реально сходить наружу через SOCKS.
+    Ловит DPI-резку: рукопожатие проходит, а трафик через туннель — нет."""
+    import tempfile
+
+    port = _free_port()
+    cfg = tunnel_config(outbound, port)
+    proc = None
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(cfg, f)
+            path = f.name
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                XRAY_BIN, "run", "-c", path,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            return {"ok": False, "info": "xray не установлен на сервере"}
+
+        if not await _wait_port(port, XRAY_START_TIMEOUT):
+            return {"ok": False, "info": "xray не поднялся (конфиг?)"}
+
+        start = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(
+                proxy=f"socks5://127.0.0.1:{port}", timeout=TUNNEL_PROBE_TIMEOUT, verify=False,
+            ) as cl:
+                r = await cl.get(TUNNEL_PROBE_URL)
+                ms = (time.perf_counter() - start) * 1000
+                data = r.json()
+                if data.get("status") == "success":
+                    cc = data.get("countryCode", "")
+                    country = data.get("country", "")
+                    ip = data.get("query", "")
+                    return {"ok": True, "info": f"{country} ({cc}) · {ip} · {ms:.0f} ms"}
+                return {"ok": False, "info": "туннель поднялся, но нет выхода в сеть"}
+        except (httpx.TimeoutException, httpx.ProxyError):
+            return {"ok": False, "info": "нет выхода в сеть (таймаут — вероятно DPI/бан)"}
+        except Exception as e:
+            return {"ok": False, "info": f"туннель: {type(e).__name__}"}
+    finally:
+        if proc and proc.returncode is None:
+            try:
+                proc.terminate()
+                await asyncio.wait_for(proc.wait(), timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 async def check_http(client: httpx.AsyncClient, method: str, host: str, port: int, tls: bool) -> dict:
     scheme = "https" if tls else "http"
     url = f"{scheme}://{host}:{port}/"
@@ -472,7 +669,7 @@ async def check_udp(host: str, port: int) -> dict:
 NA = {"na": True, "info": "не применимо (UDP/QUIC)"}
 
 
-async def check_target(sem: asyncio.Semaphore, target: dict) -> dict:
+async def check_target(sem: asyncio.Semaphore, target: dict, deep: bool = False) -> dict:
     host, port, tls = target["host"], target["port"], target["tls"]
     result = {
         "host": host, "port": port, "tls": tls,
@@ -503,6 +700,17 @@ async def check_target(sem: asyncio.Semaphore, target: dict) -> dict:
                     check_http(client, "POST", host, port, tls),
                 )
             result.update(icmp=icmp, tcp=tcp, get=get, post=post)
+
+    # глубокая проверка — реальный прогон через туннель (xray), вне общего sem,
+    # под отдельным семафором, чтобы не плодить xray-процессы
+    if deep:
+        if result["udp"]:
+            result["tunnel"] = {"na": True, "info": "нужен sing-box (xray не поддерживает)"}
+        elif not target.get("_xray"):
+            result["tunnel"] = {"na": True, "info": "протокол не поддержан для туннеля"}
+        else:
+            async with xray_sem:
+                result["tunnel"] = await tunnel_check(target["_xray"])
     return result
 
 
@@ -519,9 +727,10 @@ async def run_job(job_id: str) -> None:
         {"_id": doc["_id"]}, {"$set": {"status": "running", "started_at": now_iso()}}
     )
     sem = asyncio.Semaphore(PER_JOB_CONCURRENCY)
+    deep = bool(doc.get("deep"))
     try:
         results = await asyncio.gather(
-            *(check_target(sem, t) for t in doc["targets"])
+            *(check_target(sem, t, deep=deep) for t in doc["targets"])
         )
         await jobs_col.update_one(
             {"_id": doc["_id"]},
@@ -547,10 +756,13 @@ async def worker(name: int) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global job_queue
+    global job_queue, xray_sem
     job_queue = asyncio.Queue(maxsize=MAX_QUEUE)
+    xray_sem = asyncio.Semaphore(XRAY_CONCURRENCY)
     try:
         await jobs_col.create_index([("owner", 1), ("created_at", -1)])
+        # TTL: заявки (с пользовательскими конфигами) автоудаляются
+        await jobs_col.create_index("created_dt", expireAfterSeconds=JOBS_TTL_DAYS * 86400)
     except Exception as e:
         print(f"[!] индекс jobs: {e}", file=sys.stderr)
     # восстановление после рестарта: незавершённые -> обратно в очередь
@@ -652,6 +864,14 @@ textarea::placeholder{color:#494842}
 .chk-bad .chk-val::before{background:var(--coral)}
 .chk-ok .chk-val{color:var(--ink)} .chk-bad .chk-val{color:var(--coral)}
 .chk-na{opacity:.65} .chk-na .chk-val::before{background:var(--line-bright)} .chk-na .chk-val{color:var(--muted)}
+/* строка туннеля (глубокая проверка) */
+.tunnel{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;padding:11px 13px;border-radius:2px;border:1px solid var(--line-bright);background:#0d0d0f}
+.tunnel .tn-label{font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--lime-dim)}
+.tunnel .tn-head{font-weight:700;font-size:13px}
+.tunnel .tn-info{color:var(--muted);font-size:12.5px}
+.tn-ok{border-left:3px solid var(--lime)} .tn-ok .tn-head{color:var(--lime)}
+.tn-bad{border-left:3px solid var(--coral)} .tn-bad .tn-head{color:var(--coral)}
+.tn-na{border-left:3px solid var(--line-bright);opacity:.7} .tn-na .tn-head{color:var(--muted)}
 /* история */
 .job-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border:1px solid var(--line);border-radius:2px;background:var(--panel);margin-bottom:8px;font-size:13px;animation:rise .5s ease both}
 .job-row a{color:var(--lime);text-decoration:none} .job-row a:hover{color:var(--lime-soft)}
@@ -735,13 +955,25 @@ def render_results(results: list[dict]) -> str:
                 c["_n"] = name
                 items.append(render_check(c))
             checks = f'{udp_note}<div class="checks">{"".join(items)}</div>'
+        # строка результата прогона через туннель (глубокая проверка)
+        tunnel = ""
+        if r.get("tunnel"):
+            tw = r["tunnel"]
+            cls = "tn-na" if tw.get("na") else ("tn-ok" if tw.get("ok") else "tn-bad")
+            head = "выход в сеть есть" if tw.get("ok") else ("туннель" if tw.get("na") else "выхода нет")
+            tunnel = f"""
+  <div class="tunnel {cls}">
+    <span class="tn-label">⟿ туннель</span>
+    <span class="tn-head">{head}</span>
+    <span class="tn-info">{html.escape(tw.get("info",""))}</span>
+  </div>"""
         cards.append(f"""
 <div class="ep">
   <div class="ep-top">
     <span class="ep-name">{html.escape(r.get("label", r["host"]))}</span>
     <span class="ep-addr">{addr}{ipinfo}{proto}</span>
   </div>
-  {checks}
+  {checks}{tunnel}
 </div>""")
     return "".join(cards)
 
@@ -808,10 +1040,13 @@ async def index(request: Request, error: str = ""):
   <label for="config">VLESS-ссылка или JSON-конфиг</label>
   <textarea id="config" name="config" required spellcheck="false"
     placeholder="vless://uuid@host:443?security=reality&sni=...#MyNode&#10;&#10;— или вставьте JSON-конфиг xray/v2ray —&#10;{{&quot;outbounds&quot;: [...]}}"></textarea>
-  <p class="muted" style="margin-top:10px">Проверяется ICMP, TCP, HTTP GET и POST по каждому host:port.
-  Списывается 1 токен за эндпоинт. Дозаправка: +1 токен каждые {int(REFILL_SECONDS)} c (до {TOKEN_CAP}).</p>
+  <p class="muted" style="margin-top:10px">Доступность: ICMP, TCP, HTTP GET и POST по каждому host:port (1 токен/эндпоинт).
+  <b>Глубокая проверка</b> дополнительно поднимает туннель (xray) и реально ходит наружу —
+  ловит DPI-резку, когда пинг есть, а интернета через ноду нет ({DEEP_COST} токенов/эндпоинт).
+  Дозаправка: +1 токен каждые {int(REFILL_SECONDS)} c (до {TOKEN_CAP}).</p>
   <div class="form-actions">
-    <button class="btn btn-primary" type="submit">Проверить</button>
+    <button class="btn btn-primary" type="submit" name="deep" value="">Проверить доступность</button>
+    <button class="btn" type="submit" name="deep" value="1">Глубокая проверка (через туннель)</button>
   </div>
 </form>
 {hist}"""
@@ -819,16 +1054,17 @@ async def index(request: Request, error: str = ""):
 
 
 @app.post("/check")
-async def submit_check(request: Request, config: str = Form(...)):
+async def submit_check(request: Request, config: str = Form(...), deep: str = Form("")):
     raw_user = await current_user(request)
     if not raw_user:
         return login_redirect(request)
 
+    is_deep = deep == "1"
     targets, msg = parse_config(config)
     if not targets:
         return RedirectResponse(f"/?error={urlquote(msg)}", status_code=303)
 
-    cost = len(targets)
+    cost = len(targets) * (DEEP_COST if is_deep else 1)
     ok, _bal = await take_tokens(raw_user, cost)
     if not ok:
         return RedirectResponse(
@@ -845,8 +1081,10 @@ async def submit_check(request: Request, config: str = Form(...)):
         "owner": str(raw_user["_id"]),
         "status": "queued",
         "targets": targets,
+        "deep": is_deep,
         "note": msg,
         "created_at": now_iso(),
+        "created_dt": datetime.now(timezone.utc),  # для TTL
     }
     res = await jobs_col.insert_one(doc)
     job_id = str(res.inserted_id)

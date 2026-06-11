@@ -45,7 +45,16 @@ log "Installing packages (python, nginx, certbot, iputils-ping)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y python3 python3-venv python3-pip nginx certbot python3-certbot-nginx \
-  iputils-ping curl ca-certificates
+  iputils-ping unzip curl ca-certificates
+
+# ---- xray-core (для глубокой проверки через туннель) -----------------------
+if ! command -v xray >/dev/null 2>&1; then
+  log "Installing xray-core..."
+  bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install \
+    || warn "Не удалось установить xray — глубокая проверка будет недоступна (xray не установлен)."
+  # не держим их дефолтный xray-сервер запущенным: нам нужен только бинарь
+  systemctl disable --now xray >/dev/null 2>&1 || true
+fi
 
 # ---- app -------------------------------------------------------------------
 id "$APP_USER" &>/dev/null || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
@@ -57,7 +66,7 @@ python3 -c "compile(open('$APP_DIR/checker_app.py').read(),'c','exec')" || die "
 log "Virtualenv & deps..."
 [ -d "$APP_DIR/venv" ] || python3 -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
-"$APP_DIR/venv/bin/pip" install --quiet fastapi uvicorn python-multipart motor httpx
+"$APP_DIR/venv/bin/pip" install --quiet fastapi uvicorn python-multipart motor "httpx[socks]"
 
 log "Writing env file..."
 cat > "$APP_DIR/nodewiki-checker.env" <<EOF
@@ -70,6 +79,8 @@ HOST=127.0.0.1
 PORT=$APP_PORT
 CHECKER_WORKERS=$CHECKER_WORKERS
 CHECKER_ALLOW_PRIVATE=$CHECKER_ALLOW_PRIVATE
+XRAY_BIN=/usr/local/bin/xray
+CHECKER_XRAY_CONCURRENCY=1
 EOF
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 chmod 600 "$APP_DIR/nodewiki-checker.env"
