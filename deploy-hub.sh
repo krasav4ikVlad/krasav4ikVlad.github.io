@@ -31,9 +31,17 @@ die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 # ---- preflight: no other vhost may claim our domain -------------------------
 # (this is exactly what broke scripts.nodewiki.info before: a legacy config
 #  held the domain and won over the new vhost)
-# -R (а не -r): sites-enabled состоит из симлинков, -r их пропускает
-conflicts="$(grep -Rls "server_name.*\b$DOMAIN\b" /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null \
-  | grep -v "nodewiki-hub" || true)"
+# -R (а не -r): sites-enabled состоит из симлинков, -r их пропускает.
+# Сравниваем ТОЧНЫЙ токен домена: scripts.nodewiki.info конфликтом не считается.
+conflicts=""
+for f in $(grep -Rls "server_name" /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null | grep -v "nodewiki-hub" || true); do
+  if awk -v d="$DOMAIN" '
+        /^[ \t]*#/ { next }
+        /server_name/ { for (i = 1; i <= NF; i++) { t = $i; gsub(/;/, "", t); if (t == d) { found = 1 } } }
+        END { exit !found }' "$f"; then
+    conflicts="$conflicts$f"$'\n'
+  fi
+done
 if [ -n "$conflicts" ]; then
   warn "Эти конфиги уже объявляют $DOMAIN и будут конфликтовать с хабом:"
   echo "$conflicts" >&2
