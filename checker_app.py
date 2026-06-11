@@ -91,10 +91,10 @@ TUNNEL_PROBE_URL = os.environ.get(
 TUNNEL_SPEED_URL = os.environ.get(
     "CHECKER_SPEED_URL", "https://speed.cloudflare.com/__down?bytes=20000000"
 )
-SPEED_WINDOW = 8.0          # сколько секунд качаем
-SPEED_MAX_BYTES = 8_000_000 # либо до стольки байт
-SPEED_MIN_MBPS = 0.2        # ниже — считаем «режется в 0»
-SPEED_SLOW_MBPS = 3.0       # ниже — «медленно»
+SPEED_WINDOW = 10.0          # сколько секунд качаем (чтобы throttle успел сработать)
+SPEED_MAX_BYTES = 25_000_000 # либо до стольки байт
+SPEED_MIN_MBPS = 0.5         # установившаяся ниже — «режется»
+SPEED_SLOW_MBPS = 10.0       # ниже — «медленно/подозрительно» (рабочая нода даёт десятки Mbps)
 XRAY_PROTOS = {"vless", "vmess", "trojan", "shadowsocks"}  # что умеет xray-core
 JOBS_TTL_DAYS = 7  # автоудаление заявок (в них лежат пользовательские конфиги)
 xray_sem: "asyncio.Semaphore" = None  # type: ignore
@@ -614,30 +614,49 @@ async def tunnel_check(outbound: dict) -> dict:
         exit_ip = data.get("query", "")
         geo = f"{country} ({cc}) · {exit_ip}"
 
-        # 2) реальная скорость: качаем поток N секунд и считаем Mbps.
-        #    Это и ловит ТСПУ-резку «в 0»: лёгкий запрос проходит, а трафик режется.
-        total, elapsed = 0, 0.001
+        # 2) реальная скорость через туннель — ловит ТСПУ-резку.
+        #    ТСПУ часто душит ПОСЛЕ разгона: первые МБ летят, потом ~0. Поэтому
+        #    меряем не среднее, а установившуюся скорость по посекундным сэмплам
+        #    (берём медиану второй половины окна) + ширину старт/финиш.
+        import statistics
+        samples = []          # Mbps за каждую ~1с
+        total = 0
         try:
             async with httpx.AsyncClient(
                 proxy=proxy, verify=False,
-                timeout=httpx.Timeout(10.0, read=SPEED_WINDOW),
+                timeout=httpx.Timeout(10.0, read=SPEED_WINDOW + 2),
             ) as cl:
                 start = time.perf_counter()
+                last_t, last_b = start, 0
                 async with cl.stream("GET", TUNNEL_SPEED_URL) as resp:
                     if resp.status_code < 400:
                         async for chunk in resp.aiter_bytes():
                             total += len(chunk)
-                            elapsed = time.perf_counter() - start
-                            if total >= SPEED_MAX_BYTES or elapsed >= SPEED_WINDOW:
+                            now = time.perf_counter()
+                            if now - last_t >= 1.0:
+                                samples.append((total - last_b) * 8 / (now - last_t) / 1e6)
+                                last_t, last_b = now, total
+                            if total >= SPEED_MAX_BYTES or now - start >= SPEED_WINDOW:
                                 break
         except Exception:
-            elapsed = max(time.perf_counter() - start, 0.001)  # таймаут чтения => что успели
-        mbps = total * 8 / elapsed / 1_000_000
+            pass
+        elapsed = max(time.perf_counter() - start, 0.001)
+        avg = total * 8 / elapsed / 1e6
+        # установившаяся: медиана второй половины посекундных сэмплов (без разгона)
+        if len(samples) >= 2:
+            steady = statistics.median(samples[len(samples) // 2:])
+        elif samples:
+            steady = samples[-1]
+        else:
+            steady = avg  # не успели набрать секунду
+        mbps = min(steady, avg)  # консервативно
 
-        if mbps < SPEED_MIN_MBPS:
-            return {"ok": False, "info": f"трафик режется (~{mbps:.2f} Mbps) — DPI/throttling · выход {geo}"}
+        if total < 50_000 or mbps < SPEED_MIN_MBPS:
+            return {"ok": False,
+                    "info": f"трафик режется (~{mbps:.2f} Mbps) — DPI/throttling · выход {geo}"}
         if mbps < SPEED_SLOW_MBPS:
-            return {"ok": True, "warn": True, "info": f"медленно ~{mbps:.1f} Mbps · {geo}"}
+            return {"ok": True, "warn": True,
+                    "info": f"медленно, возможна резка ~{mbps:.1f} Mbps · {geo}"}
         return {"ok": True, "info": f"{geo} · ~{mbps:.0f} Mbps"}
     finally:
         if proc and proc.returncode is None:
