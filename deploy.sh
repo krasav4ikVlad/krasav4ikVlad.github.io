@@ -76,7 +76,7 @@ python3 -c "compile(open('$APP_DIR/app.py').read(), 'app.py', 'exec')" || die "D
 log "Setting up virtualenv & dependencies..."
 [ -d "$APP_DIR/venv" ] || python3 -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
-"$APP_DIR/venv/bin/pip" install --quiet fastapi uvicorn python-multipart motor anthropic
+"$APP_DIR/venv/bin/pip" install --quiet fastapi uvicorn python-multipart motor anthropic cryptography
 
 # ---- persistent SECRET_KEY (so sessions survive restarts) ------------------
 SECRET_FILE="$APP_DIR/secret.key"

@@ -85,6 +85,84 @@ cluster = AsyncIOMotorClient(TOKEN_DB)
 db = cluster["RS_2"]
 users_col = db["users"]
 scripts_col = db["scripts"]
+versions_col = db["versions"]      # история версий скриптов
+access_col = db["access_log"]      # лог обращений к /raw/{slug}
+
+VERSIONS_KEEP = 50        # хранить не больше N версий на скрипт
+ACCESS_LOG_TTL_DAYS = 90  # автоудаление записей лога старше N дней (TTL-индекс)
+
+# ----------------------------------------------------------------------------
+# Шифрование секретов в БД (Fernet, ключ выводится из SECRET_KEY).
+# Claude-ключи пользователей лежат в Mongo только в зашифрованном виде —
+# дамп базы без SECRET_KEY их не раскрывает.
+# ----------------------------------------------------------------------------
+
+import base64
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+
+    _fernet = Fernet(
+        base64.urlsafe_b64encode(hashlib.sha256(SECRET_KEY.encode()).digest())
+    )
+except ImportError:
+    _fernet = None
+    InvalidToken = Exception
+    print(
+        "[!] Пакет cryptography не установлен — секреты в БД хранятся открытым "
+        "текстом. pip install cryptography, чтобы включить шифрование.",
+        file=sys.stderr,
+    )
+
+ENC_PREFIX = "enc$"
+
+
+def encrypt_secret(value: str) -> str:
+    if not value or _fernet is None:
+        return value
+    return ENC_PREFIX + _fernet.encrypt(value.encode()).decode()
+
+
+def decrypt_secret(stored: str) -> str:
+    if not stored:
+        return ""
+    if stored.startswith(ENC_PREFIX):
+        if _fernet is None:
+            return ""
+        try:
+            return _fernet.decrypt(stored[len(ENC_PREFIX):].encode()).decode()
+        except InvalidToken:  # сменился SECRET_KEY — ключ больше не прочитать
+            return ""
+    return stored  # legacy: значение, сохранённое до включения шифрования
+
+
+# ----------------------------------------------------------------------------
+# Rate-limit входа/регистрации (защита от перебора паролей)
+# ----------------------------------------------------------------------------
+
+AUTH_RATE_MAX = 10        # попыток
+AUTH_RATE_WINDOW = 300    # за 5 минут
+_auth_attempts: dict[str, list[float]] = {}
+
+
+def auth_rate_limited(ip: str) -> bool:
+    now = time.time()
+    attempts = [t for t in _auth_attempts.get(ip, []) if now - t < AUTH_RATE_WINDOW]
+    if len(attempts) >= AUTH_RATE_MAX:
+        _auth_attempts[ip] = attempts
+        return True
+    attempts.append(now)
+    _auth_attempts[ip] = attempts
+    if len(_auth_attempts) > 10_000:  # не даём словарю расти бесконечно
+        _auth_attempts.clear()
+    return False
+
+
+def client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "?"
 
 # ----------------------------------------------------------------------------
 # Anthropic (ИИ-помощник) — каждый пользователь указывает СВОЙ API-ключ
@@ -100,7 +178,7 @@ if AsyncAnthropic is None:
 
 
 def user_ai_key(user: dict | None) -> str:
-    return (user or {}).get("anthropic_key", "") or ""
+    return decrypt_secret((user or {}).get("anthropic_key", "") or "")
 
 
 def mask_key(key: str) -> str:
@@ -215,6 +293,7 @@ def set_session(resp: RedirectResponse, user_id: str) -> None:
         max_age=SESSION_TTL,
         httponly=True,
         samesite="lax",
+        secure=BASE_URL.startswith("https"),
         path="/",
     )
 
@@ -490,6 +569,43 @@ input:focus, textarea:focus {
 }
 .share .btn { margin-right: 8px; }
 
+/* метаданные скрипта: скачивания, лог, версии */
+.meta-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 26px;
+  animation: rise .55s cubic-bezier(.2, .7, .2, 1) both;
+}
+.meta-stat {
+  font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+  border: 1px dashed var(--line-bright); border-radius: 2px; padding: 8px 12px;
+}
+.meta-stat b { color: var(--lime); font-weight: 700; }
+
+/* лог обращений */
+.log-table {
+  border: 1px solid var(--line); border-radius: 3px;
+  background: var(--panel);
+  animation: rise .55s cubic-bezier(.2, .7, .2, 1) both;
+  overflow: hidden;
+}
+.log-row {
+  display: flex; gap: 16px; align-items: baseline;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono); font-size: 12.5px;
+}
+.log-row:last-child { border-bottom: none; }
+.log-row:hover { background: var(--panel-2); }
+.log-ts { color: var(--lime-dim); white-space: nowrap; }
+.log-ip { color: var(--ink); white-space: nowrap; min-width: 110px; }
+.log-ua { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 560px) {
+  .log-row { flex-wrap: wrap; gap: 4px 12px; }
+  .log-ua { flex-basis: 100%; }
+}
+
+textarea[readonly] { opacity: .8; min-height: 320px; }
+
 /* empty state */
 .empty {
   text-align: center; padding: 80px 24px;
@@ -733,12 +849,36 @@ async def lifespan(app: FastAPI):
         await users_col.create_index("username", unique=True)
         await scripts_col.create_index("slug", unique=True)
         await scripts_col.create_index("owner")
+        await versions_col.create_index([("script_id", 1), ("saved_at", -1)])
+        await access_col.create_index([("script_id", 1), ("ts", -1)])
+        # TTL: Mongo сам удаляет записи лога старше ACCESS_LOG_TTL_DAYS
+        await access_col.create_index(
+            "ts_dt", expireAfterSeconds=ACCESS_LOG_TTL_DAYS * 24 * 3600
+        )
     except Exception as e:  # не валим старт, если БД временно недоступна
         print(f"[!] Не удалось создать индексы MongoDB: {e}", file=sys.stderr)
     yield
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    if not request.url.path.startswith("/raw/"):
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src https://fonts.gstatic.com; "
+            "script-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; "
+            "frame-ancestors 'none'"
+        )
+    return resp
 
 
 # ---- регистрация / вход ----------------------------------------------------
@@ -790,7 +930,13 @@ async def login_form(request: Request, error: int = 0):
 
 
 @app.post("/login")
-async def login(username: str = Form(...), password: str = Form(...)):
+async def login(
+    request: Request, username: str = Form(...), password: str = Form(...)
+):
+    if auth_rate_limited(client_ip(request)):
+        return page(
+            "Вход", auth_card("login", "Слишком много попыток — подождите 5 минут")
+        )
     user = await users_col.find_one({"username": username.strip().lower()})
     if user is None or not verify_password(password, user.get("password", "")):
         return RedirectResponse("/login?error=1", status_code=303)
@@ -807,7 +953,14 @@ async def register_form(request: Request):
 
 
 @app.post("/register")
-async def register(username: str = Form(...), password: str = Form(...)):
+async def register(
+    request: Request, username: str = Form(...), password: str = Form(...)
+):
+    if auth_rate_limited(client_ip(request)):
+        return page(
+            "Регистрация",
+            auth_card("register", "Слишком много попыток — подождите 5 минут"),
+        )
     uname = username.strip().lower()
     if not (3 <= len(uname) <= 32) or not all(c.isalnum() or c in "_-." for c in uname):
         return page(
@@ -868,7 +1021,7 @@ async def index(request: Request):
 <div class="card" style="animation-delay: {min(i * 60, 480)}ms">
   <div class="card-top">
     <span class="card-name">{html.escape(row["name"])}</span>
-    <span class="muted">обновлён {html.escape(fmt_dt(row.get("updated_at")))}</span>
+    <span class="muted">↓ {row.get("downloads", 0)} · обновлён {html.escape(fmt_dt(row.get("updated_at")))}</span>
   </div>
   <a class="card-url" href="{esc_url}" target="_blank" rel="noopener">{esc_url}</a>
   <div class="card-actions">
@@ -958,6 +1111,8 @@ async def edit_form(request: Request, script_id: str = Path(...)):
     url = raw_url(request, row["slug"])
     esc_url = html.escape(url, quote=True)
     curl_cmd = f"curl -fsSL {url} | bash"
+    downloads = row.get("downloads", 0)
+    versions_count = await versions_col.count_documents({"script_id": script_id})
     body = f"""
 <div class="page-head"><div><span class="kicker">редактор</span><h1>Редактирование</h1></div></div>
 <div class="share">
@@ -967,6 +1122,11 @@ async def edit_form(request: Request, script_id: str = Path(...)):
   <code>{html.escape(curl_cmd)}</code>
   <button class="btn btn-sm" type="button" data-copy="{esc_url}">Копировать ссылку</button>
   <button class="btn btn-sm" type="button" data-copy="{html.escape(curl_cmd, quote=True)}">Копировать curl</button>
+</div>
+<div class="meta-row">
+  <span class="meta-stat">скачиваний: <b>{downloads}</b></span>
+  <a class="btn btn-sm" href="/scripts/{script_id}/log">Лог обращений</a>
+  <a class="btn btn-sm" href="/scripts/{script_id}/versions">История версий ({versions_count})</a>
 </div>
 <form class="editor" method="post" action="/scripts/{script_id}">
   <label for="name">Название</label>
@@ -982,6 +1142,27 @@ async def edit_form(request: Request, script_id: str = Path(...)):
     return page(f"Редактирование — {row['name']}", body, user=user["username"])
 
 
+async def snapshot_version(row: dict) -> None:
+    """Сохранить текущее состояние скрипта в историю версий (с обрезкой хвоста)."""
+    sid = str(row["_id"])
+    await versions_col.insert_one(
+        {
+            "script_id": sid,
+            "name": row["name"],
+            "content": row["content"],
+            "saved_at": now_iso(),
+        }
+    )
+    extra = (
+        await versions_col.find({"script_id": sid}, {"_id": 1})
+        .sort("_id", -1)  # ObjectId монотонен — стабильный порядок версий
+        .skip(VERSIONS_KEEP)
+        .to_list(length=200)
+    )
+    if extra:
+        await versions_col.delete_many({"_id": {"$in": [v["_id"] for v in extra]}})
+
+
 @app.post("/scripts/{script_id}")
 async def update_script(
     request: Request,
@@ -994,16 +1175,20 @@ async def update_script(
         return RedirectResponse("/login", status_code=303)
     if row is None:
         return RedirectResponse("/", status_code=303)
-    await scripts_col.update_one(
-        {"_id": row["_id"]},
-        {
-            "$set": {
-                "name": name.strip() or "Без названия",
-                "content": normalize_newlines(content),
-                "updated_at": now_iso(),
-            }
-        },
-    )
+    new_name = name.strip() or "Без названия"
+    new_content = normalize_newlines(content)
+    if new_name != row["name"] or new_content != row["content"]:
+        await snapshot_version(row)  # прошлое состояние уходит в историю
+        await scripts_col.update_one(
+            {"_id": row["_id"]},
+            {
+                "$set": {
+                    "name": new_name,
+                    "content": new_content,
+                    "updated_at": now_iso(),
+                }
+            },
+        )
     return RedirectResponse(f"/scripts/{script_id}/edit", status_code=303)
 
 
@@ -1013,8 +1198,186 @@ async def delete_script(request: Request, script_id: str = Path(...)):
     if not user:
         return RedirectResponse("/login", status_code=303)
     if row is not None:
+        sid = str(row["_id"])
         await scripts_col.delete_one({"_id": row["_id"]})
+        await versions_col.delete_many({"script_id": sid})
+        await access_col.delete_many({"script_id": sid})
     return RedirectResponse("/", status_code=303)
+
+
+# ---- лог обращений к ссылке --------------------------------------------------
+
+
+@app.get("/scripts/{script_id}/log")
+async def access_log_page(request: Request, script_id: str = Path(...)):
+    user, row = await _owned_script(request, script_id)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if row is None:
+        return page("Не найдено", "<h1>Скрипт не найден</h1>", user=user["username"])
+
+    entries = (
+        await access_col.find({"script_id": script_id})
+        .sort("_id", -1)
+        .to_list(length=200)
+    )
+    total = await access_col.count_documents({"script_id": script_id})
+    downloads = row.get("downloads", 0)
+
+    if entries:
+        rows_html = "".join(
+            f"""
+  <div class="log-row">
+    <span class="log-ts">{html.escape(fmt_dt(e.get("ts", "")))}</span>
+    <span class="log-ip">{html.escape(e.get("ip", "?"))}</span>
+    <span class="log-ua" title="{html.escape(e.get("ua", ""), quote=True)}">{html.escape(e.get("ua", "")[:80] or "—")}</span>
+  </div>"""
+            for e in entries
+        )
+        listing = f'<div class="log-table">{rows_html}</div>'
+        if total > len(entries):
+            listing += f'<p class="muted" style="margin-top:12px">Показаны последние {len(entries)} из {total}; записи старше {ACCESS_LOG_TTL_DAYS} дней удаляются автоматически.</p>'
+    else:
+        listing = """
+<div class="empty">
+  <div class="glyph">0 hits</div>
+  <p>По этой ссылке ещё никто не приходил. Раздайте её — обращения появятся здесь.</p>
+</div>"""
+
+    body = f"""
+<div class="page-head">
+  <div><span class="kicker">лог обращений</span><h1>{html.escape(row["name"])}</h1></div>
+  <span class="muted">всего скачиваний: {downloads}</span>
+</div>
+{listing}
+<div class="form-actions">
+  <a class="btn" href="/scripts/{script_id}/edit">← К редактору</a>
+</div>"""
+    return page(f"Лог — {row['name']}", body, user=user["username"])
+
+
+# ---- история версий ----------------------------------------------------------
+
+
+async def _owned_version(user: dict, script_id: str, version_id: str):
+    try:
+        void = ObjectId(version_id)
+    except (InvalidId, TypeError):
+        return None
+    return await versions_col.find_one({"_id": void, "script_id": script_id})
+
+
+@app.get("/scripts/{script_id}/versions")
+async def versions_page(request: Request, script_id: str = Path(...)):
+    user, row = await _owned_script(request, script_id)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if row is None:
+        return page("Не найдено", "<h1>Скрипт не найден</h1>", user=user["username"])
+
+    versions = (
+        await versions_col.find({"script_id": script_id})
+        .sort("_id", -1)  # ObjectId монотонен — стабильный порядок версий
+        .to_list(length=VERSIONS_KEEP)
+    )
+
+    if versions:
+        total = len(versions)
+        items = []
+        for i, v in enumerate(versions):
+            vid = str(v["_id"])
+            size = len(v.get("content", "").encode())
+            items.append(f"""
+<div class="card" style="animation-delay: {min(i * 50, 400)}ms">
+  <div class="card-top">
+    <span class="card-name">v{total - i} — {html.escape(v.get("name", ""))}</span>
+    <span class="muted">{html.escape(fmt_dt(v.get("saved_at", "")))} · {size} байт</span>
+  </div>
+  <div class="card-actions" style="margin-top:12px">
+    <a class="btn btn-sm" href="/scripts/{script_id}/versions/{vid}">Просмотр</a>
+    <form method="post" action="/scripts/{script_id}/versions/{vid}/restore"
+          onsubmit="return confirm('Откатить скрипт к версии v{total - i}? Текущее состояние сохранится в истории.')">
+      <button class="btn btn-sm" type="submit">Восстановить</button>
+    </form>
+  </div>
+</div>""")
+        listing = "".join(items)
+    else:
+        listing = """
+<div class="empty">
+  <div class="glyph">v0</div>
+  <p>История пуста — версии появляются после первого изменения скрипта.</p>
+</div>"""
+
+    body = f"""
+<div class="page-head">
+  <div><span class="kicker">история версий</span><h1>{html.escape(row["name"])}</h1></div>
+  <span class="muted">хранится до {VERSIONS_KEEP} версий</span>
+</div>
+{listing}
+<div class="form-actions">
+  <a class="btn" href="/scripts/{script_id}/edit">← К редактору</a>
+</div>"""
+    return page(f"Версии — {row['name']}", body, user=user["username"])
+
+
+@app.get("/scripts/{script_id}/versions/{version_id}")
+async def version_view(
+    request: Request, script_id: str = Path(...), version_id: str = Path(...)
+):
+    user, row = await _owned_script(request, script_id)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if row is None:
+        return page("Не найдено", "<h1>Скрипт не найден</h1>", user=user["username"])
+    version = await _owned_version(user, script_id, version_id)
+    if version is None:
+        return RedirectResponse(f"/scripts/{script_id}/versions", status_code=303)
+
+    body = f"""
+<div class="page-head">
+  <div><span class="kicker">просмотр версии</span><h1>{html.escape(version.get("name", ""))}</h1></div>
+  <span class="muted">сохранена {html.escape(fmt_dt(version.get("saved_at", "")))}</span>
+</div>
+<form class="editor">
+  <label>Содержимое (только чтение)</label>
+  <textarea readonly spellcheck="false">{html.escape(version.get("content", ""))}</textarea>
+</form>
+<div class="form-actions">
+  <form method="post" action="/scripts/{script_id}/versions/{version_id}/restore"
+        onsubmit="return confirm('Откатить скрипт к этой версии? Текущее состояние сохранится в истории.')">
+    <button class="btn btn-primary" type="submit">Восстановить эту версию</button>
+  </form>
+  <a class="btn" href="/scripts/{script_id}/versions">← К списку версий</a>
+</div>"""
+    return page(f"Версия — {row['name']}", body, user=user["username"])
+
+
+@app.post("/scripts/{script_id}/versions/{version_id}/restore")
+async def version_restore(
+    request: Request, script_id: str = Path(...), version_id: str = Path(...)
+):
+    user, row = await _owned_script(request, script_id)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if row is None:
+        return RedirectResponse("/", status_code=303)
+    version = await _owned_version(user, script_id, version_id)
+    if version is None:
+        return RedirectResponse(f"/scripts/{script_id}/versions", status_code=303)
+    # текущее состояние тоже уходит в историю — откат работает в обе стороны
+    await snapshot_version(row)
+    await scripts_col.update_one(
+        {"_id": row["_id"]},
+        {
+            "$set": {
+                "name": version.get("name", row["name"]),
+                "content": version.get("content", ""),
+                "updated_at": now_iso(),
+            }
+        },
+    )
+    return RedirectResponse(f"/scripts/{script_id}/edit", status_code=303)
 
 
 # ---- настройки: персональный Claude API-ключ --------------------------------
@@ -1081,7 +1444,9 @@ async def settings_save_token(request: Request, anthropic_key: str = Form(...)):
             settings_body(user, error="Это не похоже на API-ключ (sk-ant-…)"),
             user=user["username"],
         )
-    await users_col.update_one({"_id": user["_id"]}, {"$set": {"anthropic_key": key}})
+    await users_col.update_one(
+        {"_id": user["_id"]}, {"$set": {"anthropic_key": encrypt_secret(key)}}
+    )
     return RedirectResponse("/settings?saved=1", status_code=303)
 
 
@@ -1151,11 +1516,25 @@ async def ai_generate(
 
 
 @app.get("/raw/{slug}")
-async def raw(slug: str):
+async def raw(request: Request, slug: str):
     """Публичная выдача скрипта — без авторизации, защищено неугадываемым slug."""
     row = await scripts_col.find_one({"slug": slug})
     if row is None:
         return PlainTextResponse("Not found\n", status_code=404)
+    try:  # лог не должен ломать выдачу скрипта
+        await access_col.insert_one(
+            {
+                "script_id": str(row["_id"]),
+                "slug": slug,
+                "ts": now_iso(),
+                "ts_dt": datetime.now(timezone.utc),  # для TTL-индекса
+                "ip": client_ip(request),
+                "ua": request.headers.get("user-agent", "")[:300],
+            }
+        )
+        await scripts_col.update_one({"_id": row["_id"]}, {"$inc": {"downloads": 1}})
+    except Exception as e:
+        print(f"[!] Не удалось записать лог обращения: {e}", file=sys.stderr)
     return PlainTextResponse(
         row["content"],
         media_type="text/plain; charset=utf-8",
