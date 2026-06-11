@@ -83,10 +83,18 @@ XRAY_BIN = os.environ.get("XRAY_BIN", "xray")
 XRAY_CONCURRENCY = int(os.environ.get("CHECKER_XRAY_CONCURRENCY", "1"))  # одновременных xray
 DEEP_COST = int(os.environ.get("CHECKER_DEEP_COST", "5"))   # токенов за эндпоинт в глубоком режиме
 XRAY_START_TIMEOUT = 10.0   # ждём готовности socks
-TUNNEL_PROBE_TIMEOUT = 14.0 # запрос через туннель
+TUNNEL_PROBE_TIMEOUT = 14.0 # запрос гео через туннель
 TUNNEL_PROBE_URL = os.environ.get(
     "CHECKER_PROBE_URL", "http://ip-api.com/json/?fields=status,country,countryCode,query"
 )
+# замер скорости через туннель — ловит ТСПУ-резку «в 0»
+TUNNEL_SPEED_URL = os.environ.get(
+    "CHECKER_SPEED_URL", "https://speed.cloudflare.com/__down?bytes=20000000"
+)
+SPEED_WINDOW = 8.0          # сколько секунд качаем
+SPEED_MAX_BYTES = 8_000_000 # либо до стольки байт
+SPEED_MIN_MBPS = 0.2        # ниже — считаем «режется в 0»
+SPEED_SLOW_MBPS = 3.0       # ниже — «медленно»
 XRAY_PROTOS = {"vless", "vmess", "trojan", "shadowsocks"}  # что умеет xray-core
 JOBS_TTL_DAYS = 7  # автоудаление заявок (в них лежат пользовательские конфиги)
 xray_sem: "asyncio.Semaphore" = None  # type: ignore
@@ -589,24 +597,48 @@ async def tunnel_check(outbound: dict) -> dict:
         if not await _wait_port(port, XRAY_START_TIMEOUT):
             return {"ok": False, "info": "xray не поднялся (конфиг?)"}
 
-        start = time.perf_counter()
+        proxy = f"socks5://127.0.0.1:{port}"
+        # 1) маршрутизация + гео: реально ли есть выход в сеть
         try:
-            async with httpx.AsyncClient(
-                proxy=f"socks5://127.0.0.1:{port}", timeout=TUNNEL_PROBE_TIMEOUT, verify=False,
-            ) as cl:
+            async with httpx.AsyncClient(proxy=proxy, timeout=TUNNEL_PROBE_TIMEOUT, verify=False) as cl:
                 r = await cl.get(TUNNEL_PROBE_URL)
-                ms = (time.perf_counter() - start) * 1000
                 data = r.json()
-                if data.get("status") == "success":
-                    cc = data.get("countryCode", "")
-                    country = data.get("country", "")
-                    ip = data.get("query", "")
-                    return {"ok": True, "info": f"{country} ({cc}) · {ip} · {ms:.0f} ms"}
-                return {"ok": False, "info": "туннель поднялся, но нет выхода в сеть"}
-        except (httpx.TimeoutException, httpx.ProxyError):
+        except (httpx.TimeoutException, httpx.ProxyError, httpx.ConnectError):
             return {"ok": False, "info": "нет выхода в сеть (таймаут — вероятно DPI/бан)"}
         except Exception as e:
             return {"ok": False, "info": f"туннель: {type(e).__name__}"}
+        if data.get("status") != "success":
+            return {"ok": False, "info": "туннель поднялся, но нет выхода в сеть"}
+        cc = data.get("countryCode", "")
+        country = data.get("country", "")
+        exit_ip = data.get("query", "")
+        geo = f"{country} ({cc}) · {exit_ip}"
+
+        # 2) реальная скорость: качаем поток N секунд и считаем Mbps.
+        #    Это и ловит ТСПУ-резку «в 0»: лёгкий запрос проходит, а трафик режется.
+        total, elapsed = 0, 0.001
+        try:
+            async with httpx.AsyncClient(
+                proxy=proxy, verify=False,
+                timeout=httpx.Timeout(10.0, read=SPEED_WINDOW),
+            ) as cl:
+                start = time.perf_counter()
+                async with cl.stream("GET", TUNNEL_SPEED_URL) as resp:
+                    if resp.status_code < 400:
+                        async for chunk in resp.aiter_bytes():
+                            total += len(chunk)
+                            elapsed = time.perf_counter() - start
+                            if total >= SPEED_MAX_BYTES or elapsed >= SPEED_WINDOW:
+                                break
+        except Exception:
+            elapsed = max(time.perf_counter() - start, 0.001)  # таймаут чтения => что успели
+        mbps = total * 8 / elapsed / 1_000_000
+
+        if mbps < SPEED_MIN_MBPS:
+            return {"ok": False, "info": f"трафик режется (~{mbps:.2f} Mbps) — DPI/throttling · выход {geo}"}
+        if mbps < SPEED_SLOW_MBPS:
+            return {"ok": True, "warn": True, "info": f"медленно ~{mbps:.1f} Mbps · {geo}"}
+        return {"ok": True, "info": f"{geo} · ~{mbps:.0f} Mbps"}
     finally:
         if proc and proc.returncode is None:
             try:
@@ -872,6 +904,7 @@ textarea::placeholder{color:#494842}
 .tn-ok{border-left:3px solid var(--lime)} .tn-ok .tn-head{color:var(--lime)}
 .tn-bad{border-left:3px solid var(--coral)} .tn-bad .tn-head{color:var(--coral)}
 .tn-na{border-left:3px solid var(--line-bright);opacity:.7} .tn-na .tn-head{color:var(--muted)}
+.tn-warn{border-left:3px solid #ffb627} .tn-warn .tn-head{color:#ffb627}
 /* история */
 .job-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border:1px solid var(--line);border-radius:2px;background:var(--panel);margin-bottom:8px;font-size:13px;animation:rise .5s ease both}
 .job-row a{color:var(--lime);text-decoration:none} .job-row a:hover{color:var(--lime-soft)}
@@ -959,8 +992,14 @@ def render_results(results: list[dict]) -> str:
         tunnel = ""
         if r.get("tunnel"):
             tw = r["tunnel"]
-            cls = "tn-na" if tw.get("na") else ("tn-ok" if tw.get("ok") else "tn-bad")
-            head = "выход в сеть есть" if tw.get("ok") else ("туннель" if tw.get("na") else "выхода нет")
+            if tw.get("na"):
+                cls, head = "tn-na", "туннель"
+            elif tw.get("warn"):
+                cls, head = "tn-warn", "работает медленно"
+            elif tw.get("ok"):
+                cls, head = "tn-ok", "выход в сеть есть"
+            else:
+                cls, head = "tn-bad", "выхода нет"
             tunnel = f"""
   <div class="tunnel {cls}">
     <span class="tn-label">⟿ туннель</span>
