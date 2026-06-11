@@ -1291,6 +1291,8 @@ async def register(
 async def logout():
     resp = RedirectResponse(LOGIN_URL, status_code=303)
     resp.delete_cookie(COOKIE_NAME, path="/", domain=COOKIE_DOMAIN or None)
+    if COOKIE_DOMAIN:
+        resp.delete_cookie(COOKIE_NAME, path="/")  # и host-only остаток
     return resp
 
 

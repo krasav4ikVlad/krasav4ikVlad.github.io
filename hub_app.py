@@ -536,10 +536,11 @@ async def index(request: Request):
       доступности нод. Один аккаунт — все инструменты.</p>
     </section>"""
         body = hero + auth_card("login") + tools_grid(False)
-    body += """
+    online = "scripts, checker — online · nodes — в разработке" if CHECKER_URL else "scripts — online · checker, nodes — в разработке"
+    body += f"""
     <footer>
       <span>© nodewiki — self-hosted toolkit</span>
-      <span>scripts — online · checker, nodes — в разработке</span>
+      <span>{online}</span>
     </footer>"""
     return page("Главная", body, user=user)
 
@@ -621,7 +622,11 @@ async def register(
 @app.post("/logout")
 async def logout():
     resp = RedirectResponse("/", status_code=303)
+    # чистим обе формы: доменную (.nodewiki.info) и host-only (на всякий случай,
+    # если осталась старая cookie до включения SSO)
     resp.delete_cookie(COOKIE_NAME, path="/", domain=COOKIE_DOMAIN or None)
+    if COOKIE_DOMAIN:
+        resp.delete_cookie(COOKIE_NAME, path="/")
     return resp
 
 
