@@ -38,6 +38,11 @@ warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "Run as root (sudo)."
+# повторный запуск: подхватываем секреты из уже записанного env, если не переданы
+if [ -f "$APP_DIR/nodewiki-checker.env" ]; then
+  [ -z "$TOKEN_DB" ]   && TOKEN_DB="$(grep -h '^TOKEN_DB=' "$APP_DIR/nodewiki-checker.env" | head -1 | cut -d= -f2-)"
+  [ -z "$SECRET_KEY" ] && SECRET_KEY="$(grep -h '^SECRET_KEY=' "$APP_DIR/nodewiki-checker.env" | head -1 | cut -d= -f2-)"
+fi
 [ -n "$TOKEN_DB" ] || die "TOKEN_DB обязателен (та же база, что у основного сервера)."
 [ -n "$SECRET_KEY" ] || die "SECRET_KEY обязателен и должен СОВПАДАТЬ с основным сервером (иначе SSO не сработает).
   Возьмите: grep '^SECRET_KEY=' /opt/script-vault/script-vault.env на основном сервере."
