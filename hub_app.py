@@ -200,6 +200,7 @@ html { color-scheme: dark; -webkit-text-size-adjust: 100%; }
 body {
   font: 15px/1.6 var(--mono); background: var(--bg); color: var(--ink);
   min-height: 100vh; position: relative; overflow-x: hidden;
+  display: flex; flex-direction: column;  /* футер прижат к низу */
 }
 body::before {
   content: ""; position: fixed; inset: 0; z-index: -2;
@@ -217,7 +218,11 @@ body::after {
   background: repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
   opacity: .4; mix-blend-mode: multiply;
 }
-.wrap { max-width: 920px; margin: 0 auto; padding: 0 22px; }
+.wrap {
+  max-width: 920px; margin: 0 auto; padding: 0 22px;
+  width: 100%; flex: 1 0 auto; display: flex; flex-direction: column;
+}
+.wrap footer { margin-top: auto; }  /* прижимаем футер при коротком контенте */
 header {
   position: sticky; top: 0; z-index: 20;
   backdrop-filter: blur(11px) saturate(1.3);
@@ -365,7 +370,6 @@ def page(title: str, body: str, *, user: dict | None = None) -> HTMLResponse:
     if user:
         actions = f"""
       <span class="user-chip">{html.escape(user["username"])}</span>
-      <a class="btn btn-sm btn-primary" href="{SCRIPTS_URL}">скрипты</a>
       <form method="post" action="/logout"><button class="btn btn-sm" type="submit">выйти</button></form>"""
     else:
         actions = """
@@ -507,8 +511,9 @@ async def index(request: Request):
     <section class="hero">
       <span class="kicker">панель инструментов</span>
       <h1>Привет, <span class="accent">{html.escape(user["username"])}</span></h1>
-      <p class="lede">Выбирай инструмент. Сессия общая для всех поддоменов —
-      повторно входить не нужно.</p>
+      <p class="lede">nodewiki — рабочее место оператора нод. Храни установочные скрипты
+      и разворачивай серверы одной командой curl, проверяй VPN-конфиги перед раздачей
+      и следи, чтобы ноды не падали. Всё в одном месте, под одним аккаунтом.</p>
     </section>"""
         body = hero + tools_grid(True)
     else:
