@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Первоначальная настройка чистого Debian 11/12 под nodewiki.info.
 # Запускать от root:
-#   bash <(curl -sSL https://raw.githubusercontent.com/krasav4ikVlad/krasav4ikVlad.github.io/master/deploy/setup.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/krasav4ikVlad/krasav4ikVlad.github.io/master/deploy/setup.sh)
+#
+# Переменные окружения (опционально):
+#   BRANCH=имя_ветки               — какую ветку чекаутить (по умолчанию master)
+#   LETSENCRYPT_EMAIL=ты@почта
 #
 # Делает:
 #   1. ставит nginx, PHP-FPM, sqlite, certbot, git
@@ -14,6 +18,7 @@ set -euo pipefail
 
 REPO="https://github.com/krasav4ikVlad/krasav4ikVlad.github.io.git"
 WEBROOT="/var/www/nodewiki.info"
+BRANCH="${BRANCH:-master}"
 DOMAINS=(nodewiki.info www.nodewiki.info scripts.nodewiki.info)
 EMAIL="${LETSENCRYPT_EMAIL:-admin@nodewiki.info}"
 
@@ -28,12 +33,14 @@ apt-get install -y nginx git curl ca-certificates \
                    php-fpm php-sqlite3 php-cli php-mbstring \
                    certbot python3-certbot-nginx
 
-echo "==> 2. Репозиторий в $WEBROOT"
+echo "==> 2. Репозиторий в $WEBROOT (ветка: $BRANCH)"
 if [[ -d "$WEBROOT/.git" ]]; then
-  git -C "$WEBROOT" pull --ff-only
+  git -C "$WEBROOT" fetch --quiet origin "$BRANCH"
+  git -C "$WEBROOT" checkout "$BRANCH"
+  git -C "$WEBROOT" reset --hard "origin/$BRANCH"
 else
   rm -rf "$WEBROOT"
-  git clone "$REPO" "$WEBROOT"
+  git clone --branch "$BRANCH" "$REPO" "$WEBROOT"
 fi
 
 echo "==> 3. Права"

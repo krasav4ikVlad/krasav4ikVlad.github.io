@@ -7,10 +7,11 @@ set -euo pipefail
 WEBROOT="/var/www/nodewiki.info"
 cd "$WEBROOT"
 
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 OLD_CONF_HASH=$(sha256sum deploy/nginx.conf 2>/dev/null | awk '{print $1}' || echo "")
 
-git fetch --quiet
-git reset --hard origin/master
+git fetch --quiet origin "$BRANCH"
+git reset --hard "origin/$BRANCH"
 chown -R www-data:www-data "$WEBROOT"
 
 NEW_CONF_HASH=$(sha256sum deploy/nginx.conf | awk '{print $1}')
