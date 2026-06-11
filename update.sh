@@ -32,6 +32,10 @@ update_one() {
   curl -fsSL "$RAW_BASE/$file" -o "$tmp" || { warn "не скачался $file"; rm -f "$tmp"; return 0; }
   python3 -c "compile(open('$tmp').read(),'$file','exec')" || { warn "$file не парсится — пропускаю"; rm -f "$tmp"; return 0; }
   mv "$tmp" "$dir/$file"
+  # вернуть владельца сервисному пользователю (иначе он не прочитает файл)
+  local owner; owner="$(stat -c '%U:%G' "$dir" 2>/dev/null || true)"
+  [ -n "$owner" ] && chown "$owner" "$dir/$file" 2>/dev/null || true
+  chmod 644 "$dir/$file" 2>/dev/null || true
   if [ -n "$deps" ] && [ -x "$dir/venv/bin/pip" ]; then
     "$dir/venv/bin/pip" install --quiet $deps || warn "pip: часть зависимостей не доустановилась"
   fi
