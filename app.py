@@ -55,6 +55,7 @@ except ImportError:
 TOKEN_DB = os.environ.get("TOKEN_DB", "mongodb://localhost:27017")
 SECRET_KEY = os.environ.get("SECRET_KEY", "")
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
+HUB_URL = os.environ.get("HUB_URL", "https://nodewiki.info").rstrip("/")
 PORT = int(os.environ.get("PORT", "8000"))
 HOST = os.environ.get("HOST", "0.0.0.0")  # за nginx ставьте 127.0.0.1
 
@@ -475,6 +476,10 @@ header {
   display: inline-flex; align-items: center;
 }
 .logo b { color: var(--lime); font-weight: 800; }
+.logo a { color: inherit; text-decoration: none; transition: color .15s; }
+.logo a.logo-hub:hover { color: var(--lime); }
+.logo a.logo-app { color: var(--lime-dim); }
+.logo a.logo-app:hover { color: var(--lime); }
 .logo::after {
   content: "_"; color: var(--lime); margin-left: 2px;
   animation: blink 1.1s steps(1) infinite;
@@ -1082,7 +1087,7 @@ def page(
         header = f"""
 <header>
   <div class="header-inner">
-    <a class="logo" href="/">script<b>/</b>vault</a>
+    <span class="logo"><a class="logo-hub" href="{HUB_URL}" title="На главную nodewiki">nodewiki</a><b>/</b><a class="logo-app" href="/">scripts</a></span>
     <div class="header-actions">
       <a class="user-chip" href="/settings" title="Настройки">{html.escape(user)}</a>
       <a class="btn btn-sm btn-primary" href="/new">+ Новый скрипт</a>
