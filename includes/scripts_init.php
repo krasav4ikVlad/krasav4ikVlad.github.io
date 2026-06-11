@@ -103,6 +103,22 @@ function scripts_base_url(): string {
     return $scheme . '://' . $host;
 }
 
+// URL, через который запускается скрипт (curl/bash подтянут оттуда сырой код).
+// На поддомене вида scripts.* отдаём короткий вариант — nginx переписывает
+// /<slug> в /s.php?slug=<slug>. На любом другом хосте — fallback через query.
+function scripts_install_url(string $slug): string {
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $base = scripts_base_url();
+    if (str_starts_with($host, 'scripts.')) {
+        return $base . '/' . rawurlencode($slug);
+    }
+    return $base . '/s.php?slug=' . rawurlencode($slug);
+}
+
+function scripts_install_cmd(string $slug): string {
+    return 'bash <(curl -sSL ' . scripts_install_url($slug) . ')';
+}
+
 function h(string $s): string {
     return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }

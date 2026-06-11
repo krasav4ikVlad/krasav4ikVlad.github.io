@@ -8,8 +8,6 @@ $rows = $pdo->query(
       WHERE is_public = 1
       ORDER BY title COLLATE NOCASE'
 )->fetchAll();
-
-$base = scripts_base_url();
 ?><!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -50,8 +48,7 @@ $base = scripts_base_url();
                 <?php endif; ?>
 
                 <?php foreach ($rows as $r):
-                    $url = $base . '/s.php?slug=' . urlencode($r['slug']);
-                    $cmd = 'bash <(curl -sSL ' . $url . ')';
+                    $cmd = scripts_install_cmd($r['slug']);
                 ?>
                   <div class="script-card">
                     <h4><?= h($r['title']) ?></h4>

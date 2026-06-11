@@ -148,7 +148,6 @@ $rows = $pdo->query(
     'SELECT id, slug, title, description, content, is_public, runs_count, updated_at
        FROM scripts ORDER BY updated_at DESC'
 )->fetchAll();
-$base = scripts_base_url();
 
 // данные для JS — словарь {id: {…}} с полной информацией для предзаполнения формы
 $scripts_json = json_encode(
@@ -163,7 +162,7 @@ if ($saved_id) {
     }
 }
 
-render_layout('Скрипты', function () use ($rows, $base, $msg, $error, $open_modal,
+render_layout('Скрипты', function () use ($rows, $msg, $error, $open_modal,
                                           $form_data, $saved_row, $scripts_json) {
     $default_content = "#!/usr/bin/env bash\nset -euo pipefail\n\n# твой скрипт здесь\n";
     ?>
@@ -178,8 +177,7 @@ render_layout('Скрипты', function () use ($rows, $base, $msg, $error, $op
     <?php if ($error): ?><div class="err"><?= h($error) ?></div><?php endif; ?>
 
     <?php if ($saved_row):
-        $url = $base . '/s.php?slug=' . urlencode($saved_row['slug']);
-        $cmd = 'bash <(curl -sSL ' . $url . ')'; ?>
+        $cmd = scripts_install_cmd($saved_row['slug']); ?>
       <div class="ok saved-banner">
         <strong>«<?= h($saved_row['title']) ?>» сохранён.</strong> Команда для запуска:
         <div class="install-cmd"><button type="button" class="copy-btn js-copy" data-copy="<?= h($cmd) ?>">копировать</button><code><?= h($cmd) ?></code></div>
@@ -194,8 +192,7 @@ render_layout('Скрипты', function () use ($rows, $base, $msg, $error, $op
 
     <div class="cards">
       <?php foreach ($rows as $r):
-        $url = $base . '/s.php?slug=' . urlencode($r['slug']);
-        $cmd = 'bash <(curl -sSL ' . $url . ')';
+        $cmd = scripts_install_cmd($r['slug']);
         $highlight = $saved_row && (int)$saved_row['id'] === (int)$r['id'];
         ?>
         <div class="card<?= $highlight ? ' highlight' : '' ?>" id="script-<?= (int)$r['id'] ?>">
