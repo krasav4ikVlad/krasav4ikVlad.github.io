@@ -46,6 +46,8 @@ PORT = int(os.environ.get("PORT", "8001"))
 HOST = os.environ.get("HOST", "127.0.0.1")
 
 SCRIPTS_URL = os.environ.get("SCRIPTS_URL", "https://scripts.nodewiki.info")
+# если задан — карточка VPN-чекера становится активной и ведёт сюда
+CHECKER_URL = os.environ.get("CHECKER_URL", "").rstrip("/")
 
 COOKIE_NAME = "session"
 SESSION_TTL = 60 * 60 * 24 * 30  # 30 дней
@@ -408,6 +410,24 @@ def tools_grid(authed: bool) -> str:
         if authed
         else 'class="tool live" href="/login"'
     )
+    if CHECKER_URL:
+        chk_open = f'<a class="tool live" href="{CHECKER_URL if authed else "/login"}" style="animation-delay:.12s"><span class="arrow">↗</span>'
+        chk_badge = '<span class="badge badge-live">online</span>'
+        chk_close = "</a>"
+    else:
+        chk_open = '<div class="tool soon" style="animation-delay:.12s">'
+        chk_badge = '<span class="badge badge-soon">скоро</span>'
+        chk_close = "</div>"
+    checker_card = f"""{chk_open}
+        <span class="tool-num">02</span>
+        <div class="tool-name">VPN Checker</div>
+        <div class="tool-desc">Проверка VLESS-ссылок и JSON-конфигов: парсинг и реальная
+        проверка ICMP, TCP, HTTP GET и POST по каждому host:port.</div>
+        <div class="tool-foot">
+          <span class="tool-host">checker.nodewiki.info</span>
+          {chk_badge}
+        </div>
+      {chk_close}"""
     return f"""
     <section class="tools">
       <a {scripts_attrs} style="animation-delay:.05s">
@@ -421,16 +441,7 @@ def tools_grid(authed: bool) -> str:
           <span class="badge badge-live">online</span>
         </div>
       </a>
-      <div class="tool soon" style="animation-delay:.12s">
-        <span class="tool-num">02</span>
-        <div class="tool-name">VPN Checker</div>
-        <div class="tool-desc">Проверка VLESS-ссылок и JSON-конфигов: парсинг, валидация
-        и реальная проверка через туннель — латенси, выход в сеть, гео.</div>
-        <div class="tool-foot">
-          <span class="tool-host">checker.nodewiki.info</span>
-          <span class="badge badge-soon">скоро</span>
-        </div>
-      </div>
+      {checker_card}
       <div class="tool soon" style="animation-delay:.19s">
         <span class="tool-num">03</span>
         <div class="tool-name">Node Checker</div>

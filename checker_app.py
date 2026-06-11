@@ -1,0 +1,797 @@
+#!/usr/bin/env python3
+"""
+nodewiki VPN Checker — проверка доступности серверов из VLESS-ссылок и JSON-конфигов.
+
+Принимает VLESS-ссылку (vless://…) или СОДЕРЖИМОЕ JSON-конфига (xray/v2ray),
+вытаскивает все эндпоинты (host:port) и проверяет по каждому:
+  • ICMP   — ping хоста
+  • TCP    — соединение на host:port + латенси
+  • GET    — HTTP(S) GET на host:port
+  • POST   — HTTP(S) POST на host:port
+
+Единый вход (SSO): сессия читается из cookie .nodewiki.info — тот же SECRET_KEY
+и та же MongoDB, что у хаба и Script Vault. Вход живёт на хабе.
+
+Токены: на каждого пользователя — token-bucket (баланс + дозаправка со временем),
+1 токен за проверяемый эндпоинт. Очередь: in-process FIFO + пул воркеров с
+ограниченной параллельностью — наплыв пользователей тестируется по очереди.
+
+Отдельный сервер (РФ). Переменные окружения:
+  TOKEN_DB        MongoDB (та же база RS_2, что у остальных сервисов)
+  SECRET_KEY      тот же секрет, что у хаба (иначе SSO не сработает)
+  COOKIE_DOMAIN   .nodewiki.info
+  HUB_URL         https://nodewiki.info  (куда отправлять на вход)
+  BASE_URL        https://checker.nodewiki.info
+  HOST, PORT      127.0.0.1 : 8002
+  CHECKER_WORKERS         число параллельных воркеров очереди (по умолчанию 2)
+  CHECKER_TOKEN_CAP       потолок токенов на пользователя (по умолчанию 60)
+  CHECKER_REFILL_SECONDS  секунд на дозаправку 1 токена (по умолчанию 30)
+  CHECKER_ALLOW_PRIVATE   1 — разрешить проверять приватные диапазоны (по умолч. 0)
+
+Запуск:  TOKEN_DB=... SECRET_KEY=... COOKIE_DOMAIN=.nodewiki.info python checker_app.py
+"""
+
+import asyncio
+import base64
+import hashlib
+import hmac
+import html
+import ipaddress
+import json
+import os
+import socket
+import sys
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from urllib.parse import urlsplit, parse_qs, quote as urlquote
+
+import httpx
+import uvicorn
+from fastapi import FastAPI, Form, Path, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, JSONResponse
+from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId
+from bson.errors import InvalidId
+
+# ----------------------------------------------------------------------------
+# Конфигурация
+# ----------------------------------------------------------------------------
+
+TOKEN_DB = os.environ.get("TOKEN_DB", "mongodb://localhost:27017")
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
+COOKIE_DOMAIN = os.environ.get("COOKIE_DOMAIN", "")
+HUB_URL = os.environ.get("HUB_URL", "https://nodewiki.info").rstrip("/")
+BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
+HOST = os.environ.get("HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8002"))
+
+CHECKER_WORKERS = int(os.environ.get("CHECKER_WORKERS", "2"))
+TOKEN_CAP = int(os.environ.get("CHECKER_TOKEN_CAP", "60"))
+REFILL_SECONDS = float(os.environ.get("CHECKER_REFILL_SECONDS", "30"))
+ALLOW_PRIVATE = os.environ.get("CHECKER_ALLOW_PRIVATE", "0") == "1"
+
+MAX_TARGETS = 20          # эндпоинтов на одну заявку
+MAX_QUEUE = 500           # глубина очереди
+TCP_TIMEOUT = 6.0
+HTTP_TIMEOUT = 8.0
+PING_TIMEOUT = 4
+PER_JOB_CONCURRENCY = 8   # сколько проверок параллельно внутри одной заявки
+
+COOKIE_NAME = "session"
+SESSION_TTL = 60 * 60 * 24 * 30
+
+if not SECRET_KEY:
+    SECRET_KEY = "dev-only-secret"
+    print(
+        "[!] SECRET_KEY не задан. Для SSO он обязан совпадать с SECRET_KEY хаба!",
+        file=sys.stderr,
+    )
+
+cluster = AsyncIOMotorClient(TOKEN_DB)
+db = cluster["RS_2"]
+users_col = db["users"]
+jobs_col = db["checker_jobs"]
+
+# очередь задач (id) + воркеры; создаётся в lifespan
+job_queue: "asyncio.Queue[str]" = None  # type: ignore
+
+
+# ----------------------------------------------------------------------------
+# Сессии (формат идентичен хабу/scripts — это и есть SSO)
+# ----------------------------------------------------------------------------
+
+
+def _sign(payload: str) -> str:
+    return hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+
+def session_user_id(request: Request) -> str | None:
+    cookie = request.cookies.get(COOKIE_NAME, "")
+    parts = cookie.split(".")
+    if len(parts) != 3:
+        return None
+    user_id, ts, sig = parts
+    if not hmac.compare_digest(_sign(f"{user_id}.{ts}"), sig):
+        return None
+    try:
+        if time.time() - int(ts) > SESSION_TTL:
+            return None
+    except ValueError:
+        return None
+    return user_id
+
+
+async def current_user(request: Request) -> dict | None:
+    uid = session_user_id(request)
+    if not uid:
+        return None
+    try:
+        oid = ObjectId(uid)
+    except (InvalidId, TypeError):
+        return None
+    return await users_col.find_one({"_id": oid})
+
+
+def login_redirect(request: Request) -> RedirectResponse:
+    nxt = urlquote(str(request.url), safe="")
+    return RedirectResponse(f"{HUB_URL}/login?next={nxt}", status_code=303)
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def fmt_dt(iso: str) -> str:
+    try:
+        return datetime.fromisoformat(iso).strftime("%d.%m.%Y %H:%M:%S")
+    except (ValueError, TypeError):
+        return str(iso)
+
+
+# ----------------------------------------------------------------------------
+# Токены — token-bucket на пользователя (поля checker_tokens, checker_refill_at)
+# ----------------------------------------------------------------------------
+
+
+async def take_tokens(user: dict, cost: int) -> tuple[bool, int]:
+    """Дозаправить по времени, затем списать cost. Возвращает (успех, остаток)."""
+    now = time.time()
+    tokens = float(user.get("checker_tokens", TOKEN_CAP))
+    last = float(user.get("checker_refill_at", now))
+    if REFILL_SECONDS > 0:
+        tokens = min(TOKEN_CAP, tokens + (now - last) / REFILL_SECONDS)
+    if tokens >= cost:
+        tokens -= cost
+        ok = True
+    else:
+        ok = False
+    await users_col.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"checker_tokens": tokens, "checker_refill_at": now}},
+    )
+    return ok, int(tokens)
+
+
+async def token_balance(user: dict) -> tuple[int, int]:
+    """Текущий баланс с учётом дозаправки (не списывая). (баланс, потолок)."""
+    now = time.time()
+    tokens = float(user.get("checker_tokens", TOKEN_CAP))
+    last = float(user.get("checker_refill_at", now))
+    if REFILL_SECONDS > 0:
+        tokens = min(TOKEN_CAP, tokens + (now - last) / REFILL_SECONDS)
+    return int(tokens), TOKEN_CAP
+
+
+# ----------------------------------------------------------------------------
+# Парсинг конфигов -> список целей [{host, port, tls, label}]
+# ----------------------------------------------------------------------------
+
+
+def _tls_from(security: str | None, port: int) -> bool:
+    if security and security.lower() in ("tls", "reality", "xtls"):
+        return True
+    return port in (443, 8443)
+
+
+def parse_vless(link: str) -> list[dict]:
+    u = urlsplit(link.strip())
+    if not u.hostname or not u.port:
+        return []
+    q = parse_qs(u.query)
+    security = (q.get("security") or [None])[0]
+    label = ""
+    if u.fragment:
+        from urllib.parse import unquote
+
+        label = unquote(u.fragment)[:80]
+    return [{
+        "host": u.hostname,
+        "port": int(u.port),
+        "tls": _tls_from(security, int(u.port)),
+        "label": label or u.hostname,
+    }]
+
+
+def _walk_json_targets(obj, security_hint=None, out=None):
+    """Рекурсивно ищем (host, port) в любых формах xray/v2ray-конфигов."""
+    if out is None:
+        out = []
+    if isinstance(obj, dict):
+        # security может лежать рядом (streamSettings.security)
+        sec = obj.get("security")
+        stream = obj.get("streamSettings")
+        if isinstance(stream, dict) and stream.get("security"):
+            sec = stream.get("security")
+        sec = sec or security_hint
+        host = obj.get("address") or obj.get("add") or obj.get("server") or obj.get("host")
+        port = obj.get("port")
+        if isinstance(host, str) and host and port not in (None, ""):
+            try:
+                p = int(port)
+                label = obj.get("ps") or obj.get("name") or obj.get("tag") or host
+                out.append({
+                    "host": host,
+                    "port": p,
+                    "tls": _tls_from(sec if isinstance(sec, str) else None, p),
+                    "label": str(label)[:80],
+                })
+            except (ValueError, TypeError):
+                pass
+        for v in obj.values():
+            _walk_json_targets(v, sec if isinstance(sec, str) else security_hint, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _walk_json_targets(v, security_hint, out)
+    return out
+
+
+def parse_config(text: str) -> tuple[list[dict], str]:
+    """Вернуть (цели, ошибка). Поддержка vless://… и JSON-содержимого."""
+    text = text.strip()
+    if not text:
+        return [], "Пусто — вставьте VLESS-ссылку или JSON-конфиг."
+
+    targets: list[dict] = []
+    if text.lower().startswith("vless://"):
+        for line in text.splitlines():
+            line = line.strip()
+            if line.lower().startswith("vless://"):
+                targets += parse_vless(line)
+        if not targets:
+            return [], "Не удалось разобрать VLESS-ссылку (нет host:port)."
+    elif text.lower().startswith("vmess://"):
+        # vmess:// — base64(JSON)
+        try:
+            payload = text[len("vmess://"):].strip().split("#")[0]
+            payload += "=" * (-len(payload) % 4)
+            obj = json.loads(base64.b64decode(payload).decode("utf-8", "replace"))
+            targets = _walk_json_targets(obj)
+        except Exception:
+            return [], "Не удалось разобрать vmess-ссылку."
+    else:
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError as e:
+            return [], f"Невалидный JSON: {e}"
+        targets = _walk_json_targets(obj)
+        if not targets:
+            return [], "В JSON не найдено ни одного host:port (address/port)."
+
+    # дедуп по host:port
+    seen, uniq = set(), []
+    for t in targets:
+        key = (t["host"], t["port"])
+        if key not in seen:
+            seen.add(key)
+            uniq.append(t)
+    if len(uniq) > MAX_TARGETS:
+        return uniq[:MAX_TARGETS], f"Слишком много эндпоинтов, проверим первые {MAX_TARGETS}."
+    return uniq, ""
+
+
+# ----------------------------------------------------------------------------
+# SSRF-защита: не даём чекеру стучаться в самого себя / служебные адреса
+# ----------------------------------------------------------------------------
+
+
+def resolve_safe(host: str) -> tuple[list[str], str]:
+    """Резолвим host -> список IP; запрещаем loopback/link-local/(private)."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return [], "DNS не разрешается"
+    ips = sorted({i[4][0] for i in infos})
+    if not ips:
+        return [], "DNS не разрешается"
+    for ip in ips:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return [], f"некорректный адрес {ip}"
+        if addr.is_loopback or addr.is_link_local or addr.is_multicast or addr.is_unspecified:
+            return [], "адрес запрещён (служебный диапазон)"
+        if addr.is_private and not ALLOW_PRIVATE:
+            return [], "адрес запрещён (приватный диапазон)"
+    return ips, ""
+
+
+# ----------------------------------------------------------------------------
+# Проверки: ICMP / TCP / GET / POST
+# ----------------------------------------------------------------------------
+
+
+async def check_icmp(host: str) -> dict:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ping", "-n", "-c", "1", "-w", str(PING_TIMEOUT), host,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        if proc.returncode == 0:
+            ms = ""
+            for tok in out.decode("utf-8", "replace").split():
+                if tok.startswith("time="):
+                    ms = tok.split("=", 1)[1]
+            return {"ok": True, "info": f"{ms} ms" if ms else "отвечает"}
+        return {"ok": False, "info": "нет ответа"}
+    except FileNotFoundError:
+        return {"ok": False, "info": "ping недоступен на сервере"}
+    except Exception as e:
+        return {"ok": False, "info": str(e)[:60]}
+
+
+async def check_tcp(host: str, port: int) -> dict:
+    start = time.perf_counter()
+    try:
+        fut = asyncio.open_connection(host, port)
+        reader, writer = await asyncio.wait_for(fut, timeout=TCP_TIMEOUT)
+        ms = (time.perf_counter() - start) * 1000
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        return {"ok": True, "info": f"{ms:.0f} ms"}
+    except asyncio.TimeoutError:
+        return {"ok": False, "info": "таймаут"}
+    except (ConnectionRefusedError, OSError) as e:
+        return {"ok": False, "info": getattr(e, "strerror", None) or "отказ"}
+    except Exception as e:
+        return {"ok": False, "info": str(e)[:60]}
+
+
+async def check_http(client: httpx.AsyncClient, method: str, host: str, port: int, tls: bool) -> dict:
+    scheme = "https" if tls else "http"
+    url = f"{scheme}://{host}:{port}/"
+    start = time.perf_counter()
+    try:
+        resp = await client.request(method, url)
+        ms = (time.perf_counter() - start) * 1000
+        return {"ok": resp.status_code < 500, "info": f"HTTP {resp.status_code} · {ms:.0f} ms"}
+    except httpx.TimeoutException:
+        return {"ok": False, "info": "таймаут"}
+    except httpx.HTTPError as e:
+        return {"ok": False, "info": type(e).__name__}
+    except Exception as e:
+        return {"ok": False, "info": str(e)[:60]}
+
+
+async def check_target(sem: asyncio.Semaphore, target: dict) -> dict:
+    host, port, tls = target["host"], target["port"], target["tls"]
+    result = {"host": host, "port": port, "tls": tls, "label": target.get("label", host)}
+    ips, err = resolve_safe(host)
+    if err:
+        result["blocked"] = err
+        for k in ("icmp", "tcp", "get", "post"):
+            result[k] = {"ok": False, "info": err}
+        return result
+    result["ip"] = ips[0]
+    async with sem:
+        verify = False  # ноды часто self-signed / reality
+        async with httpx.AsyncClient(
+            timeout=HTTP_TIMEOUT, verify=verify, follow_redirects=False,
+            headers={"User-Agent": "nodewiki-checker/1.0"},
+        ) as client:
+            icmp, tcp, get, post = await asyncio.gather(
+                check_icmp(host),
+                check_tcp(host, port),
+                check_http(client, "GET", host, port, tls),
+                check_http(client, "POST", host, port, tls),
+            )
+    result.update(icmp=icmp, tcp=tcp, get=get, post=post)
+    return result
+
+
+# ----------------------------------------------------------------------------
+# Очередь и воркеры
+# ----------------------------------------------------------------------------
+
+
+async def run_job(job_id: str) -> None:
+    doc = await jobs_col.find_one({"_id": ObjectId(job_id)})
+    if not doc:
+        return
+    await jobs_col.update_one(
+        {"_id": doc["_id"]}, {"$set": {"status": "running", "started_at": now_iso()}}
+    )
+    sem = asyncio.Semaphore(PER_JOB_CONCURRENCY)
+    try:
+        results = await asyncio.gather(
+            *(check_target(sem, t) for t in doc["targets"])
+        )
+        await jobs_col.update_one(
+            {"_id": doc["_id"]},
+            {"$set": {"status": "done", "results": results, "finished_at": now_iso()}},
+        )
+    except Exception as e:
+        await jobs_col.update_one(
+            {"_id": doc["_id"]},
+            {"$set": {"status": "error", "error": str(e)[:200], "finished_at": now_iso()}},
+        )
+
+
+async def worker(name: int) -> None:
+    while True:
+        job_id = await job_queue.get()
+        try:
+            await run_job(job_id)
+        except Exception as e:
+            print(f"[!] worker {name} job {job_id}: {e}", file=sys.stderr)
+        finally:
+            job_queue.task_done()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global job_queue
+    job_queue = asyncio.Queue(maxsize=MAX_QUEUE)
+    try:
+        await jobs_col.create_index([("owner", 1), ("created_at", -1)])
+    except Exception as e:
+        print(f"[!] индекс jobs: {e}", file=sys.stderr)
+    # восстановление после рестарта: незавершённые -> обратно в очередь
+    try:
+        async for d in jobs_col.find({"status": {"$in": ["queued", "running"]}}):
+            await jobs_col.update_one({"_id": d["_id"]}, {"$set": {"status": "queued"}})
+            try:
+                job_queue.put_nowait(str(d["_id"]))
+            except asyncio.QueueFull:
+                break
+    except Exception as e:
+        print(f"[!] восстановление очереди: {e}", file=sys.stderr)
+    workers = [asyncio.create_task(worker(i)) for i in range(CHECKER_WORKERS)]
+    yield
+    for w in workers:
+        w.cancel()
+
+
+# ----------------------------------------------------------------------------
+# HTML
+# ----------------------------------------------------------------------------
+
+CSS = """
+:root {
+  --bg:#0b0b0c; --panel:#121214; --panel-2:#171719; --line:#25252b; --line-bright:#36363f;
+  --ink:#ece9e0; --muted:#817e75; --lime:#c6f23f; --lime-soft:#d6ff52; --lime-dim:#9cbf33;
+  --cyan:#38e1c2; --coral:#ff5d4e;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --display:"Syne","JetBrains Mono",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark;-webkit-text-size-adjust:100%}
+::selection{background:var(--lime);color:#0c0d07}
+body{font:15px/1.6 var(--mono);background:var(--bg);color:var(--ink);min-height:100vh;position:relative;overflow-x:hidden}
+body::before{content:"";position:fixed;inset:0;z-index:-2;
+  background:linear-gradient(var(--line) 1px,transparent 1px) 0 0/100% 64px,
+  linear-gradient(90deg,var(--line) 1px,transparent 1px) 0 0/64px 100%,
+  radial-gradient(120% 70% at 80% -10%,rgba(198,242,63,.13),transparent 56%),
+  radial-gradient(120% 80% at -10% 110%,rgba(56,225,194,.08),transparent 55%),var(--bg);
+  -webkit-mask-image:radial-gradient(150% 110% at 50% 0%,#000 50%,transparent 100%);
+  mask-image:radial-gradient(150% 110% at 50% 0%,#000 50%,transparent 100%)}
+body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px);opacity:.4;mix-blend-mode:multiply}
+.container{max-width:920px;margin:0 auto;padding:0 22px 80px}
+header{position:sticky;top:0;z-index:20;backdrop-filter:blur(11px) saturate(1.3);-webkit-backdrop-filter:blur(11px) saturate(1.3);
+  background:rgba(11,11,12,.78);border-bottom:1px solid var(--line);margin-bottom:38px}
+.header-inner{max-width:920px;margin:0 auto;padding:15px 22px;display:flex;align-items:center;justify-content:space-between;gap:14px}
+.logo{font-family:var(--display);font-weight:800;font-size:19px;letter-spacing:-.6px;color:var(--ink);text-decoration:none;display:inline-flex;align-items:center}
+.logo b{color:var(--lime)} .logo a{color:inherit;text-decoration:none;transition:color .15s}
+.logo a.hub{color:var(--ink)} .logo a.hub:hover{color:var(--lime)} .logo a.app{color:var(--lime-dim)}
+.logo::after{content:"_";color:var(--lime);margin-left:2px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.header-actions{display:flex;gap:10px;align-items:center} .header-actions form{display:inline}
+.tok{font-family:var(--mono);font-size:12px;color:var(--lime-dim);border:1px solid var(--line-bright);border-radius:2px;padding:6px 11px}
+.tok b{color:var(--lime)}
+h1{font-family:var(--display);font-size:31px;font-weight:800;letter-spacing:-1.2px;line-height:1.04}
+.kicker{display:block;font-size:11px;letter-spacing:3px;text-transform:uppercase;color:var(--lime-dim);margin-bottom:9px}
+.kicker::before{content:"> "}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:26px;animation:rise .55s cubic-bezier(.2,.7,.2,1) both}
+.muted{color:var(--muted);font-size:12.5px}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:10px 16px;border-radius:2px;border:1px solid var(--line-bright);background:var(--panel-2);color:var(--ink);font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:.3px;text-transform:lowercase;text-decoration:none;cursor:pointer;white-space:nowrap;transition:transform .12s,box-shadow .12s,border-color .15s,color .15s,background .15s}
+.btn:hover{border-color:var(--lime);color:var(--lime);transform:translate(-2px,-2px);box-shadow:4px 4px 0 #000}
+.btn:active{transform:translate(0,0);box-shadow:0 0 0 #000}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-primary{background:var(--lime);color:#11130a;border-color:var(--lime);font-weight:700;box-shadow:4px 4px 0 #000}
+.btn-primary:hover{background:var(--lime-soft);color:#11130a;border-color:var(--lime-soft);box-shadow:6px 6px 0 #000}
+.btn-sm{padding:7px 12px;font-size:12px}
+label{display:block;font-size:11px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+label::before{content:"// ";color:var(--lime-dim)}
+textarea{width:100%;padding:12px 14px;border-radius:2px;border:1px solid var(--line-bright);background:#0d0d0f;color:var(--ink);font-family:var(--mono);font-size:13px;line-height:1.6;min-height:200px;resize:vertical;white-space:pre;overflow-wrap:normal;overflow-x:auto;tab-size:4}
+textarea:focus{outline:none;border-color:var(--lime);box-shadow:0 0 0 1px var(--lime),0 0 24px rgba(198,242,63,.13)}
+textarea::placeholder{color:#494842}
+.form-actions{display:flex;gap:12px;margin-top:18px;align-items:center;flex-wrap:wrap}
+.editor{animation:rise .55s cubic-bezier(.2,.7,.2,1) both}
+.error{background:rgba(255,93,78,.1);border:1px solid rgba(255,93,78,.45);border-left:2px solid var(--coral);color:var(--coral);border-radius:2px;padding:11px 14px;font-size:13px;margin:14px 0;animation:shake .4s ease}
+.error::before{content:"\\2717  "}
+.note{background:rgba(56,225,194,.08);border:1px solid rgba(56,225,194,.35);border-left:2px solid var(--cyan);color:var(--cyan);border-radius:2px;padding:10px 14px;font-size:12.5px;margin:14px 0}
+@keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-7px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(3px)}}
+@keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+/* статусы заявки */
+.status{display:inline-block;font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;border-radius:2px;padding:4px 9px}
+.s-queued{color:var(--cyan);border:1px dashed rgba(56,225,194,.5)}
+.s-running{color:#11130a;background:var(--cyan)}
+.s-done{color:#11130a;background:var(--lime)}
+.s-error{color:#fff;background:var(--coral)}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid rgba(198,242,63,.25);border-top-color:var(--lime);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+/* карточка эндпоинта */
+.ep{background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--line-bright);border-radius:3px;padding:16px 18px;margin-bottom:14px;animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
+.ep-top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.ep-name{font-family:var(--display);font-size:16px;font-weight:700}
+.ep-addr{font-family:var(--mono);font-size:12.5px;color:var(--lime-dim);word-break:break-all}
+.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.chk{border:1px solid var(--line-bright);border-radius:2px;padding:9px 11px;background:#0d0d0f}
+.chk-name{font-size:10.5px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)}
+.chk-val{margin-top:5px;font-size:13px;display:flex;align-items:center;gap:7px}
+.chk-val::before{content:"";width:8px;height:8px;border-radius:50%;flex:none;background:var(--muted)}
+.chk-ok .chk-val::before{background:var(--lime);box-shadow:0 0 8px rgba(198,242,63,.6)}
+.chk-bad .chk-val::before{background:var(--coral)}
+.chk-ok .chk-val{color:var(--ink)} .chk-bad .chk-val{color:var(--coral)}
+/* история */
+.job-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border:1px solid var(--line);border-radius:2px;background:var(--panel);margin-bottom:8px;font-size:13px;animation:rise .5s ease both}
+.job-row a{color:var(--lime);text-decoration:none} .job-row a:hover{color:var(--lime-soft)}
+.empty{text-align:center;padding:70px 20px;border:1px dashed var(--line-bright);border-radius:4px;background:repeating-linear-gradient(135deg,transparent 0 14px,rgba(255,255,255,.012) 14px 28px)}
+.empty .glyph{font-family:var(--display);font-size:34px;font-weight:800;color:var(--lime)}
+.empty p{color:var(--muted);margin:14px auto 0;max-width:440px}
+@media (max-width:560px){.checks{grid-template-columns:1fr 1fr}}
+"""
+
+
+def page(title: str, body: str, *, user: dict, refresh: int = 0) -> HTMLResponse:
+    bal, cap = 0, TOKEN_CAP  # заполняется вызывающим через user; покажем через data
+    meta_refresh = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
+    doc = f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#0b0b0c">
+  {meta_refresh}
+  <title>{html.escape(title)} — VPN Checker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Syne:wght@700;800&display=swap">
+  <style>{CSS}</style>
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <span class="logo"><a class="hub" href="{HUB_URL}">nodewiki</a><b>/</b><a class="app" href="/">checker</a></span>
+    <div class="header-actions">
+      <span class="tok" id="tok">токены: <b>{user["_bal"]}</b>/{user["_cap"]}</span>
+      <form method="post" action="{HUB_URL}/logout"><button class="btn btn-sm" type="submit">выйти</button></form>
+    </div>
+  </div>
+</header>
+<div class="container">
+{body}
+</div>
+</body>
+</html>"""
+    return HTMLResponse(doc)
+
+
+async def with_balance(user: dict) -> dict:
+    bal, cap = await token_balance(user)
+    user = dict(user)
+    user["_bal"], user["_cap"] = bal, cap
+    return user
+
+
+def render_check(c: dict) -> str:
+    cls = "chk-ok" if c.get("ok") else "chk-bad"
+    return f'<div class="chk {cls}"><div class="chk-name">{c["_n"]}</div><div class="chk-val">{html.escape(c.get("info",""))}</div></div>'
+
+
+def render_results(results: list[dict]) -> str:
+    cards = []
+    for r in results:
+        addr = f'{html.escape(r["host"])}:{r["port"]}'
+        ipinfo = f' · {html.escape(r["ip"])}' if r.get("ip") else ""
+        tls = " · tls" if r.get("tls") else ""
+        if r.get("blocked"):
+            checks = f'<div class="note" style="margin:0">{html.escape(r["blocked"])}</div>'
+        else:
+            items = []
+            for key, name in (("icmp", "ICMP"), ("tcp", "TCP"), ("get", "GET"), ("post", "POST")):
+                c = dict(r.get(key, {"ok": False, "info": "—"}))
+                c["_n"] = name
+                items.append(render_check(c))
+            checks = f'<div class="checks">{"".join(items)}</div>'
+        cards.append(f"""
+<div class="ep">
+  <div class="ep-top">
+    <span class="ep-name">{html.escape(r.get("label", r["host"]))}</span>
+    <span class="ep-addr">{addr}{ipinfo}{tls}</span>
+  </div>
+  {checks}
+</div>""")
+    return "".join(cards)
+
+
+# ----------------------------------------------------------------------------
+# Роуты
+# ----------------------------------------------------------------------------
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+    )
+    return resp
+
+
+@app.get("/health")
+async def health():
+    return PlainTextResponse("ok")
+
+
+@app.get("/")
+async def index(request: Request, error: str = ""):
+    raw_user = await current_user(request)
+    if not raw_user:
+        return login_redirect(request)
+    user = await with_balance(raw_user)
+    recent = (
+        await jobs_col.find({"owner": str(user["_id"])})
+        .sort("_id", -1).to_list(length=10)
+    )
+    hist = ""
+    if recent:
+        rows = []
+        for j in recent:
+            st = j.get("status", "queued")
+            n = len(j.get("targets", []))
+            rows.append(
+                f'<div class="job-row"><span><span class="status s-{st}">{st}</span> '
+                f'&nbsp;{n} эндпоинт(ов) · {html.escape(fmt_dt(j.get("created_at","")))}</span>'
+                f'<a href="/job/{j["_id"]}">открыть →</a></div>'
+            )
+        hist = f'<div class="page-head" style="margin-top:34px"><div><span class="kicker">последние проверки</span></div></div>{"".join(rows)}'
+
+    err_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
+    qsize = job_queue.qsize() if job_queue else 0
+    body = f"""
+<div class="page-head">
+  <div><span class="kicker">vpn checker</span><h1>Проверка конфигов</h1></div>
+  <span class="muted">в очереди: {qsize}</span>
+</div>
+{err_html}
+<form class="editor" method="post" action="/check">
+  <label for="config">VLESS-ссылка или JSON-конфиг</label>
+  <textarea id="config" name="config" required spellcheck="false"
+    placeholder="vless://uuid@host:443?security=reality&sni=...#MyNode&#10;&#10;— или вставьте JSON-конфиг xray/v2ray —&#10;{{&quot;outbounds&quot;: [...]}}"></textarea>
+  <p class="muted" style="margin-top:10px">Проверяется ICMP, TCP, HTTP GET и POST по каждому host:port.
+  Списывается 1 токен за эндпоинт. Дозаправка: +1 токен каждые {int(REFILL_SECONDS)} c (до {TOKEN_CAP}).</p>
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">Проверить</button>
+  </div>
+</form>
+{hist}"""
+    return page("Проверка", body, user=user)
+
+
+@app.post("/check")
+async def submit_check(request: Request, config: str = Form(...)):
+    raw_user = await current_user(request)
+    if not raw_user:
+        return login_redirect(request)
+
+    targets, msg = parse_config(config)
+    if not targets:
+        return RedirectResponse(f"/?error={urlquote(msg)}", status_code=303)
+
+    cost = len(targets)
+    ok, _bal = await take_tokens(raw_user, cost)
+    if not ok:
+        return RedirectResponse(
+            f"/?error={urlquote(f'Недостаточно токенов: нужно {cost}. Подождите дозаправки.')}",
+            status_code=303,
+        )
+
+    if job_queue.full():
+        return RedirectResponse(
+            f"/?error={urlquote('Очередь переполнена, попробуйте позже.')}", status_code=303
+        )
+
+    doc = {
+        "owner": str(raw_user["_id"]),
+        "status": "queued",
+        "targets": targets,
+        "note": msg,
+        "created_at": now_iso(),
+    }
+    res = await jobs_col.insert_one(doc)
+    job_id = str(res.inserted_id)
+    await job_queue.put(job_id)
+    return RedirectResponse(f"/job/{job_id}", status_code=303)
+
+
+@app.get("/job/{job_id}")
+async def job_view(request: Request, job_id: str = Path(...)):
+    raw_user = await current_user(request)
+    if not raw_user:
+        return login_redirect(request)
+    try:
+        oid = ObjectId(job_id)
+    except (InvalidId, TypeError):
+        return RedirectResponse("/", status_code=303)
+    job = await jobs_col.find_one({"_id": oid, "owner": str(raw_user["_id"])})
+    if not job:
+        return RedirectResponse("/", status_code=303)
+    user = await with_balance(raw_user)
+
+    status = job.get("status", "queued")
+    note = f'<div class="note">{html.escape(job["note"])}</div>' if job.get("note") else ""
+    n = len(job.get("targets", []))
+
+    if status in ("queued", "running"):
+        # позиция в очереди (грубо): для queued
+        pending = "" if status == "running" else " — ждёт своей очереди"
+        body = f"""
+<div class="page-head">
+  <div><span class="kicker">проверка</span><h1>Заявка #{html.escape(job_id[-6:])}</h1></div>
+  <span class="status s-{status}">{status}</span>
+</div>
+{note}
+<div class="ep" style="text-align:center;padding:46px 18px">
+  <div><span class="spin"></span> Проверяю {n} эндпоинт(ов){pending}…</div>
+  <p class="muted" style="margin-top:12px">Страница обновится автоматически.</p>
+</div>
+<div class="form-actions"><a class="btn" href="/">← Новая проверка</a></div>"""
+        return page("Проверка…", body, user=user, refresh=3)
+
+    if status == "error":
+        body = f"""
+<div class="page-head"><div><span class="kicker">проверка</span><h1>Заявка #{html.escape(job_id[-6:])}</h1></div>
+<span class="status s-error">error</span></div>
+<div class="error">{html.escape(job.get("error","неизвестная ошибка"))}</div>
+<div class="form-actions"><a class="btn" href="/">← Новая проверка</a></div>"""
+        return page("Ошибка", body, user=user)
+
+    results = job.get("results", [])
+    body = f"""
+<div class="page-head">
+  <div><span class="kicker">результат · {html.escape(fmt_dt(job.get("finished_at","")))}</span><h1>Заявка #{html.escape(job_id[-6:])}</h1></div>
+  <span class="status s-done">done</span>
+</div>
+{note}
+{render_results(results)}
+<div class="form-actions"><a class="btn btn-primary" href="/">← Новая проверка</a></div>"""
+    return page("Результат", body, user=user)
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host=HOST, port=PORT)
