@@ -7,6 +7,8 @@ Self-hosted хостинг скриптов для команды. Один фа
 
 Дополнительно: **ИИ-помощник** — загрузите `.md` с описанием ноды, и Claude
 (Anthropic) сгенерирует готовый установочный bash-скрипт прямо в редакторе.
+Каждый пользователь добавляет **свой** Anthropic API-ключ в настройках
+(`/settings`) — общего серверного ключа нет.
 
 ## Запуск
 
@@ -15,7 +17,6 @@ pip install fastapi uvicorn python-multipart motor anthropic
 
 TOKEN_DB='mongodb+srv://user:pass@cluster/...' \
 SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
-ANTHROPIC_API_KEY='sk-ant-...' \
 python app.py
 ```
 
@@ -28,7 +29,6 @@ python app.py
 |---------------------|---------------------------------------------------------|--------------|
 | `TOKEN_DB`          | Строка подключения к MongoDB (база `RS_2`)              | `mongodb://localhost:27017` (с предупреждением) |
 | `SECRET_KEY`        | Секрет для подписи cookie-сессий                        | генерируется на старте (сессии слетают при рестарте) |
-| `ANTHROPIC_API_KEY` | Ключ Claude API для ИИ-помощника                        | не задан → помощник выключен |
 | `BASE_URL`          | Внешний адрес для отображаемых ссылок                   | берётся из заголовков запроса |
 | `HOST` / `PORT`     | Адрес и порт uvicorn                                    | `0.0.0.0` / `8000` |
 
@@ -45,15 +45,15 @@ python app.py
 На сервере под root:
 
 ```bash
-TOKEN_DB='mongodb+srv://...' ANTHROPIC_API_KEY='sk-ant-...' bash <(curl -fsSL \
+TOKEN_DB='mongodb+srv://...' bash <(curl -fsSL \
   https://raw.githubusercontent.com/krasav4ikVlad/krasav4ikVlad.github.io/refs/heads/claude/script-hosting-app-msq5fe/deploy.sh)
 ```
 
 Скрипт `deploy.sh` ставит зависимости, создаёт venv и systemd-сервис на
 `127.0.0.1:8000`, настраивает nginx-vhost для `scripts.nodewiki.info` и получает
-TLS-сертификат Let's Encrypt. `TOKEN_DB` обязателен; `ANTHROPIC_API_KEY`
-опционален (без него помощник просто выключен). Если порты 80/443 уже заняты
-apache — перезапустите с `REPLACE_APACHE=1`.
+TLS-сертификат Let's Encrypt. `TOKEN_DB` обязателен. Ключи Claude — у каждого
+пользователя свои, добавляются в настройках после входа. Если порты 80/443 уже
+заняты apache — перезапустите с `REPLACE_APACHE=1`.
 
 После деплоя зарегистрируйте первый аккаунт на `https://scripts.nodewiki.info/register`.
 

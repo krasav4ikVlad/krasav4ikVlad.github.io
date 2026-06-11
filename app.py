@@ -8,16 +8,16 @@ Script Vault — self-hosted хостинг скриптов для команд
 — удобно для `curl -fsSL <url> | bash`.
 
 ИИ-помощник: загрузите .md с описанием ноды — Claude (Anthropic) сгенерирует
-готовый установочный bash-скрипт прямо в редактор.
+готовый установочный bash-скрипт прямо в редактор. Каждый пользователь указывает
+СВОЙ Anthropic API-ключ в настройках (/settings) — общего серверного ключа нет.
 
 Переменные окружения:
-  TOKEN_DB           строка подключения к MongoDB (база RS_2)
-  SECRET_KEY         секрет для подписи cookie-сессий
-  ANTHROPIC_API_KEY  ключ Claude API для ИИ-помощника
-  BASE_URL           внешний адрес для ссылок (если пуст — из заголовков)
-  HOST, PORT         адрес/порт uvicorn (по умолчанию 0.0.0.0:8000)
+  TOKEN_DB    строка подключения к MongoDB (база RS_2)
+  SECRET_KEY  секрет для подписи cookie-сессий
+  BASE_URL    внешний адрес для ссылок (если пуст — из заголовков)
+  HOST, PORT  адрес/порт uvicorn (по умолчанию 0.0.0.0:8000)
 
-Запуск:  TOKEN_DB=... SECRET_KEY=... ANTHROPIC_API_KEY=... python app.py
+Запуск:  TOKEN_DB=... SECRET_KEY=... python app.py
 """
 
 import hashlib
@@ -87,18 +87,26 @@ users_col = db["users"]
 scripts_col = db["scripts"]
 
 # ----------------------------------------------------------------------------
-# Anthropic (ИИ-помощник)
+# Anthropic (ИИ-помощник) — каждый пользователь указывает СВОЙ API-ключ
+# в настройках (/settings); общего серверного ключа нет.
 # ----------------------------------------------------------------------------
 
-aclient = None
-if AsyncAnthropic is not None and os.environ.get("ANTHROPIC_API_KEY"):
-    aclient = AsyncAnthropic()
-else:
+if AsyncAnthropic is None:
     print(
-        "[i] ИИ-помощник выключен (нет ANTHROPIC_API_KEY или пакета anthropic). "
-        "Скрипты можно вести вручную.",
+        "[i] Пакет anthropic не установлен — ИИ-помощник выключен. "
+        "pip install anthropic, чтобы включить.",
         file=sys.stderr,
     )
+
+
+def user_ai_key(user: dict | None) -> str:
+    return (user or {}).get("anthropic_key", "") or ""
+
+
+def mask_key(key: str) -> str:
+    if len(key) <= 12:
+        return "•" * len(key)
+    return f"{key[:7]}…{key[-4:]}"
 
 AI_SYSTEM = (
     "Ты — опытный DevOps-инженер. По предоставленной документации (Markdown) о "
@@ -322,8 +330,12 @@ header {
 .user-chip {
   font-family: var(--mono); font-size: 12px; color: var(--lime-dim);
   border: 1px solid var(--line-bright); border-radius: 2px; padding: 6px 11px;
+  text-decoration: none; cursor: pointer;
+  transition: border-color .15s, color .15s;
 }
+.user-chip:hover { border-color: var(--lime); color: var(--lime); }
 .user-chip::before { content: "@"; color: var(--muted); }
+.user-chip::after { content: " ⚙"; color: var(--muted); font-size: 11px; }
 
 /* headings */
 h1 {
@@ -647,9 +659,16 @@ async function aiGenerate(btn) {
 """
 
 
-def ai_panel() -> str:
-    if aclient is None:
+def ai_panel(user: dict) -> str:
+    if AsyncAnthropic is None:
         return ""
+    if not user_ai_key(user):
+        return """
+<div class="ai-box">
+  <span class="kicker">ии-помощник</span>
+  <p class="muted">Claude может сгенерировать установочный скрипт по вашему .md — для этого
+  добавьте свой Anthropic API-ключ в <a href="/settings" style="color:var(--lime)">настройках</a>.</p>
+</div>"""
     return """
 <div class="ai-box">
   <span class="kicker">ии-помощник</span>
@@ -670,7 +689,7 @@ def page(title: str, body: str, *, user: str | None = None) -> HTMLResponse:
   <div class="header-inner">
     <a class="logo" href="/">script<b>/</b>vault</a>
     <div class="header-actions">
-      <span class="user-chip">{html.escape(user)}</span>
+      <a class="user-chip" href="/settings" title="Настройки">{html.escape(user)}</a>
       <a class="btn btn-sm btn-primary" href="/new">+ Новый скрипт</a>
       <form method="post" action="/logout">
         <button class="btn btn-sm" type="submit">Выйти</button>
@@ -881,7 +900,7 @@ async def new_form(request: Request):
 <form class="editor" method="post" action="/scripts">
   <label for="name">Название</label>
   <input type="text" id="name" name="name" required maxlength="200" placeholder="install-node.sh" autofocus>
-  {ai_panel()}
+  {ai_panel(user)}
   <label for="content">Содержимое</label>
   <textarea id="content" name="content" spellcheck="false" placeholder="#!/usr/bin/env bash&#10;set -euo pipefail&#10;..."></textarea>
   <div class="form-actions">
@@ -952,7 +971,7 @@ async def edit_form(request: Request, script_id: str = Path(...)):
 <form class="editor" method="post" action="/scripts/{script_id}">
   <label for="name">Название</label>
   <input type="text" id="name" name="name" required maxlength="200" value="{html.escape(row["name"], quote=True)}">
-  {ai_panel()}
+  {ai_panel(user)}
   <label for="content">Содержимое</label>
   <textarea id="content" name="content" spellcheck="false">{html.escape(row["content"])}</textarea>
   <div class="form-actions">
@@ -998,6 +1017,83 @@ async def delete_script(request: Request, script_id: str = Path(...)):
     return RedirectResponse("/", status_code=303)
 
 
+# ---- настройки: персональный Claude API-ключ --------------------------------
+
+
+def settings_body(user: dict, *, saved: bool = False, error: str = "") -> str:
+    key = user_ai_key(user)
+    err_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
+    if key:
+        status = f"""
+  <span class="kicker">текущий ключ</span>
+  <code>{html.escape(mask_key(key))}</code>
+  <form method="post" action="/settings/token/delete" style="display:inline"
+        onsubmit="return confirm('Удалить сохранённый API-ключ?')">
+    <button class="btn btn-sm btn-danger" type="submit">Удалить ключ</button>
+  </form>"""
+    else:
+        status = """
+  <span class="kicker">текущий ключ</span>
+  <p class="muted">Ключ не задан — ИИ-помощник в редакторе выключен.</p>"""
+    saved_html = (
+        '<div class="ai-box"><span class="kicker">готово</span>'
+        '<p class="muted">Ключ сохранён — ИИ-помощник включён в редакторе.</p></div>'
+        if saved
+        else ""
+    )
+    return f"""
+<div class="page-head"><div><span class="kicker">настройки</span><h1>Claude API</h1></div></div>
+{saved_html}
+<div class="share">
+{status}
+</div>
+<form class="editor" method="post" action="/settings/token">
+  {err_html}
+  <label for="anthropic_key">Ваш Anthropic API-ключ</label>
+  <input type="password" id="anthropic_key" name="anthropic_key" required
+         placeholder="sk-ant-..." autocomplete="off">
+  <p class="muted" style="margin-top:10px">Ключ используется только для генерации ваших
+  скриптов и хранится на сервере. Получить ключ: console.anthropic.com → API Keys.</p>
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">Сохранить ключ</button>
+    <a class="btn" href="/">К списку</a>
+  </div>
+</form>"""
+
+
+@app.get("/settings")
+async def settings_page(request: Request, saved: int = 0):
+    user = await current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    return page("Настройки", settings_body(user, saved=bool(saved)), user=user["username"])
+
+
+@app.post("/settings/token")
+async def settings_save_token(request: Request, anthropic_key: str = Form(...)):
+    user = await current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    key = anthropic_key.strip()
+    if len(key) < 20 or any(c.isspace() for c in key):
+        return page(
+            "Настройки",
+            settings_body(user, error="Это не похоже на API-ключ (sk-ant-…)"),
+            user=user["username"],
+        )
+    await users_col.update_one({"_id": user["_id"]}, {"$set": {"anthropic_key": key}})
+    return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@app.post("/settings/token/delete")
+async def settings_delete_token(request: Request):
+    user = await current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    await users_col.update_one({"_id": user["_id"]}, {"$unset": {"anthropic_key": ""}})
+    return RedirectResponse("/settings", status_code=303)
+
+
 # ---- ИИ-помощник -----------------------------------------------------------
 
 
@@ -1010,9 +1106,14 @@ async def ai_generate(
     user = await current_user(request)
     if not user:
         return PlainTextResponse("Требуется вход", status_code=401)
-    if aclient is None:
+    if AsyncAnthropic is None:
         return PlainTextResponse(
-            "ИИ недоступен: задайте ANTHROPIC_API_KEY", status_code=503
+            "ИИ недоступен: на сервере не установлен пакет anthropic", status_code=503
+        )
+    key = user_ai_key(user)
+    if not key:
+        return PlainTextResponse(
+            "Добавьте свой Claude API-ключ в настройках", status_code=403
         )
 
     doc_text = ""
@@ -1023,6 +1124,7 @@ async def ai_generate(
         return PlainTextResponse("Прикрепите .md или опишите задачу", status_code=400)
 
     prompt = build_ai_prompt(doc_text, instructions)
+    aclient = AsyncAnthropic(api_key=key)
 
     async def gen():
         try:
@@ -1037,7 +1139,10 @@ async def ai_generate(
                 async for text in stream.text_stream:
                     yield text
         except Exception as e:  # ошибки Claude отдаём в поток как комментарий
-            yield f"\n# Ошибка генерации: {e}\n"
+            if type(e).__name__ == "AuthenticationError":
+                yield "\n# Ключ не принят Anthropic — проверьте его в настройках.\n"
+            else:
+                yield f"\n# Ошибка генерации: {e}\n"
 
     return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
 

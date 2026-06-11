@@ -6,12 +6,11 @@
 # Run as root ON THE SERVER:
 #
 #   TOKEN_DB='mongodb+srv://user:pass@cluster/...' \
-#   ANTHROPIC_API_KEY='sk-ant-...' \
 #   bash <(curl -fsSL \
 #     https://raw.githubusercontent.com/krasav4ikVlad/krasav4ikVlad.github.io/refs/heads/claude/script-hosting-app-msq5fe/deploy.sh)
 #
-# TOKEN_DB (MongoDB connection string) is required. ANTHROPIC_API_KEY is
-# optional — without it the AI helper is disabled, the rest works.
+# TOKEN_DB (MongoDB connection string) is required. Claude API keys are
+# per-user: each user adds their own key in the app's Settings page.
 # Re-running is safe (idempotent): it updates app.py and restarts the service.
 
 set -euo pipefail
@@ -26,7 +25,6 @@ RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/krasav4ikVlad/krasav4ikV
 # Set REPLACE_APACHE=1 to stop/disable apache2 if it is holding port 80/443.
 REPLACE_APACHE="${REPLACE_APACHE:-0}"
 TOKEN_DB="${TOKEN_DB:-}"
-ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 # ---------------------------------------------------------------------------
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -91,7 +89,6 @@ SECRET_KEY="$(cat "$SECRET_FILE")"
 log "Writing environment file..."
 cat > "$APP_DIR/script-vault.env" <<EOF
 TOKEN_DB=$TOKEN_DB
-ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 SECRET_KEY=$SECRET_KEY
 BASE_URL=https://$DOMAIN
 HOST=127.0.0.1
@@ -181,10 +178,7 @@ echo
 log "Deploy complete:  $SCHEME://$DOMAIN/"
 echo
 echo   "  Open the site and register the first account at $SCHEME://$DOMAIN/register"
-if [ -z "$ANTHROPIC_API_KEY" ]; then
-  warn "ANTHROPIC_API_KEY not set — the AI helper is disabled."
-  warn "Add it to $APP_DIR/script-vault.env and run: systemctl restart script-vault"
-fi
+echo   "  AI helper: each user adds their own Claude API key in Settings."
 echo
 echo "  Logs:     journalctl -u script-vault -f"
 echo "  Restart:  systemctl restart script-vault"
