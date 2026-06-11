@@ -24,6 +24,7 @@ import hashlib
 import hmac
 import html
 import os
+import re
 import secrets
 import sys
 import time
@@ -226,6 +227,41 @@ def fmt_dt(iso: str) -> str:
 def normalize_newlines(text: str) -> str:
     # textarea по спецификации HTML отправляет CRLF; bash спотыкается о \r
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+# ---- глобальные переменные пользователя: {{NAME}} в теле скрипта -------------
+
+VAR_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+VAR_PLACEHOLDER_RE = re.compile(r"\{\{([A-Z][A-Z0-9_]{0,63})\}\}")
+
+
+def user_variables(user: dict | None) -> dict[str, str]:
+    """Переменные пользователя с расшифрованными значениями."""
+    raw_vars = (user or {}).get("variables", {}) or {}
+    return {name: decrypt_secret(value) for name, value in raw_vars.items()}
+
+
+def substitute_vars(content: str, variables: dict[str, str]) -> str:
+    """Заменить {{NAME}} на значения; неизвестные плейсхолдеры не трогаем."""
+    if not variables or "{{" not in content:
+        return content
+    return VAR_PLACEHOLDER_RE.sub(
+        lambda m: variables.get(m.group(1), m.group(0)), content
+    )
+
+
+# ---- теги и папки ------------------------------------------------------------
+
+MAX_TAGS = 20
+
+
+def parse_tags(raw: str) -> list[str]:
+    tags = []
+    for part in raw.split(","):
+        tag = part.strip().lower()[:32]
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags[:MAX_TAGS]
 
 
 async def new_slug() -> str:
@@ -605,6 +641,68 @@ input:focus, textarea:focus {
 }
 
 textarea[readonly] { opacity: .8; min-height: 320px; }
+
+/* тулбар: поиск + фильтры */
+.toolbar { margin-bottom: 26px; animation: rise .55s cubic-bezier(.2, .7, .2, 1) both; }
+.search-form { display: flex; gap: 10px; margin-bottom: 14px; }
+.search-form input[type=search] { flex: 1; }
+input[type=search] {
+  padding: 10px 14px; border-radius: 2px;
+  border: 1px solid var(--line-bright);
+  background: #0d0d0f; color: var(--ink);
+  font-family: var(--mono); font-size: 13px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+input[type=search]:focus {
+  outline: none; border-color: var(--lime);
+  box-shadow: 0 0 0 1px var(--lime), 0 0 24px rgba(198, 242, 63, .13);
+}
+
+/* чипы папок и тегов */
+.chips-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.chip {
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .4px;
+  color: var(--muted); text-decoration: none;
+  border: 1px solid var(--line-bright); border-radius: 2px;
+  padding: 5px 10px; white-space: nowrap;
+  transition: border-color .13s, color .13s, transform .13s, box-shadow .13s;
+}
+.chip:hover { border-color: var(--lime); color: var(--lime); transform: translate(-1px, -1px); box-shadow: 2px 2px 0 #000; }
+.chip-on { background: var(--lime); color: #11130a !important; border-color: var(--lime); font-weight: 700; }
+.chip-tag { border-style: dashed; }
+.card-chips { margin: 10px 0 0; }
+.card-chips .chip { font-size: 11px; padding: 3px 8px; }
+
+/* двухколоночные поля редактора и форма переменных */
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.vars-hint { margin-top: 10px; }
+.vars-hint code {
+  font-family: var(--mono); font-size: 12px; color: var(--lime);
+  background: #0d0d0f; border: 1px solid var(--line-bright);
+  border-radius: 2px; padding: 1px 6px;
+}
+
+/* таблица переменных в настройках */
+.var-table { border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.var-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 14px; border-bottom: 1px solid var(--line);
+  background: #0d0d0f;
+}
+.var-row:last-child { border-bottom: none; }
+.share code.var-name {
+  display: inline-block; margin: 0; padding: 2px 8px;
+  color: var(--lime); font-size: 13px; white-space: nowrap;
+  border: none; background: transparent;
+}
+.var-value { color: var(--muted); font-family: var(--mono); font-size: 12.5px; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.var-row form { display: inline; }
+
+@media (max-width: 560px) {
+  .field-row { grid-template-columns: 1fr; }
+  .search-form { flex-wrap: wrap; }
+  .var-row { flex-wrap: wrap; }
+}
 
 /* empty state */
 .empty {
@@ -990,26 +1088,82 @@ async def logout():
 
 
 @app.get("/")
-async def index(request: Request):
+async def index(request: Request, q: str = "", folder: str = "", tag: str = ""):
     user = await current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
     uname = user["username"]
     owner = str(user["_id"])
-    rows = (
-        await scripts_col.find({"owner": owner})
-        .sort("updated_at", -1)
-        .to_list(length=1000)
+    q, folder, tag = q.strip()[:100], folder.strip()[:64], tag.strip()[:32]
+
+    query: dict = {"owner": owner}
+    if folder:
+        query["folder"] = folder
+    if tag:
+        query["tags"] = tag
+    if q:
+        rx = {"$regex": re.escape(q), "$options": "i"}
+        query["$or"] = [{"name": rx}, {"content": rx}, {"tags": rx}]
+
+    rows = await scripts_col.find(query).sort("updated_at", -1).to_list(length=1000)
+    total = await scripts_col.count_documents({"owner": owner})
+
+    # папки и теги пользователя — для панели фильтров
+    folders = sorted(
+        f for f in await scripts_col.distinct("folder", {"owner": owner}) if f
+    )
+    all_tags = sorted(
+        t for t in await scripts_col.distinct("tags", {"owner": owner}) if t
     )
 
+    def filt_url(**overrides) -> str:
+        params = {"q": q, "folder": folder, "tag": tag} | overrides
+        qs = "&".join(
+            f"{k}={html.escape(v, quote=True)}" for k, v in params.items() if v
+        )
+        return f"/?{qs}" if qs else "/"
+
+    toolbar = ""
+    if total:
+        folder_chips = f'<a class="chip{" chip-on" if not folder else ""}" href="{filt_url(folder="")}">все</a>' + "".join(
+            f'<a class="chip{" chip-on" if folder == f else ""}" href="{filt_url(folder=f)}">▸ {html.escape(f)}</a>'
+            for f in folders
+        )
+        tag_chips = "".join(
+            f'<a class="chip chip-tag{" chip-on" if tag == t else ""}" href="{filt_url(tag="" if tag == t else t)}">#{html.escape(t)}</a>'
+            for t in all_tags
+        )
+        toolbar = f"""
+<div class="toolbar">
+  <form class="search-form" method="get" action="/">
+    <input type="search" name="q" value="{html.escape(q, quote=True)}" placeholder="поиск по названию, содержимому, тегам…">
+    <input type="hidden" name="folder" value="{html.escape(folder, quote=True)}">
+    <input type="hidden" name="tag" value="{html.escape(tag, quote=True)}">
+    <button class="btn" type="submit">Найти</button>
+  </form>
+  <div class="chips-row">{folder_chips}</div>
+  {f'<div class="chips-row">{tag_chips}</div>' if tag_chips else ""}
+</div>"""
+
     if not rows:
-        body = """
-<div class="page-head"><div><span class="kicker">репозиторий</span><h1>Мои скрипты</h1></div></div>
+        if total == 0:
+            empty = """
 <div class="empty">
   <div class="glyph">~/scripts</div>
   <p>Пока ни одного скрипта. Создайте первый — и раздавайте его одной командой curl.</p>
   <a class="btn btn-primary" href="/new">+ Новый скрипт</a>
 </div>"""
+        else:
+            empty = f"""
+<div class="empty">
+  <div class="glyph">not found</div>
+  <p>Ничего не нашлось по заданным фильтрам.</p>
+  <a class="btn" href="/">Сбросить фильтры</a>
+</div>"""
+        body = f"""
+<div class="page-head"><div><span class="kicker">репозиторий</span><h1>Мои скрипты</h1></div></div>
+{toolbar}
+{empty}"""
         return page("Скрипты", body, user=uname)
 
     cards = []
@@ -1017,16 +1171,32 @@ async def index(request: Request):
         url = raw_url(request, row["slug"])
         esc_url = html.escape(url, quote=True)
         sid = str(row["_id"])
+        row_folder = row.get("folder", "")
+        row_tags = row.get("tags", [])
+        meta_chips = ""
+        if row_folder or row_tags:
+            chips = ""
+            if row_folder:
+                chips += f'<a class="chip" href="{filt_url(folder=row_folder)}">▸ {html.escape(row_folder)}</a>'
+            chips += "".join(
+                f'<a class="chip chip-tag" href="{filt_url(tag=t)}">#{html.escape(t)}</a>'
+                for t in row_tags
+            )
+            meta_chips = f'<div class="chips-row card-chips">{chips}</div>'
         cards.append(f"""
 <div class="card" style="animation-delay: {min(i * 60, 480)}ms">
   <div class="card-top">
     <span class="card-name">{html.escape(row["name"])}</span>
     <span class="muted">↓ {row.get("downloads", 0)} · обновлён {html.escape(fmt_dt(row.get("updated_at")))}</span>
   </div>
+  {meta_chips}
   <a class="card-url" href="{esc_url}" target="_blank" rel="noopener">{esc_url}</a>
   <div class="card-actions">
     <button class="btn btn-sm" type="button" data-copy="{esc_url}">Копировать ссылку</button>
     <a class="btn btn-sm" href="/scripts/{sid}/edit">Изменить</a>
+    <form method="post" action="/scripts/{sid}/duplicate">
+      <button class="btn btn-sm" type="submit">Дублировать</button>
+    </form>
     <form method="post" action="/scripts/{sid}/delete"
           onsubmit="return confirm('Удалить скрипт «{html.escape(row["name"], quote=True)}»? Это действие необратимо.')">
       <button class="btn btn-sm btn-danger" type="submit">Удалить</button>
@@ -1034,13 +1204,55 @@ async def index(request: Request):
   </div>
 </div>""")
 
+    shown = (
+        f"показано: {len(rows)} из {total}" if len(rows) != total else f"в хранилище: {total}"
+    )
     body = f"""
 <div class="page-head">
   <div><span class="kicker">репозиторий</span><h1>Мои скрипты</h1></div>
-  <span class="muted">в хранилище: {len(rows)}</span>
+  <span class="muted">{shown}</span>
 </div>
+{toolbar}
 {"".join(cards)}"""
     return page("Скрипты", body, user=uname)
+
+
+async def editor_meta_fields(user: dict, *, folder: str = "", tags: list | None = None) -> str:
+    """Поля «Папка» и «Теги» + datalist существующих папок + подсказка о переменных."""
+    folders = sorted(
+        f
+        for f in await scripts_col.distinct("folder", {"owner": str(user["_id"])})
+        if f
+    )
+    options = "".join(
+        f'<option value="{html.escape(f, quote=True)}">' for f in folders
+    )
+    var_names = sorted(user_variables(user))
+    if var_names:
+        vars_hint = (
+            "Доступны переменные (подставляются при выдаче по ссылке): "
+            + ", ".join(f"<code>{{{{{html.escape(n)}}}}}</code>" for n in var_names)
+        )
+    else:
+        vars_hint = (
+            'Можно использовать <code>{{ИМЯ}}</code>-переменные (токены, домены…) — '
+            'добавьте их в <a href="/settings" style="color:var(--lime)">настройках</a>.'
+        )
+    return f"""
+  <div class="field-row">
+    <div>
+      <label for="folder">Папка</label>
+      <input type="text" id="folder" name="folder" maxlength="64" list="folders-list"
+             value="{html.escape(folder, quote=True)}" placeholder="например: eth-nodes">
+      <datalist id="folders-list">{options}</datalist>
+    </div>
+    <div>
+      <label for="tags">Теги (через запятую)</label>
+      <input type="text" id="tags" name="tags" maxlength="400"
+             value="{html.escape(", ".join(tags or []), quote=True)}" placeholder="mainnet, docker, v2">
+    </div>
+  </div>
+  <p class="muted vars-hint">{vars_hint}</p>"""
 
 
 @app.get("/new")
@@ -1053,6 +1265,7 @@ async def new_form(request: Request):
 <form class="editor" method="post" action="/scripts">
   <label for="name">Название</label>
   <input type="text" id="name" name="name" required maxlength="200" placeholder="install-node.sh" autofocus>
+  {await editor_meta_fields(user)}
   {ai_panel(user)}
   <label for="content">Содержимое</label>
   <textarea id="content" name="content" spellcheck="false" placeholder="#!/usr/bin/env bash&#10;set -euo pipefail&#10;..."></textarea>
@@ -1066,7 +1279,11 @@ async def new_form(request: Request):
 
 @app.post("/scripts")
 async def create_script(
-    request: Request, name: str = Form(...), content: str = Form("")
+    request: Request,
+    name: str = Form(...),
+    content: str = Form(""),
+    folder: str = Form(""),
+    tags: str = Form(""),
 ):
     user = await current_user(request)
     if not user:
@@ -1079,6 +1296,8 @@ async def create_script(
             "slug": slug,
             "name": name,
             "content": normalize_newlines(content),
+            "folder": folder.strip()[:64],
+            "tags": parse_tags(tags),
             "owner": str(user["_id"]),
             "created_at": ts,
             "updated_at": ts,
@@ -1131,6 +1350,7 @@ async def edit_form(request: Request, script_id: str = Path(...)):
 <form class="editor" method="post" action="/scripts/{script_id}">
   <label for="name">Название</label>
   <input type="text" id="name" name="name" required maxlength="200" value="{html.escape(row["name"], quote=True)}">
+  {await editor_meta_fields(user, folder=row.get("folder", ""), tags=row.get("tags", []))}
   {ai_panel(user)}
   <label for="content">Содержимое</label>
   <textarea id="content" name="content" spellcheck="false">{html.escape(row["content"])}</textarea>
@@ -1169,6 +1389,8 @@ async def update_script(
     script_id: str = Path(...),
     name: str = Form(...),
     content: str = Form(""),
+    folder: str = Form(""),
+    tags: str = Form(""),
 ):
     user, row = await _owned_script(request, script_id)
     if not user:
@@ -1177,18 +1399,22 @@ async def update_script(
         return RedirectResponse("/", status_code=303)
     new_name = name.strip() or "Без названия"
     new_content = normalize_newlines(content)
+    new_folder = folder.strip()[:64]
+    new_tags = parse_tags(tags)
     if new_name != row["name"] or new_content != row["content"]:
         await snapshot_version(row)  # прошлое состояние уходит в историю
-        await scripts_col.update_one(
-            {"_id": row["_id"]},
-            {
-                "$set": {
-                    "name": new_name,
-                    "content": new_content,
-                    "updated_at": now_iso(),
-                }
-            },
-        )
+    await scripts_col.update_one(
+        {"_id": row["_id"]},
+        {
+            "$set": {
+                "name": new_name,
+                "content": new_content,
+                "folder": new_folder,
+                "tags": new_tags,
+                "updated_at": now_iso(),
+            }
+        },
+    )
     return RedirectResponse(f"/scripts/{script_id}/edit", status_code=303)
 
 
@@ -1203,6 +1429,30 @@ async def delete_script(request: Request, script_id: str = Path(...)):
         await versions_col.delete_many({"script_id": sid})
         await access_col.delete_many({"script_id": sid})
     return RedirectResponse("/", status_code=303)
+
+
+@app.post("/scripts/{script_id}/duplicate")
+async def duplicate_script(request: Request, script_id: str = Path(...)):
+    """Копия скрипта: новый slug, чистые счётчики и история."""
+    user, row = await _owned_script(request, script_id)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if row is None:
+        return RedirectResponse("/", status_code=303)
+    ts = now_iso()
+    result = await scripts_col.insert_one(
+        {
+            "slug": await new_slug(),
+            "name": f"{row['name']} (копия)"[:200],
+            "content": row["content"],
+            "folder": row.get("folder", ""),
+            "tags": row.get("tags", []),
+            "owner": str(user["_id"]),
+            "created_at": ts,
+            "updated_at": ts,
+        }
+    )
+    return RedirectResponse(f"/scripts/{result.inserted_id}/edit", status_code=303)
 
 
 # ---- лог обращений к ссылке --------------------------------------------------
@@ -1383,7 +1633,9 @@ async def version_restore(
 # ---- настройки: персональный Claude API-ключ --------------------------------
 
 
-def settings_body(user: dict, *, saved: bool = False, error: str = "") -> str:
+def settings_body(
+    user: dict, *, saved: bool = False, error: str = "", var_error: str = ""
+) -> str:
     key = user_ai_key(user)
     err_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
     if key:
@@ -1421,6 +1673,56 @@ def settings_body(user: dict, *, saved: bool = False, error: str = "") -> str:
     <button class="btn btn-primary" type="submit">Сохранить ключ</button>
     <a class="btn" href="/">К списку</a>
   </div>
+</form>
+{variables_section(user, var_error)}"""
+
+
+def variables_section(user: dict, error: str = "") -> str:
+    variables = user_variables(user)
+    err_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
+    if variables:
+        rows = "".join(
+            f"""
+  <div class="var-row">
+    <code class="var-name">{{{{{html.escape(name)}}}}}</code>
+    <span class="var-value" title="значение скрыто">{html.escape(mask_key(value))}</span>
+    <form method="post" action="/settings/vars/delete"
+          onsubmit="return confirm('Удалить переменную {{{{{html.escape(name, quote=True)}}}}}?')">
+      <input type="hidden" name="var_name" value="{html.escape(name, quote=True)}">
+      <button class="btn btn-sm btn-danger" type="submit">Удалить</button>
+    </form>
+  </div>"""
+            for name, value in sorted(variables.items())
+        )
+        listing = f'<div class="var-table">{rows}</div>'
+    else:
+        listing = '<p class="muted">Переменных пока нет.</p>'
+    return f"""
+<div class="page-head" style="margin-top:48px"><div><span class="kicker">глобальные переменные</span><h1>Переменные</h1></div></div>
+<div class="share">
+  <p class="muted" style="margin-bottom:14px">Пишите в скриптах <code style="display:inline;padding:2px 6px;margin:0">{{{{TOKEN}}}}</code>,
+  <code style="display:inline;padding:2px 6px;margin:0">{{{{DOMAIN}}}}</code> и т.д. — при выдаче по ссылке
+  плейсхолдеры заменяются на ваши значения. Значения шифруются в БД. Повторное
+  сохранение имени перезаписывает значение.</p>
+  {listing}
+</div>
+<form class="editor" method="post" action="/settings/vars">
+  {err_html}
+  <div class="field-row">
+    <div>
+      <label for="var_name">Имя (A-Z, 0-9, _)</label>
+      <input type="text" id="var_name" name="var_name" required maxlength="64"
+             placeholder="TOKEN" style="text-transform:uppercase">
+    </div>
+    <div>
+      <label for="var_value">Значение</label>
+      <input type="text" id="var_value" name="var_value" required maxlength="2000"
+             placeholder="например: abc123 или node.example.com" autocomplete="off">
+    </div>
+  </div>
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">Сохранить переменную</button>
+  </div>
 </form>"""
 
 
@@ -1456,6 +1758,47 @@ async def settings_delete_token(request: Request):
     if not user:
         return RedirectResponse("/login", status_code=303)
     await users_col.update_one({"_id": user["_id"]}, {"$unset": {"anthropic_key": ""}})
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/vars")
+async def settings_save_var(
+    request: Request, var_name: str = Form(...), var_value: str = Form(...)
+):
+    user = await current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    name = var_name.strip().upper()
+    value = var_value.strip()
+    if not VAR_NAME_RE.match(name):
+        return page(
+            "Настройки",
+            settings_body(user, var_error="Имя: латинские A-Z, цифры и _, начинается с буквы"),
+            user=user["username"],
+        )
+    if not value:
+        return page(
+            "Настройки",
+            settings_body(user, var_error="Значение не может быть пустым"),
+            user=user["username"],
+        )
+    await users_col.update_one(
+        {"_id": user["_id"]},
+        {"$set": {f"variables.{name}": encrypt_secret(value)}},
+    )
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/vars/delete")
+async def settings_delete_var(request: Request, var_name: str = Form(...)):
+    user = await current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    name = var_name.strip().upper()
+    if VAR_NAME_RE.match(name):
+        await users_col.update_one(
+            {"_id": user["_id"]}, {"$unset": {f"variables.{name}": ""}}
+        )
     return RedirectResponse("/settings", status_code=303)
 
 
@@ -1535,8 +1878,17 @@ async def raw(request: Request, slug: str):
         await scripts_col.update_one({"_id": row["_id"]}, {"$inc": {"downloads": 1}})
     except Exception as e:
         print(f"[!] Не удалось записать лог обращения: {e}", file=sys.stderr)
+
+    content = row["content"]
+    if "{{" in content:  # подстановка глобальных переменных владельца
+        try:
+            owner = await users_col.find_one({"_id": ObjectId(row["owner"])})
+            content = substitute_vars(content, user_variables(owner))
+        except Exception as e:
+            print(f"[!] Не удалось подставить переменные: {e}", file=sys.stderr)
+
     return PlainTextResponse(
-        row["content"],
+        content,
         media_type="text/plain; charset=utf-8",
         headers={"Cache-Control": "no-store"},
     )
