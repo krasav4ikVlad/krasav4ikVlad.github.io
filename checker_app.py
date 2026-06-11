@@ -133,9 +133,50 @@ async def current_user(request: Request) -> dict | None:
     return await users_col.find_one({"_id": oid})
 
 
-def login_redirect(request: Request) -> RedirectResponse:
+SSO_TRY_COOKIE = "sso_try"
+
+SSO_ERROR_HTML = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Сессия не принята — VPN Checker</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@800&display=swap">
+<style>
+body{{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:#0b0b0c;color:#ece9e0;font:15px/1.6 "JetBrains Mono",monospace;padding:22px}}
+.card{{max-width:520px;background:#121214;border:1px solid #36363f;border-left:3px solid #ff5d4e;
+border-radius:4px;padding:30px 32px;box-shadow:10px 10px 0 #000}}
+h1{{font-family:"Syne",sans-serif;font-size:24px;margin:0 0 14px}}
+p{{color:#817e75;margin:0 0 12px}} b{{color:#ece9e0}}
+code{{background:#0d0d0f;border:1px solid #36363f;border-radius:2px;padding:1px 6px;color:#c6f23f;font-size:13px}}
+a{{display:inline-block;margin-top:16px;background:#c6f23f;color:#11130a;text-decoration:none;
+font-weight:700;padding:10px 16px;border-radius:2px;box-shadow:4px 4px 0 #000}}
+</style></head><body><div class="card">
+<h1>Сессия не принята</h1>
+<p>Ты авторизован на хабе, но этот сервис не смог проверить твою сессию — поэтому вход
+зациклился. Почти всегда причина в конфигурации <b>этого</b> сервера:</p>
+<p>• <code>SECRET_KEY</code> не совпадает с основным сервером (подпись cookie не проходит), либо<br>
+• <code>TOKEN_DB</code> указывает на другую базу (пользователь не находится).</p>
+<p>Проверь <code>/opt/nodewiki-checker/nodewiki-checker.env</code> — оба значения должны быть
+идентичны тем, что в <code>/opt/script-vault/script-vault.env</code> на основном сервере,
+затем <code>systemctl restart nodewiki-checker</code>.</p>
+<a href="/">Попробовать снова</a>
+</div></body></html>"""
+
+
+def login_redirect(request: Request) -> HTMLResponse | RedirectResponse:
+    """Неавторизованный -> на вход хаба. Защита от петли: если мы уже один раз
+    отправляли на вход (cookie sso_try), а сессии всё ещё нет — показываем
+    понятную ошибку вместо бесконечного редиректа."""
+    if request.cookies.get(SSO_TRY_COOKIE):
+        resp = HTMLResponse(SSO_ERROR_HTML, status_code=200)
+        resp.delete_cookie(SSO_TRY_COOKIE, path="/", domain=None)
+        return resp
     nxt = urlquote(str(request.url), safe="")
-    return RedirectResponse(f"{HUB_URL}/login?next={nxt}", status_code=303)
+    resp = RedirectResponse(f"{HUB_URL}/login?next={nxt}", status_code=303)
+    resp.set_cookie(
+        SSO_TRY_COOKIE, "1", max_age=30, path="/", samesite="lax",
+        httponly=True, secure=BASE_URL.startswith("https"),
+    )
+    return resp
 
 
 def now_iso() -> str:
