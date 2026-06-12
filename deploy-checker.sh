@@ -36,16 +36,16 @@ AGENT_TOKEN="${AGENT_TOKEN:-}"
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
+# безопасное чтение KEY=value из env-файла (не валит set -e/pipefail, если строки нет)
+envget() { [ -f "$2" ] && grep -h "^$1=" "$2" 2>/dev/null | head -1 | cut -d= -f2- || true; }
 
 [ "$(id -u)" -eq 0 ] || die "Run as root (sudo)."
 # повторный запуск: подхватываем секреты из уже записанного env, если не переданы
-if [ -f "$APP_DIR/nodewiki-checker.env" ]; then
-  [ -z "$TOKEN_DB" ]   && TOKEN_DB="$(grep -h '^TOKEN_DB=' "$APP_DIR/nodewiki-checker.env" | head -1 | cut -d= -f2-)"
-  [ -z "$SECRET_KEY" ] && SECRET_KEY="$(grep -h '^SECRET_KEY=' "$APP_DIR/nodewiki-checker.env" | head -1 | cut -d= -f2-)"
-fi
+ENVF="$APP_DIR/nodewiki-checker.env"
+[ -n "$TOKEN_DB" ]   || TOKEN_DB="$(envget TOKEN_DB "$ENVF")"
+[ -n "$SECRET_KEY" ] || SECRET_KEY="$(envget SECRET_KEY "$ENVF")"
 [ -n "$TOKEN_DB" ] || die "TOKEN_DB обязателен (та же база, что у основного сервера)."
-[ -n "$SECRET_KEY" ] || die "SECRET_KEY обязателен и должен СОВПАДАТЬ с основным сервером (иначе SSO не сработает).
-  Возьмите: grep '^SECRET_KEY=' /opt/script-vault/script-vault.env на основном сервере."
+[ -n "$SECRET_KEY" ] || die "SECRET_KEY обязателен и должен СОВПАДАТЬ с основным сервером (иначе SSO не сработает)."
 
 # ---- packages (iputils-ping нужен для ICMP) --------------------------------
 log "Installing packages (python, nginx, certbot, iputils-ping)..."
@@ -66,10 +66,7 @@ fi
 # ---- токен для residential-зондов ------------------------------------------
 GENERATED_AGENT=""
 if [ -z "$AGENT_TOKEN" ]; then
-  # переиспользуем уже сохранённый, если есть
-  if [ -f "$APP_DIR/nodewiki-checker.env" ]; then
-    AGENT_TOKEN="$(grep -h '^CHECKER_AGENT_TOKEN=' "$APP_DIR/nodewiki-checker.env" | head -1 | cut -d= -f2-)"
-  fi
+  AGENT_TOKEN="$(envget CHECKER_AGENT_TOKEN "$ENVF")"   # переиспользуем сохранённый, если есть
   if [ -z "$AGENT_TOKEN" ]; then
     AGENT_TOKEN="$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))')"
     GENERATED_AGENT="$AGENT_TOKEN"

@@ -30,12 +30,11 @@ TOKEN_DB="${TOKEN_DB:-}"
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
+envget() { [ -f "$2" ] && grep -h "^$1=" "$2" 2>/dev/null | head -1 | cut -d= -f2- || true; }
 
 [ "$(id -u)" -eq 0 ] || die "Run as root (sudo)."
 # повторный запуск: если TOKEN_DB не передан — берём из уже записанного env
-if [ -z "$TOKEN_DB" ] && [ -f "$APP_DIR/script-vault.env" ]; then
-  TOKEN_DB="$(grep -h '^TOKEN_DB=' "$APP_DIR/script-vault.env" | head -1 | cut -d= -f2-)"
-fi
+[ -n "$TOKEN_DB" ] || TOKEN_DB="$(envget TOKEN_DB "$APP_DIR/script-vault.env")"
 [ -n "$TOKEN_DB" ] || die "TOKEN_DB is required — pass your MongoDB connection string:
   TOKEN_DB='mongodb+srv://...' bash deploy.sh"
 

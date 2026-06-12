@@ -50,8 +50,9 @@ if [ -n "$conflicts" ]; then
 fi
 
 # ---- секреты из Script Vault (общие => SSO) ----------------------------------
-TOKEN_DB="$(grep -h '^TOKEN_DB=' "$SV_ENV" | head -1 | cut -d= -f2-)"
-SECRET_KEY="$(grep -h '^SECRET_KEY=' "$SV_ENV" | head -1 | cut -d= -f2-)"
+envget() { [ -f "$2" ] && grep -h "^$1=" "$2" 2>/dev/null | head -1 | cut -d= -f2- || true; }
+TOKEN_DB="$(envget TOKEN_DB "$SV_ENV")"
+SECRET_KEY="$(envget SECRET_KEY "$SV_ENV")"
 [ -n "$TOKEN_DB" ] && [ -n "$SECRET_KEY" ] || die "В $SV_ENV нет TOKEN_DB/SECRET_KEY."
 
 # ---- пакеты ------------------------------------------------------------------
