@@ -1327,6 +1327,12 @@ textarea::placeholder{color:#494842}
 /* история */
 .job-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border:1px solid var(--line);border-radius:2px;background:var(--panel);margin-bottom:8px;font-size:13px;animation:rise .5s ease both}
 .job-row a{color:var(--lime);text-decoration:none} .job-row a:hover{color:var(--lime-soft)}
+.srv-list{display:flex;flex-direction:column;gap:6px;max-height:440px;overflow-y:auto;padding:2px;border:1px solid var(--line);border-radius:2px}
+.srv-row{display:flex;align-items:center;gap:12px;padding:10px 13px;border:1px solid var(--line);border-radius:2px;background:var(--panel);cursor:pointer;font-size:13px}
+.srv-row:hover{border-color:var(--line-bright)}
+.srv-row input{width:16px;height:16px;accent-color:var(--lime);flex:none;cursor:pointer}
+.srv-row .srv-name{font-weight:700;color:var(--ink)}
+.srv-row .srv-addr{color:var(--muted);font-size:12px;margin-left:auto;font-family:var(--mono);text-align:right}
 .empty{text-align:center;padding:70px 20px;border:1px dashed var(--line-bright);border-radius:4px;background:repeating-linear-gradient(135deg,transparent 0 14px,rgba(255,255,255,.012) 14px 28px)}
 .empty .glyph{font-family:var(--display);font-size:34px;font-weight:800;color:var(--lime)}
 .empty p{color:var(--muted);margin:14px auto 0;max-width:440px}
@@ -1593,7 +1599,7 @@ async def index(request: Request, error: str = ""):
         return login_redirect(request)
     user = await with_balance(raw_user)
     recent = (
-        await jobs_col.find({"owner": str(user["_id"])})
+        await jobs_col.find({"owner": str(user["_id"]), "status": {"$ne": "draft"}})
         .sort("_id", -1).to_list(length=10)
     )
     hist = ""
@@ -1638,6 +1644,34 @@ async def index(request: Request, error: str = ""):
     return page("Проверка", body, user=user)
 
 
+async def _enqueue_job(raw_user: dict, targets: list, is_deep: bool, msg: str):
+    """Списать токены и поставить заявку в очередь. Возвращает RedirectResponse."""
+    cost = len(targets) * (DEEP_COST if is_deep else 1)
+    ok, _bal = await take_tokens(raw_user, cost)
+    if not ok:
+        return RedirectResponse(
+            f"/?error={urlquote(f'Недостаточно токенов: нужно {cost}. Подождите дозаправки.')}",
+            status_code=303,
+        )
+    if job_queue.full():
+        return RedirectResponse(
+            f"/?error={urlquote('Очередь переполнена, попробуйте позже.')}", status_code=303
+        )
+    doc = {
+        "owner": str(raw_user["_id"]),
+        "status": "queued",
+        "targets": targets,
+        "deep": is_deep,
+        "note": msg,
+        "created_at": now_iso(),
+        "created_dt": datetime.now(timezone.utc),  # для TTL
+    }
+    res = await jobs_col.insert_one(doc)
+    job_id = str(res.inserted_id)
+    await job_queue.put(job_id)
+    return RedirectResponse(f"/job/{job_id}", status_code=303)
+
+
 @app.post("/check")
 async def submit_check(request: Request, config: str = Form(...), deep: str = Form("")):
     raw_user = await current_user(request)
@@ -1669,35 +1703,123 @@ async def submit_check(request: Request, config: str = Form(...), deep: str = Fo
         if from_sub:
             msg = f"В подписке не нашлось ссылок на серверы. {msg}"
         return RedirectResponse(f"/?error={urlquote(msg)}", status_code=303)
+
+    # импорт из ссылки: сначала даём выбрать серверы (черновик), потом проверка
     if from_sub:
-        msg = f"Из подписки получено серверов: {len(targets)}." + (f" {msg}" if msg else "")
+        draft = {
+            "owner": str(raw_user["_id"]),
+            "status": "draft",
+            "targets": targets,
+            "deep": is_deep,
+            "note": f"Из подписки получено серверов: {len(targets)}." + (f" {msg}" if msg else ""),
+            "created_at": now_iso(),
+            "created_dt": datetime.now(timezone.utc),  # для TTL
+        }
+        res = await jobs_col.insert_one(draft)
+        return RedirectResponse(f"/select/{res.inserted_id}", status_code=303)
 
-    cost = len(targets) * (DEEP_COST if is_deep else 1)
-    ok, _bal = await take_tokens(raw_user, cost)
-    if not ok:
-        return RedirectResponse(
-            f"/?error={urlquote(f'Недостаточно токенов: нужно {cost}. Подождите дозаправки.')}",
-            status_code=303,
+    return await _enqueue_job(raw_user, targets, is_deep, msg)
+
+
+@app.get("/select/{draft_id}")
+async def select_view(request: Request, draft_id: str = Path(...), error: str = ""):
+    raw_user = await current_user(request)
+    if not raw_user:
+        return login_redirect(request)
+    try:
+        oid = ObjectId(draft_id)
+    except (InvalidId, TypeError):
+        return RedirectResponse("/", status_code=303)
+    draft = await jobs_col.find_one(
+        {"_id": oid, "owner": str(raw_user["_id"]), "status": "draft"}
+    )
+    if not draft:
+        return RedirectResponse("/", status_code=303)
+    user = await with_balance(raw_user)
+    targets = draft.get("targets", [])
+    is_deep = bool(draft.get("deep"))
+    per = DEEP_COST if is_deep else 1
+
+    rows = []
+    for i, t in enumerate(targets):
+        bits = [b for b in (t.get("proto"), ("tls" if t.get("tls") else None), t.get("net"))
+                if b and b != "?"]
+        meta = " · ".join(html.escape(str(b)) for b in bits)
+        rows.append(
+            f'<label class="srv-row">'
+            f'<input type="checkbox" name="pick" value="{i}" checked>'
+            f'<span class="srv-name">{html.escape(t.get("label", t["host"]))}</span>'
+            f'<span class="srv-addr">{html.escape(t["host"])}:{t["port"]}'
+            f'{(" · " + meta) if meta else ""}</span></label>'
         )
 
-    if job_queue.full():
-        return RedirectResponse(
-            f"/?error={urlquote('Очередь переполнена, попробуйте позже.')}", status_code=303
-        )
+    err_html = f'<div class="error">{html.escape(error)}</div>' if error else ""
+    mode = "глубокая проверка" if is_deep else "проверка доступности"
+    body = f"""
+<div class="page-head">
+  <div><span class="kicker">импорт из подписки · {mode}</span><h1>Выберите серверы</h1></div>
+  <span class="muted">{per} токен(ов)/сервер</span>
+</div>
+{err_html}
+<div class="note">{html.escape(draft.get("note",""))} Отметьте те, что нужно проверить — токены спишутся только за выбранные.</div>
+<form class="editor" method="post" action="/select/{draft_id}">
+  <div class="form-actions" style="margin:6px 0 14px">
+    <button type="button" class="btn" onclick="srvAll(true)">Выбрать все</button>
+    <button type="button" class="btn" onclick="srvAll(false)">Снять все</button>
+    <span class="muted" id="srv-count" style="align-self:center"></span>
+  </div>
+  <div class="srv-list">{"".join(rows)}</div>
+  <div class="form-actions" style="margin-top:16px">
+    <button class="btn btn-primary" type="submit">Проверить выбранные</button>
+    <a class="btn" href="/">Отмена</a>
+  </div>
+</form>
+<script>
+function srvAll(v){{document.querySelectorAll('input[name=pick]').forEach(c=>c.checked=v);srvCount();}}
+function srvCount(){{
+  var n=document.querySelectorAll('input[name=pick]:checked').length;
+  document.getElementById('srv-count').textContent=n+' выбрано · '+(n*{per})+' токен(ов)';
+}}
+document.addEventListener('change',e=>{{if(e.target.name==='pick')srvCount();}});
+srvCount();
+</script>"""
+    return page("Выбор серверов", body, user=user)
 
-    doc = {
-        "owner": str(raw_user["_id"]),
-        "status": "queued",
-        "targets": targets,
-        "deep": is_deep,
-        "note": msg,
-        "created_at": now_iso(),
-        "created_dt": datetime.now(timezone.utc),  # для TTL
-    }
-    res = await jobs_col.insert_one(doc)
-    job_id = str(res.inserted_id)
-    await job_queue.put(job_id)
-    return RedirectResponse(f"/job/{job_id}", status_code=303)
+
+@app.post("/select/{draft_id}")
+async def select_submit(request: Request, draft_id: str = Path(...)):
+    raw_user = await current_user(request)
+    if not raw_user:
+        return login_redirect(request)
+    try:
+        oid = ObjectId(draft_id)
+    except (InvalidId, TypeError):
+        return RedirectResponse("/", status_code=303)
+    draft = await jobs_col.find_one(
+        {"_id": oid, "owner": str(raw_user["_id"]), "status": "draft"}
+    )
+    if not draft:
+        return RedirectResponse("/", status_code=303)
+
+    form = await request.form()
+    picks = set()
+    for v in form.getlist("pick"):
+        try:
+            picks.add(int(v))
+        except (ValueError, TypeError):
+            pass
+    targets = draft.get("targets", [])
+    chosen = [t for i, t in enumerate(targets) if i in picks]
+    if not chosen:
+        return RedirectResponse(f"/select/{draft_id}?error={urlquote('Не выбрано ни одного сервера.')}",
+                                status_code=303)
+
+    is_deep = bool(draft.get("deep"))
+    note = f"Выбрано из подписки: {len(chosen)} из {len(targets)}."
+    resp = await _enqueue_job(raw_user, chosen, is_deep, note)
+    # черновик больше не нужен (заявка создана или вернулись с ошибкой токенов)
+    await jobs_col.delete_one({"_id": oid})
+    return resp
 
 
 @app.get("/job/{job_id}")
@@ -1712,6 +1834,8 @@ async def job_view(request: Request, job_id: str = Path(...)):
     job = await jobs_col.find_one({"_id": oid, "owner": str(raw_user["_id"])})
     if not job:
         return RedirectResponse("/", status_code=303)
+    if job.get("status") == "draft":  # ещё не подтверждён выбор серверов
+        return RedirectResponse(f"/select/{job_id}", status_code=303)
     user = await with_balance(raw_user)
 
     status = job.get("status", "queued")
