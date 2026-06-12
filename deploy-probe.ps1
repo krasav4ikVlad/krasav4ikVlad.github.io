@@ -34,12 +34,32 @@ $RunCmd   = Join-Path $InstallDir "run-probe.cmd"
 
 function Log  ($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Warn ($m) { Write-Host "[!] $m" -ForegroundColor Yellow }
-function Die  ($m) { Write-Host "[x] $m" -ForegroundColor Red; exit 1 }
+# ВАЖНО: не exit — при запуске через `irm | iex` exit закрывает всё окно PowerShell
+function Die  ($m) { Write-Host "[x] $m" -ForegroundColor Red; throw $m }
 
 # ---- admin ------------------------------------------------------------------
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
          ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) { Die "Запусти PowerShell от имени Администратора." }
+
+# поиск python.exe и в текущем PATH, и по стандартным путям установки
+function Find-Python {
+  foreach ($cand in @("py", "python", "python3")) {
+    $c = Get-Command $cand -ErrorAction SilentlyContinue
+    if ($c) {
+      $ver = & $c.Source -c "import sys;print('%d.%d'%sys.version_info[:2])" 2>$null
+      if ($LASTEXITCODE -eq 0 -and $ver) { return $c.Source }
+    }
+  }
+  $globs = @("C:\Program Files\Python3*\python.exe",
+             "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe")
+  foreach ($g in $globs) {
+    $hit = Get-Item $g -ErrorAction SilentlyContinue |
+           Sort-Object Name -Descending | Select-Object -First 1
+    if ($hit) { return $hit.FullName }
+  }
+  return $null
+}
 
 # ---- токен (при повторном запуске берём из существующего run-probe.cmd) ------
 if (-not $AgentToken -and (Test-Path $RunCmd)) {
@@ -63,26 +83,32 @@ try {
 } catch { }
 
 # ---- Python -----------------------------------------------------------------
-$py = $null
-foreach ($cand in @("py","python","python3")) {
-  $c = Get-Command $cand -ErrorAction SilentlyContinue
-  if ($c) {
-    $ver = & $c.Source -c "import sys;print('%d.%d'%sys.version_info[:2])" 2>$null
-    if ($LASTEXITCODE -eq 0 -and $ver) { $py = $c.Source; break }
-  }
-}
+$py = Find-Python
 if (-not $py) {
   $wg = Get-Command winget -ErrorAction SilentlyContinue
   if ($wg) {
-    Log "Python не найден — ставлю через winget…"
-    winget install -e --id Python.Python.3.12 --silent `
-      --accept-package-agreements --accept-source-agreements | Out-Null
-    $cand = Get-Command py -ErrorAction SilentlyContinue
-    if ($cand) { $py = $cand.Source }
+    Log "Python не найден — пробую поставить через winget…"
+    try {
+      winget install -e --id Python.Python.3.12 --silent `
+        --accept-package-agreements --accept-source-agreements | Out-Null
+    } catch { Warn "winget не справился — поставлю напрямую с python.org." }
+    $py = Find-Python
   }
 }
 if (-not $py) {
-  Die "Python 3 не найден. Установи его (https://www.python.org/downloads/ — отметь 'Add to PATH') и запусти скрипт снова."
+  # Windows Server: winget обычно нет — ставим официальный инсталлятор тихо
+  Log "Python не найден — скачиваю установщик с python.org (тихая установка)…"
+  $pyExe = Join-Path $env:TEMP "python-installer.exe"
+  Invoke-WebRequest -UseBasicParsing `
+    -Uri "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" `
+    -OutFile $pyExe
+  Start-Process -FilePath $pyExe -Wait `
+    -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_launcher=1"
+  Remove-Item $pyExe -Force -ErrorAction SilentlyContinue
+  $py = Find-Python
+}
+if (-not $py) {
+  Die "Python 3 так и не нашёлся. Установи вручную (https://www.python.org/downloads/ — отметь 'Add to PATH'), открой НОВОЕ окно PowerShell и запусти скрипт снова."
 }
 Log "Python: $py"
 
@@ -126,10 +152,10 @@ set "POLL_INTERVAL=$PollInterval"
 "$venvPy" "$InstallDir\probe_agent.py" >> "$InstallDir\probe.log" 2>&1
 "@ | Set-Content -Path $RunCmd -Encoding ASCII
 
-# токен лежит в .cmd в открытом виде — ограничим доступ (только SYSTEM + админы)
-try {
-  icacls $RunCmd /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
-} catch { Warn "Не удалось ужесточить ACL на run-probe.cmd (не критично)." }
+# токен лежит в .cmd в открытом виде — ограничим доступ (только SYSTEM + админы);
+# SID вместо имён групп, чтобы работало и на русской локали Windows
+icacls $RunCmd /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Null
+if ($LASTEXITCODE -ne 0) { Warn "Не удалось ужесточить ACL на run-probe.cmd (не критично)." }
 
 # ---- задача планировщика: автозапуск + перезапуск при сбое ------------------
 Log "Регистрирую задачу '$TaskName' (автозапуск при загрузке)…"
