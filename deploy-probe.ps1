@@ -34,8 +34,9 @@ $RunCmd   = Join-Path $InstallDir "run-probe.cmd"
 
 # скачивание с обходом CDN-кеша raw.githubusercontent (иначе подтягивается старьё)
 function Fetch ($url, $out) {
-  $bust = $(if ($url -like "*`?*") { "&" } else { "?" }) + "cb=" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-  Invoke-WebRequest -UseBasicParsing -Uri ($url + $bust) -OutFile $out `
+  $sep = $(if ($url.Contains('?')) { "&" } else { "?" })
+  $full = $url + $sep + "cb=" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  Invoke-WebRequest -UseBasicParsing -Uri $full -OutFile $out `
     -Headers @{ "Cache-Control" = "no-cache"; "Pragma" = "no-cache" }
 }
 
