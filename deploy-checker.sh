@@ -182,11 +182,12 @@ echo "  Логи:    journalctl -u nodewiki-checker -f"
 echo "  Рестарт: systemctl restart nodewiki-checker"
 echo
 echo "  residential-зонд (мерить КАК У ПОЛЬЗОВАТЕЛЯ, а не из ДЦ):"
-echo "    запусти на машине с домашним/мобильным интернетом:"
-echo "      pip install 'httpx[socks]'   # + установи xray-core"
-echo "      CHECKER_URL=$SCHEME://$DOMAIN AGENT_TOKEN=<token> python3 probe_agent.py"
+echo "    на Linux-машине с домашним/мобильным интернетом (мини-ПК, Raspberry)"
+echo "    поставь зонд как systemd-сервис одной командой:"
+echo "      AGENT_TOKEN=<token> bash <(curl -fsSL $RAW_BASE/deploy-probe.sh)"
 if [ -n "$GENERATED_AGENT" ]; then
   printf '\033[1;32m    AGENT_TOKEN (сгенерирован): %s\033[0m\n' "$GENERATED_AGENT"
+else
+  echo "    токен: grep CHECKER_AGENT_TOKEN $APP_DIR/nodewiki-checker.env"
 fi
-echo "    probe_agent.py: $RAW_BASE/probe_agent.py"
 echo "    Без зонда глубокая проверка работает из ДЦ (помечается «через дата-центр»)."

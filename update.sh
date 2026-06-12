@@ -49,12 +49,14 @@ update_one /opt/script-vault   app.py         script-vault   ""
 update_one /opt/nodewiki-hub   hub_app.py     nodewiki-hub   ""
 # VPN Checker (РУ-сервер)
 update_one /opt/nodewiki-checker checker_app.py nodewiki-checker "httpx[socks]"
+# Residential probe (домашняя машина)
+update_one /opt/nodewiki-probe  probe_agent.py  nodewiki-probe "httpx[socks]"
 
-[ "$updated" = "1" ] || die "На этой машине не найдено ни одного сервиса nodewiki (/opt/script-vault, /opt/nodewiki-hub, /opt/nodewiki-checker)."
+[ "$updated" = "1" ] || die "На этой машине не найдено ни одного сервиса nodewiki (/opt/script-vault, /opt/nodewiki-hub, /opt/nodewiki-checker, /opt/nodewiki-probe)."
 
 echo
 log "Готово. Статусы:"
-for s in script-vault nodewiki-hub nodewiki-checker; do
+for s in script-vault nodewiki-hub nodewiki-checker nodewiki-probe; do
   systemctl is-active --quiet "$s" 2>/dev/null && echo "  $s: active" || true
 done
 echo "  Логи при проблемах: journalctl -u <сервис> -n 30 --no-pager"
