@@ -93,6 +93,37 @@ async def _probe_service(name: str, url: str, proxy: str | None = None) -> dict:
         return {"name": name, "ok": False, "info": type(e).__name__}
 
 
+async def _measure_speed(proxy: str, url: str, window: float, max_bytes: int) -> tuple[float, int]:
+    """Качаем через туннель до window секунд / max_bytes и считаем установившуюся
+    скорость (Mbps): отбрасываем разгон, берём медиану второй половины интервалов."""
+    samples, total, start = [], 0, time.perf_counter()
+    try:
+        async with httpx.AsyncClient(proxy=proxy, verify=False,
+                                     timeout=httpx.Timeout(10.0, read=window + 5)) as cl:
+            last_t, last_b = start, 0
+            async with cl.stream("GET", url) as resp:
+                if resp.status_code < 400:
+                    async for chunk in resp.aiter_bytes():
+                        total += len(chunk)
+                        now = time.perf_counter()
+                        if now - last_t >= 0.5:
+                            samples.append((total - last_b) * 8 / (now - last_t) / 1e6)
+                            last_t, last_b = now, total
+                        if total >= max_bytes or now - start >= window:
+                            break
+    except Exception:
+        pass
+    elapsed = max(time.perf_counter() - start, 0.001)
+    avg = total * 8 / elapsed / 1e6
+    if len(samples) >= 4:
+        steady = statistics.median(samples[len(samples) // 2:])
+    elif samples:
+        steady = samples[-1]
+    else:
+        steady = avg
+    return (min(steady, avg) if total else 0.0), total
+
+
 async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict,
                      services: list) -> dict:
     """Поднять xray и реально сходить наружу + прогнать сервисы через туннель."""
@@ -131,7 +162,7 @@ async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict,
             return {"ok": False, "info": "туннель поднялся, но нет выхода в сеть"}
         geo = f'{data.get("country","")} ({data.get("countryCode","")}) · {data.get("query","")}'
 
-        # 2) главное: открываются ли иностранные сервисы через туннель
+        # 2) открываются ли иностранные сервисы через туннель
         svc = await asyncio.gather(*(_probe_service(n, u, proxy) for n, u in services))
         ok_n = sum(1 for s in svc if s["ok"])
         res = {"ok": ok_n > 0, "services": svc, "geo": geo}
@@ -142,6 +173,31 @@ async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict,
             res["info"] = f"часть сервисов недоступна ({ok_n}/{len(svc)}) · {geo}"
         else:
             res["info"] = f"все сервисы открываются · {geo}"
+
+        # 3) ГЛАВНОЕ против замедления: реальная пропускная способность через ноду.
+        # маленький GET выше проскакивает даже при ТСПУ-резке — а тут качаем объём
+        # и видим установившуюся скорость. Низкая = «открывается, но толку нет».
+        sp = p.get("speed") or {}
+        if speed_url and sp.get("enabled", True) and res["ok"]:
+            mbps, nbytes = await _measure_speed(
+                proxy, speed_url, float(sp.get("window", 8.0)),
+                int(sp.get("max_bytes", 20_000_000)),
+            )
+            slow = float(sp.get("slow_mbps", 8.0))
+            dead = float(sp.get("min_mbps", 0.5))
+            res["speed_mbps"] = round(mbps, 1)
+            if nbytes == 0:
+                res["speed"] = "скорость не измерилась"
+            elif mbps < dead:
+                res["speed"] = f"{mbps:.1f} Mbps — практически ноль (режется)"
+                res["slow"] = True
+                res["warn"] = True
+            elif mbps < slow:
+                res["speed"] = f"{mbps:.1f} Mbps — медленно (похоже на замедление)"
+                res["slow"] = True
+                res["warn"] = True
+            else:
+                res["speed"] = f"{mbps:.0f} Mbps"
         return res
     finally:
         if proc and proc.returncode is None:

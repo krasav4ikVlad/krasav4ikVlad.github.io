@@ -101,11 +101,11 @@ TUNNEL_PROBE_URL = os.environ.get(
 TUNNEL_SPEED_URL = os.environ.get(
     "CHECKER_SPEED_URL", "https://speed.cloudflare.com/__down?bytes=20000000"
 )
-SPEED_WINDOW = 10.0          # сколько секунд качаем (чтобы throttle успел сработать)
-SPEED_MAX_BYTES = 25_000_000 # либо до стольки байт
-SPEED_MIN_MBPS = 0.5         # установившаяся ниже — «режется»
-SPEED_SLOW_MBPS = 10.0       # ниже — «медленно/подозрительно» (рабочая нода даёт десятки Mbps)
-TUNNEL_DO_SPEED = os.environ.get("CHECKER_TUNNEL_SPEED", "0") == "1"  # замер скорости (по умолч. выкл)
+SPEED_WINDOW = float(os.environ.get("CHECKER_SPEED_WINDOW", "8"))  # сек качаем (throttle успевает сработать)
+SPEED_MAX_BYTES = int(os.environ.get("CHECKER_SPEED_MAX_BYTES", "20000000"))  # либо до стольки байт
+SPEED_MIN_MBPS = float(os.environ.get("CHECKER_SPEED_MIN_MBPS", "0.5"))   # ниже — «режется в ноль»
+SPEED_SLOW_MBPS = float(os.environ.get("CHECKER_SPEED_SLOW_MBPS", "8"))   # ниже — «медленно» (рабочая нода даёт десятки Mbps)
+TUNNEL_DO_SPEED = os.environ.get("CHECKER_TUNNEL_SPEED", "0") == "1"  # замер скорости в ДЦ-фолбэке (по умолч. выкл)
 
 # доступность иностранных сервисов через туннель — главный сигнал «нода живая»
 # формат env: "Имя=url, Имя=url, ..."; по умолчанию — популярные сервисы
@@ -1415,6 +1415,8 @@ def render_results(results: list[dict]) -> str:
                 cls, head = "tn-pend", '<span class="spin"></span>прогон через туннель'
             elif tw.get("na"):
                 cls, head = "tn-na", "туннель"
+            elif tw.get("slow"):
+                cls, head = "tn-warn", "открывается, но медленно (замедление)"
             elif tw.get("warn"):
                 cls, head = "tn-warn", "работает частично"
             elif tw.get("ok"):
@@ -1542,6 +1544,13 @@ async def agent_poll(request: Request):
         "params": {
             "start_timeout": XRAY_START_TIMEOUT, "probe_timeout": TUNNEL_PROBE_TIMEOUT,
             "services": [[n, u] for n, u in SERVICE_CHECKS],
+            "speed": {
+                "enabled": True,
+                "window": SPEED_WINDOW,
+                "max_bytes": SPEED_MAX_BYTES,
+                "slow_mbps": SPEED_SLOW_MBPS,
+                "min_mbps": SPEED_MIN_MBPS,
+            },
         },
     }})
 
@@ -1615,8 +1624,9 @@ async def index(request: Request, error: str = ""):
   <p class="muted" style="margin-top:10px">Доступность: ICMP, TCP, HTTP GET и POST по каждому host:port (1 токен/эндпоинт).
   <b>Подписка</b>: вставьте http(s)-ссылку — скачаем её, достанем все серверы
   (vless/vmess/trojan/ss/hysteria) и проверим каждый отдельным блоком.
-  <b>Глубокая проверка</b> дополнительно поднимает туннель (xray) и проверяет, открываются ли
-  через ноду YouTube, ChatGPT, Telegram, Instagram — ловит случай «пинг есть, а интернета нет»
+  <b>Глубокая проверка</b> дополнительно поднимает туннель (xray), проверяет, открываются ли
+  через ноду YouTube, ChatGPT, Telegram, Instagram, и <b>замеряет реальную скорость</b> через ноду —
+  ловит и «пинг есть, а интернета нет», и «открывается, но режется ТСПУ почти до нуля»
   ({DEEP_COST} токенов/эндпоинт).
   Дозаправка: +1 токен каждые {int(REFILL_SECONDS)} c (до {TOKEN_CAP}).</p>
   <div class="form-actions">
