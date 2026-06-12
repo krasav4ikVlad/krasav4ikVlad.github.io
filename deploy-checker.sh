@@ -182,9 +182,10 @@ echo "  Логи:    journalctl -u nodewiki-checker -f"
 echo "  Рестарт: systemctl restart nodewiki-checker"
 echo
 echo "  residential-зонд (мерить КАК У ПОЛЬЗОВАТЕЛЯ, а не из ДЦ):"
-echo "    на Linux-машине с домашним/мобильным интернетом (мини-ПК, Raspberry)"
-echo "    поставь зонд как systemd-сервис одной командой:"
+echo "    Linux (systemd) — одной командой:"
 echo "      AGENT_TOKEN=<token> bash <(curl -fsSL $RAW_BASE/deploy-probe.sh)"
+echo "    Windows (Планировщик) — в PowerShell от админа:"
+echo "      \$env:AGENT_TOKEN='<token>'; irm $RAW_BASE/deploy-probe.ps1 | iex"
 if [ -n "$GENERATED_AGENT" ]; then
   printf '\033[1;32m    AGENT_TOKEN (сгенерирован): %s\033[0m\n' "$GENERATED_AGENT"
 else
