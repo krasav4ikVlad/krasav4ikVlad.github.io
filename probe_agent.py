@@ -97,42 +97,38 @@ async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict) ->
             return {"ok": False, "info": "туннель поднялся, но нет выхода в сеть"}
         geo = f'{data.get("country","")} ({data.get("countryCode","")}) · {data.get("query","")}'
 
-        # 2) установившаяся скорость (медиана второй половины посекундных сэмплов)
-        window = float(p.get("window", 10))
-        max_bytes = int(p.get("max_bytes", 25_000_000))
-        samples, total = [], 0
-        try:
-            async with httpx.AsyncClient(proxy=proxy, verify=False,
-                                         timeout=httpx.Timeout(10.0, read=window + 2)) as cl:
-                start = time.perf_counter()
-                last_t, last_b = start, 0
-                async with cl.stream("GET", speed_url) as resp:
-                    if resp.status_code < 400:
-                        async for chunk in resp.aiter_bytes():
-                            total += len(chunk)
-                            now = time.perf_counter()
-                            if now - last_t >= 1.0:
-                                samples.append((total - last_b) * 8 / (now - last_t) / 1e6)
-                                last_t, last_b = now, total
-                            if total >= max_bytes or now - start >= window:
-                                break
-        except Exception:
-            pass
-        elapsed = max(time.perf_counter() - start, 0.001)
-        avg = total * 8 / elapsed / 1e6
-        if len(samples) >= 2:
-            steady = statistics.median(samples[len(samples) // 2:])
-        elif samples:
-            steady = samples[-1]
-        else:
-            steady = avg
-        mbps = min(steady, avg)
+        # 2) главное: открываются ли иностранные сервисы через туннель
+        services = p.get("services") or [
+            ["YouTube", "https://www.youtube.com/generate_204"],
+            ["ChatGPT", "https://chatgpt.com/cdn-cgi/trace"],
+            ["Telegram", "https://web.telegram.org/"],
+            ["Instagram", "https://www.instagram.com/"],
+            ["Google", "https://www.gstatic.com/generate_204"],
+        ]
 
-        if total < 50_000 or mbps < float(p.get("min_mbps", 0.5)):
-            return {"ok": False, "info": f"трафик режется (~{mbps:.2f} Mbps) — DPI/throttling · выход {geo}"}
-        if mbps < float(p.get("slow_mbps", 10)):
-            return {"ok": True, "warn": True, "info": f"медленно, возможна резка ~{mbps:.1f} Mbps · {geo}"}
-        return {"ok": True, "info": f"{geo} · ~{mbps:.0f} Mbps"}
+        async def probe(name, url):
+            t0 = time.perf_counter()
+            try:
+                async with httpx.AsyncClient(proxy=proxy, timeout=10, verify=False,
+                                             follow_redirects=False,
+                                             headers={"User-Agent": "Mozilla/5.0 nodewiki-checker"}) as cl:
+                    r = await cl.get(url)
+                return {"name": name, "ok": r.status_code < 400,
+                        "info": f"{r.status_code} · {(time.perf_counter()-t0)*1000:.0f} ms"}
+            except Exception as e:
+                return {"name": name, "ok": False, "info": type(e).__name__}
+
+        svc = await asyncio.gather(*(probe(n, u) for n, u in services))
+        ok_n = sum(1 for s in svc if s["ok"])
+        res = {"ok": ok_n > 0, "services": svc, "geo": geo}
+        if ok_n == 0:
+            res["info"] = f"сервисы недоступны через ноду · выход {geo}"
+        elif ok_n < len(svc):
+            res["warn"] = True
+            res["info"] = f"часть сервисов недоступна ({ok_n}/{len(svc)}) · {geo}"
+        else:
+            res["info"] = f"все сервисы открываются · {geo}"
+        return res
     finally:
         if proc and proc.returncode is None:
             try:
