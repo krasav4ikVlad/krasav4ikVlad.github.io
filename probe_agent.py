@@ -29,6 +29,15 @@ import time
 
 import httpx
 
+# Windows: при редиректе вывода в файл консольная кодировка cp1251 не вмещает
+# стрелки/эмодзи -> UnicodeEncodeError. Принудительно пишем UTF-8.
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 CHECKER_URL = os.environ.get("CHECKER_URL", "").rstrip("/")
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 XRAY_BIN = os.environ.get("XRAY_BIN", "xray")

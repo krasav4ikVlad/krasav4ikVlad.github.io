@@ -149,6 +149,7 @@ set "CHECKER_URL=$CheckerUrl"
 set "AGENT_TOKEN=$AgentToken"
 set "XRAY_BIN=$xray"
 set "POLL_INTERVAL=$PollInterval"
+set "PYTHONIOENCODING=utf-8"
 "$venvPy" "$InstallDir\probe_agent.py" >> "$InstallDir\probe.log" 2>&1
 "@ | Set-Content -Path $RunCmd -Encoding ASCII
 
@@ -158,6 +159,14 @@ icacls $RunCmd /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F" | Out-Nul
 if ($LASTEXITCODE -ne 0) { Warn "Не удалось ужесточить ACL на run-probe.cmd (не критично)." }
 
 # ---- задача планировщика: автозапуск + перезапуск при сбое ------------------
+# при переустановке гасим старый экземпляр, чтобы новый код подхватился сразу
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+  Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+}
+Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" -ErrorAction SilentlyContinue |
+  Where-Object { $_.CommandLine -like "*$InstallDir*" } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
 Log "Регистрирую задачу '$TaskName' (автозапуск при загрузке)…"
 $action    = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$RunCmd`""
 $trigger   = New-ScheduledTaskTrigger -AtStartup
@@ -178,7 +187,7 @@ Write-Host ""
 Log "Зонд установлен."
 Write-Host "  Состояние задачи: $state (Running = работает)"
 Write-Host "  Чекер:   $CheckerUrl (задачи берутся автоматически)"
-Write-Host "  Лог:     Get-Content -Wait '$InstallDir\probe.log'"
+Write-Host "  Лог:     Get-Content -Wait -Encoding UTF8 '$InstallDir\probe.log'"
 Write-Host "  Стоп:    Stop-ScheduledTask -TaskName $TaskName"
 Write-Host "  Старт:   Start-ScheduledTask -TaskName $TaskName"
 Write-Host "  Удалить: Unregister-ScheduledTask -TaskName $TaskName -Confirm:`$false"
