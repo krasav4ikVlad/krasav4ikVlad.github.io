@@ -157,7 +157,7 @@ async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict) ->
 
 async def main():
     headers = {"x-agent-token": AGENT_TOKEN}
-    print(f"[i] residential-зонд запущен → {CHECKER_URL}")
+    print(f"[i] residential-зонд запущен -> {CHECKER_URL}")
     async with httpx.AsyncClient(timeout=30) as api:
         while True:
             try:

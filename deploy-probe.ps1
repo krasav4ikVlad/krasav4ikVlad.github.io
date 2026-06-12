@@ -32,6 +32,13 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::
 $TaskName = "nodewiki-probe"
 $RunCmd   = Join-Path $InstallDir "run-probe.cmd"
 
+# скачивание с обходом CDN-кеша raw.githubusercontent (иначе подтягивается старьё)
+function Fetch ($url, $out) {
+  $bust = $(if ($url -like "*`?*") { "&" } else { "?" }) + "cb=" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  Invoke-WebRequest -UseBasicParsing -Uri ($url + $bust) -OutFile $out `
+    -Headers @{ "Cache-Control" = "no-cache"; "Pragma" = "no-cache" }
+}
+
 function Log  ($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Warn ($m) { Write-Host "[!] $m" -ForegroundColor Yellow }
 # ВАЖНО: не exit — при запуске через `irm | iex` exit закрывает всё окно PowerShell
@@ -115,8 +122,7 @@ Log "Python: $py"
 # ---- каталог + код ----------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Log "Скачиваю probe_agent.py…"
-Invoke-WebRequest -UseBasicParsing -Uri "$RawBase/probe_agent.py" `
-  -OutFile (Join-Path $InstallDir "probe_agent.py")
+Fetch "$RawBase/probe_agent.py" (Join-Path $InstallDir "probe_agent.py")
 & $py -c "compile(open(r'$InstallDir\probe_agent.py',encoding='utf-8').read(),'p','exec')"
 if ($LASTEXITCODE -ne 0) { Die "probe_agent.py не парсится." }
 
