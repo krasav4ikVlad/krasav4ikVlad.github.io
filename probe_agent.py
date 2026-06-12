@@ -30,11 +30,12 @@ import time
 import httpx
 
 # Windows: при редиректе вывода в файл консольная кодировка cp1251 не вмещает
-# стрелки/эмодзи -> UnicodeEncodeError. Принудительно пишем UTF-8.
+# стрелки/эмодзи -> UnicodeEncodeError. Пишем UTF-8 и строкой-за-строкой
+# (line_buffering), иначе лог «висит» в буфере, пока процесс жив.
 for _s in (sys.stdout, sys.stderr):
     if hasattr(_s, "reconfigure"):
         try:
-            _s.reconfigure(encoding="utf-8", errors="replace")
+            _s.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
         except Exception:
             pass
 

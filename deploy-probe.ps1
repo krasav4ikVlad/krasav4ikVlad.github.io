@@ -156,6 +156,7 @@ set "AGENT_TOKEN=$AgentToken"
 set "XRAY_BIN=$xray"
 set "POLL_INTERVAL=$PollInterval"
 set "PYTHONIOENCODING=utf-8"
+set "PYTHONUNBUFFERED=1"
 "$venvPy" "$InstallDir\probe_agent.py" >> "$InstallDir\probe.log" 2>&1
 "@ | Set-Content -Path $RunCmd -Encoding ASCII
 
