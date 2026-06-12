@@ -70,8 +70,32 @@ async def _wait_port(port: int, timeout: float) -> bool:
     return False
 
 
-async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict) -> dict:
-    """Поднять xray и реально сходить наружу + замерить установившуюся скорость."""
+DEFAULT_SERVICES = [
+    ["YouTube", "https://www.youtube.com/generate_204"],
+    ["ChatGPT", "https://chatgpt.com/cdn-cgi/trace"],
+    ["Telegram", "https://web.telegram.org/"],
+    ["Instagram", "https://www.instagram.com/"],
+    ["Google", "https://www.gstatic.com/generate_204"],
+]
+
+
+async def _probe_service(name: str, url: str, proxy: str | None = None) -> dict:
+    """Один сервис: через socks-прокси туннеля или напрямую (proxy=None)."""
+    t0 = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(proxy=proxy, timeout=10, verify=False,
+                                     follow_redirects=False,
+                                     headers={"User-Agent": "Mozilla/5.0 nodewiki-checker"}) as cl:
+            r = await cl.get(url)
+        return {"name": name, "ok": r.status_code < 400,
+                "info": f"{r.status_code} · {(time.perf_counter()-t0)*1000:.0f} ms"}
+    except Exception as e:
+        return {"name": name, "ok": False, "info": type(e).__name__}
+
+
+async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict,
+                     services: list) -> dict:
+    """Поднять xray и реально сходить наружу + прогнать сервисы через туннель."""
     port = _free_port()
     cfg = {
         "log": {"loglevel": "warning"},
@@ -108,27 +132,7 @@ async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict) ->
         geo = f'{data.get("country","")} ({data.get("countryCode","")}) · {data.get("query","")}'
 
         # 2) главное: открываются ли иностранные сервисы через туннель
-        services = p.get("services") or [
-            ["YouTube", "https://www.youtube.com/generate_204"],
-            ["ChatGPT", "https://chatgpt.com/cdn-cgi/trace"],
-            ["Telegram", "https://web.telegram.org/"],
-            ["Instagram", "https://www.instagram.com/"],
-            ["Google", "https://www.gstatic.com/generate_204"],
-        ]
-
-        async def probe(name, url):
-            t0 = time.perf_counter()
-            try:
-                async with httpx.AsyncClient(proxy=proxy, timeout=10, verify=False,
-                                             follow_redirects=False,
-                                             headers={"User-Agent": "Mozilla/5.0 nodewiki-checker"}) as cl:
-                    r = await cl.get(url)
-                return {"name": name, "ok": r.status_code < 400,
-                        "info": f"{r.status_code} · {(time.perf_counter()-t0)*1000:.0f} ms"}
-            except Exception as e:
-                return {"name": name, "ok": False, "info": type(e).__name__}
-
-        svc = await asyncio.gather(*(probe(n, u) for n, u in services))
+        svc = await asyncio.gather(*(_probe_service(n, u, proxy) for n, u in services))
         ok_n = sum(1 for s in svc if s["ok"])
         res = {"ok": ok_n > 0, "services": svc, "geo": geo}
         if ok_n == 0:
@@ -156,6 +160,20 @@ async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict) ->
                 pass
 
 
+async def run_task(outbound: dict, probe_url: str, speed_url: str, p: dict) -> dict:
+    """Туннель-тест + КОНТРОЛЬ: те же сервисы напрямую (без туннеля) со своего
+    канала. Если они открываются и так — с этой точки блокировок нет, и
+    результат туннеля непоказателен; чекер это покажет."""
+    services = p.get("services") or DEFAULT_SERVICES
+    direct_fut = asyncio.gather(*(_probe_service(n, u) for n, u in services))
+    res = await run_tunnel(outbound, probe_url, speed_url, p, services)
+    try:
+        res["direct"] = list(await direct_fut)
+    except Exception:
+        pass
+    return res
+
+
 async def main():
     headers = {"x-agent-token": AGENT_TOKEN}
     print(f"[i] residential-зонд запущен -> {CHECKER_URL}")
@@ -177,8 +195,8 @@ async def main():
                 continue
             print(f"[>] задача {task['task_id']} — тестирую через свой канал…")
             try:
-                result = await run_tunnel(task["outbound"], task["probe_url"],
-                                          task["speed_url"], task.get("params", {}))
+                result = await run_task(task["outbound"], task["probe_url"],
+                                        task["speed_url"], task.get("params", {}))
             except Exception as e:
                 result = {"ok": False, "info": f"зонд: {type(e).__name__}"}
             try:

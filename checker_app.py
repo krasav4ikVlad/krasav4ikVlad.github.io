@@ -1435,12 +1435,39 @@ def render_results(results: list[dict]) -> str:
                         f'<span class="svc-info">{html.escape(s.get("info",""))}</span></div>'
                     )
                 svc_grid = f'<div class="svc-grid">{"".join(cells)}</div>'
+            # контроль: те же сервисы НАПРЯМУЮ с зонда (без туннеля)
+            direct_html = ""
+            if tw.get("direct"):
+                d = tw["direct"]
+                d_ok = sum(1 for s in d if s.get("ok"))
+                if d_ok == 0:
+                    dcls, dhead = "tn-ok", "всё заблокировано без туннеля"
+                    dinfo = "блокировки с зонда видны — контроль честный, результату туннеля можно верить"
+                elif d_ok < len(d):
+                    dcls, dhead = "tn-warn", f"без туннеля открыто {d_ok}/{len(d)}"
+                    dinfo = "часть сервисов доступна с зонда и так — для них результат туннеля непоказателен"
+                else:
+                    dcls, dhead = "tn-bad", "всё открыто и БЕЗ туннеля"
+                    dinfo = "с точки зондирования блокировок нет — тест туннеля непоказателен, зонд нужен на заблокированном канале"
+                dcells = []
+                for s in d:
+                    scls = "svc-ok" if s.get("ok") else "svc-bad"
+                    dcells.append(
+                        f'<div class="svc {scls}"><span class="svc-name">{html.escape(s["name"])}</span>'
+                        f'<span class="svc-info">{html.escape(s.get("info",""))}</span></div>'
+                    )
+                direct_html = f"""
+  <div class="tunnel {dcls}">
+    <span class="tn-label">⤳ контроль без туннеля</span>
+    <span class="tn-head">{dhead}</span>
+    <span class="tn-info">{dinfo}</span>
+  </div><div class="svc-grid">{"".join(dcells)}</div>"""
             tunnel = f"""
   <div class="tunnel {cls}">
     <span class="tn-label">⟿ туннель</span>
     <span class="tn-head">{head}</span>
     <span class="tn-info">{html.escape(tw.get("info",""))}{speed}{via}</span>
-  </div>{svc_grid}"""
+  </div>{svc_grid}{direct_html}"""
         cards.append(f"""
 <div class="ep">
   <div class="ep-top">
