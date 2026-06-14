@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Remnawave node — быстрая установка (гибридная схема, ручной воркфлоу).
-# Делает РОВНО 4 вещи:
-#   1) ставит базу eGames (меню проходишь сам),
+# Remnawave node — быстрая установка (гибридная схема).
+# Спрашивает в консоли домен, IP панели, токен и почту — и делает РОВНО 4 вещи:
+#   1) ставит базу eGames (меню прокликивает САМ — автопилот),
 #   2) пишет твой nginx.conf, меняя в нём ТОЛЬКО домен,
 #   3) перезапускает nginx,
 #   4) открывает порт 4443.
@@ -10,7 +10,8 @@
 # приходят из панели, XHTTP-путь в nginx фиксированный (см. константу ниже).
 #
 # Запуск:  curl -fsSL https://scripts.nodewiki.info/raw/<id> | bash
-#     или: DOMAIN=node.example.com bash <(curl -fsSL .../<id>)
+#     или: bash <(curl -fsSL https://scripts.nodewiki.info/raw/<id>)
+# Меню eGames пройти руками:  EGAMES_AUTO=0 bash <(curl -fsSL .../<id>)
 
 set -euo pipefail
 
@@ -30,8 +31,9 @@ XHTTP_PORT="${XHTTP_PORT:-4443}"
 CERT_DIR_BASE="${CERT_DIR_BASE:-/etc/nginx/ssl}"
 EGAMES_URL="https://raw.githubusercontent.com/eGamesAPI/remnawave-reverse-proxy/refs/heads/main/install_remnawave.sh"
 
-# автопилот eGames (опционально): сам прокликивает меню 1->4->1 и вводит данные
-EGAMES_AUTO="${EGAMES_AUTO:-0}"               # 1 = автопрокликивание через expect
+# автопилот eGames (по умолчанию ВКЛ): сам прокликивает меню 1->4->1 и вводит
+# данные. Чтобы пройти меню руками — запусти с EGAMES_AUTO=0.
+EGAMES_AUTO="${EGAMES_AUTO:-1}"               # 1 = автопрокликивание через expect
 EGAMES_LANG="${EGAMES_LANG:-2}"               # язык eGames: 1=English, 2=Русский
 PANEL_IP="${PANEL_IP:-}"                       # IP панели (нужен только в авто-режиме)
 NODE_TOKEN="${NODE_TOKEN:-}"                   # секретный токен ноды (только авто-режим)
@@ -78,14 +80,16 @@ CERT_DIR="$CERT_DIR_BASE/$DOMAIN"
 # expect-автопилот: ждёт каждый маркер [?] и шлёт следующий ответ из очереди,
 # затем отдаёт управление тебе (interact) — на случай неожиданного вопроса.
 egames_autopilot() {
+  # спрашиваем все данные СНАЧАЛА (до установки expect) — одним блоком
+  ask PANEL_IP   "IP панели Remnawave"
+  ask NODE_TOKEN "Секретный токен ноды (из панели)"
+  ask EMAIL      "Почта для сертификата (Let's Encrypt)"
+
   if ! command -v expect >/dev/null 2>&1; then
     log "Ставлю expect…"
     apt-get update -y >/dev/null 2>&1 || true
     apt-get install -y expect >/dev/null 2>&1 || die "Не удалось установить expect."
   fi
-  ask PANEL_IP   "IP панели Remnawave"
-  ask NODE_TOKEN "Секретный токен ноды (из панели)"
-  ask EMAIL      "Почта для сертификата (Let's Encrypt)"
 
   local sh exp
   sh="$(mktemp /tmp/egames.XXXXXX.sh)"
