@@ -30,10 +30,24 @@ XHTTP_PORT="${XHTTP_PORT:-4443}"
 CERT_DIR_BASE="${CERT_DIR_BASE:-/etc/nginx/ssl}"
 EGAMES_URL="https://raw.githubusercontent.com/eGamesAPI/remnawave-reverse-proxy/refs/heads/main/install_remnawave.sh"
 
+# автопилот eGames (опционально): сам прокликивает меню 1->4->1 и вводит данные
+EGAMES_AUTO="${EGAMES_AUTO:-0}"               # 1 = автопрокликивание через expect
+EGAMES_LANG="${EGAMES_LANG:-2}"               # язык eGames: 1=English, 2=Русский
+PANEL_IP="${PANEL_IP:-}"                       # IP панели (нужен только в авто-режиме)
+NODE_TOKEN="${NODE_TOKEN:-}"                   # секретный токен ноды (только авто-режим)
+EMAIL="${EMAIL:-${LE_EMAIL:-}}"               # почта для сертификата (только авто-режим)
+
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 pause(){ read -rp "$1" _ </dev/tty; }          # ввод берём из терминала (стдин занят пайпом)
+ask()  { # ask VAR "Вопрос"
+  local __v="$1" __q="$2" __a=""
+  [ -n "${!__v:-}" ] && return 0
+  read -rp "  $__q: " __a </dev/tty
+  [ -n "$__a" ] || die "Пустое значение для $__v"
+  printf -v "$__v" '%s' "$__a"
+}
 
 [ "$(id -u)" -eq 0 ] || die "Запусти от root (sudo)."
 [ -r /dev/tty ] || die "Нужен интерактивный терминал (нет /dev/tty)."
@@ -61,24 +75,66 @@ fi
 [ -n "$DOMAIN" ] || die "Домен обязателен."
 CERT_DIR="$CERT_DIR_BASE/$DOMAIN"
 
-# ---- 2. база eGames (меню проходишь сам) -----------------------------------
+# expect-автопилот: ждёт каждый маркер [?] и шлёт следующий ответ из очереди,
+# затем отдаёт управление тебе (interact) — на случай неожиданного вопроса.
+egames_autopilot() {
+  if ! command -v expect >/dev/null 2>&1; then
+    log "Ставлю expect…"
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y expect >/dev/null 2>&1 || die "Не удалось установить expect."
+  fi
+  ask PANEL_IP   "IP панели Remnawave"
+  ask NODE_TOKEN "Секретный токен ноды (из панели)"
+  ask EMAIL      "Почта для сертификата (Let's Encrypt)"
+
+  local sh exp
+  sh="$(mktemp /tmp/egames.XXXXXX.sh)"
+  exp="$(mktemp /tmp/egames.XXXXXX.exp)"
+  curl -fsSL "$EGAMES_URL" -o "$sh" || die "Не скачался установщик eGames."
+  export SELFSTEAL_DOMAIN="$DOMAIN" PANEL_IP NODE_TOKEN EMAIL EGAMES_SH="$sh"
+
+  # очередь: меню 1->4->1, затем домен, IP панели, токен, метод серта 2, почта
+  cat > "$exp" <<'EXP'
+set timeout -1
+set queue [list 1 4 1 $env(SELFSTEAL_DOMAIN) $env(PANEL_IP) $env(NODE_TOKEN) 2 $env(EMAIL)]
+spawn bash $env(EGAMES_SH)
+foreach a $queue {
+    expect -ex {[?]}
+    send -- "$a\r"
+}
+interact
+EXP
+  log "Автопилот eGames пошёл (меню 1→4→1 + данные). Если что-то спросит сверх очереди — допиши сам."
+  expect -f "$exp" </dev/tty || warn "expect завершился с ошибкой — проверю контейнеры ниже."
+  rm -f "$sh" "$exp"
+}
+
+# ---- 2. база eGames --------------------------------------------------------
 if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$NODE_CT"; then
-  printf '\n\033[1;36m========= БАЗОВАЯ УСТАНОВКА (eGames) =========\033[0m\n'
-  cat <<EOF
-Сейчас запустится установщик eGames. Пройди меню РОВНО так:
-    2  ->  1  ->  4  ->  1
+  # язык выбираем заранее (файлом) — пропускаем вопрос про язык и его «Invalid choice»
+  mkdir -p /usr/local/remnawave_reverse
+  [ -f /usr/local/remnawave_reverse/selected_language ] || echo "$EGAMES_LANG" > /usr/local/remnawave_reverse/selected_language
+
+  if [ "$EGAMES_AUTO" = "1" ]; then
+    egames_autopilot
+  else
+    printf '\n\033[1;36m========= БАЗОВАЯ УСТАНОВКА (eGames) =========\033[0m\n'
+    cat <<EOF
+Язык уже выбран (Русский). Пройди меню РОВНО так:
+    1  ->  4  ->  1        (Компоненты -> Установить ноду -> Nginx)
 Когда спросит данные ноды — введи:
-    Домен ноды : $DOMAIN
-    IP ноды    : $NODE_IP
-    Токен ноды : <вставь из панели>
-Дальше: два раза Enter, потом  2 , потом своя почта для сертификата.
+    Selfsteal домен : $DOMAIN
+    IP панели       : <IP сервера с панелью>
+    Токен ноды      : <вставь из панели>
+Метод сертификата:  2  (ACME), затем своя почта.
 После выпуска сертификата выйди из установщика обратно в консоль.
 EOF
-  printf '\033[1;36m=============================================\033[0m\n\n'
-  pause "Enter — запустить установщик (Ctrl+C — отмена)... "
-  bash <(curl -fsSL "$EGAMES_URL") </dev/tty || warn "Установщик завершился с ошибкой — проверю контейнеры ниже."
-  echo
-  pause "Нода добавлена и контейнеры подняты? Enter для продолжения... "
+    printf '\033[1;36m=============================================\033[0m\n\n'
+    pause "Enter — запустить установщик (Ctrl+C — отмена)... "
+    bash <(curl -fsSL "$EGAMES_URL") </dev/tty || warn "Установщик завершился с ошибкой — проверю контейнеры ниже."
+    echo
+    pause "Нода добавлена и контейнеры подняты? Enter для продолжения... "
+  fi
 else
   log "Контейнер $NODE_CT уже есть — установку eGames пропускаю."
 fi
