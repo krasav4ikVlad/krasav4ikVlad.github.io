@@ -36,28 +36,23 @@ EGAMES_URL="https://raw.githubusercontent.com/eGamesAPI/remnawave-reverse-proxy/
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
-ask()  { # ask VAR "Вопрос" [default]
+ask()  { # ask VAR "Вопрос" [default] — читаем из /dev/tty (стдин занят пайпом скрипта)
   local __v="$1" __q="$2" __d="${3:-}" __a=""
   [ -n "${!__v:-}" ] && return 0
-  if [ -n "$__d" ]; then read -rp "  $__q [$__d]: " __a; __a="${__a:-$__d}"
-  else read -rp "  $__q: " __a; fi
+  if [ -n "$__d" ]; then read -rp "  $__q [$__d]: " __a </dev/tty; __a="${__a:-$__d}"
+  else read -rp "  $__q: " __a </dev/tty; fi
   [ -n "$__a" ] || die "Пустое значение для $__v"
   printf -v "$__v" '%s' "$__a"
 }
+pause() { read -rp "$1" _ </dev/tty; }  # ждать Enter с терминала
 
 [ "$(id -u)" -eq 0 ] || die "Запусти от root (sudo)."
 command -v openssl >/dev/null 2>&1 || die "Нужен openssl."
 
-# curl | bash отдаёт САМ скрипт в stdin — тогда read крадёт строки скрипта,
-# а вложенный установщик eGames не видит твой ввод. Переподключаем stdin на
-# терминал, чтобы интерактив работал и при `curl | bash`, и при `bash <(curl ...)`.
-if [ ! -t 0 ]; then
-  if [ -r /dev/tty ]; then
-    exec </dev/tty
-  else
-    die "Нужен интерактивный терминал. Запусти так:  bash <(curl -fsSL URL)"
-  fi
-fi
+# curl | bash подаёт САМ скрипт в stdin (fd0) — bash читает команды оттуда.
+# Поэтому fd0 НЕ трогаем (иначе bash начнёт читать остаток скрипта с клавиатуры),
+# а каждый read и вложенный установщик берут ввод напрямую из /dev/tty.
+[ -r /dev/tty ] || die "Нужен интерактивный терминал (нет /dev/tty)."
 
 mkdir -p "$(dirname "$STATE_FILE")"
 
@@ -117,10 +112,11 @@ if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$NODE_CT"; then
 После выпуска сертификата выйди из установщика обратно в консоль.
 EOF
   printf '\033[1;36m=============================================\033[0m\n\n'
-  read -rp "Готов запустить установщик? Enter — старт, Ctrl+C — отмена... " _
-  bash <(curl -fsSL "$EGAMES_URL") || warn "Установщик завершился с ошибкой — проверим контейнеры ниже."
+  pause "Готов запустить установщик? Enter — старт, Ctrl+C — отмена... "
+  # установщику тоже отдаём терминал на stdin (иначе он не прочитает меню)
+  bash <(curl -fsSL "$EGAMES_URL") </dev/tty || warn "Установщик завершился с ошибкой — проверим контейнеры ниже."
   echo
-  read -rp "Нода добавлена и контейнеры подняты? Enter для продолжения... " _
+  pause "Нода добавлена и контейнеры подняты? Enter для продолжения... "
 else
   log "Контейнер $NODE_CT уже есть — базовую установку пропускаю."
 fi
