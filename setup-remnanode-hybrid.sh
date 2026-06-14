@@ -32,12 +32,9 @@ CERT_DIR_BASE="${CERT_DIR_BASE:-/etc/nginx/ssl}"
 EGAMES_URL="https://raw.githubusercontent.com/eGamesAPI/remnawave-reverse-proxy/refs/heads/main/install_remnawave.sh"
 
 # автопилот eGames (по умолчанию ВКЛ): сам прокликивает меню 1->4->1 и вводит
-# данные. Чтобы пройти меню руками — запусти с EGAMES_AUTO=0.
+# домен, дальше передаёт управление тебе. Пройти меню руками — EGAMES_AUTO=0.
 EGAMES_AUTO="${EGAMES_AUTO:-1}"               # 1 = автопрокликивание через expect
 EGAMES_LANG="${EGAMES_LANG:-2}"               # язык eGames: 1=English, 2=Русский
-PANEL_IP="${PANEL_IP:-}"                       # IP панели (нужен только в авто-режиме)
-NODE_TOKEN="${NODE_TOKEN:-}"                   # секретный токен ноды (только авто-режим)
-EMAIL="${EMAIL:-${LE_EMAIL:-}}"               # почта для сертификата (только авто-режим)
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
@@ -80,11 +77,6 @@ CERT_DIR="$CERT_DIR_BASE/$DOMAIN"
 # expect-автопилот: ждёт каждый маркер [?] и шлёт следующий ответ из очереди,
 # затем отдаёт управление тебе (interact) — на случай неожиданного вопроса.
 egames_autopilot() {
-  # спрашиваем все данные СНАЧАЛА (до установки expect) — одним блоком
-  ask PANEL_IP   "IP панели Remnawave"
-  ask NODE_TOKEN "Секретный токен ноды (из панели)"
-  ask EMAIL      "Почта для сертификата (Let's Encrypt)"
-
   if ! command -v expect >/dev/null 2>&1; then
     log "Ставлю expect…"
     apt-get update -y >/dev/null 2>&1 || true
@@ -95,20 +87,24 @@ egames_autopilot() {
   sh="$(mktemp /tmp/egames.XXXXXX.sh)"
   exp="$(mktemp /tmp/egames.XXXXXX.exp)"
   curl -fsSL "$EGAMES_URL" -o "$sh" || die "Не скачался установщик eGames."
-  export SELFSTEAL_DOMAIN="$DOMAIN" PANEL_IP NODE_TOKEN EMAIL EGAMES_SH="$sh"
+  export SELFSTEAL_DOMAIN="$DOMAIN" EGAMES_SH="$sh"
 
-  # очередь: меню 1->4->1, затем домен, IP панели, токен, метод серта 2, почта
+  # Автопилот делает только ДЕТЕРМИНИРОВАННУЮ часть: меню 1->4->1 + ввод домена
+  # (всё это обычные [?]-вопросы). Дальше у модуля eGames идут «скрытые»
+  # подтверждения (токен + двойной Enter и т.п.), которых я не вижу, — поэтому
+  # отдаём управление пользователю (interact): остальное он вводит сам.
   cat > "$exp" <<'EXP'
 set timeout -1
-set queue [list 1 4 1 $env(SELFSTEAL_DOMAIN) $env(PANEL_IP) $env(NODE_TOKEN) 2 $env(EMAIL)]
+set queue [list 1 4 1 $env(SELFSTEAL_DOMAIN)]
 spawn bash $env(EGAMES_SH)
 foreach a $queue {
     expect -ex {[?]}
     send -- "$a\r"
 }
+send_user "\n\n===> Автопилот прошёл меню и ввёл домен. ДАЛЬШЕ ВВОДИ САМ:\n     IP панели  ->  токен (подтверди двойным Enter, как обычно)  ->  метод серта 2  ->  почта.\n\n"
 interact
 EXP
-  log "Автопилот eGames пошёл (меню 1→4→1 + данные). Если что-то спросит сверх очереди — допиши сам."
+  log "Автопилот eGames: язык + меню 1→4→1 + домен. Остальное введёшь сам (так надёжнее)."
   expect -f "$exp" </dev/tty || warn "expect завершился с ошибкой — проверю контейнеры ниже."
   rm -f "$sh" "$exp"
 }
