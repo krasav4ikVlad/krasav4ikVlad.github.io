@@ -1434,7 +1434,8 @@ def render_results(results: list[dict]) -> str:
                 cls, head = "tn-bad", "не работает"
             via = ""
             if tw.get("via"):
-                via = f' <span class="tn-via">через {html.escape(tw["via"])}</span>'
+                probe = f' · зонд {html.escape(tw["probe_ip"])}' if tw.get("probe_ip") else ""
+                via = f' <span class="tn-via">через {html.escape(tw["via"])}{probe}</span>'
             speed = f' · {html.escape(tw["speed"])}' if tw.get("speed") else ""
             svc_grid = ""
             if tw.get("services"):
@@ -1527,6 +1528,14 @@ def _agent_ok(request: Request) -> bool:
     return hmac.compare_digest(tok, AGENT_TOKEN)
 
 
+def _client_ip(request: Request) -> str:
+    """Реальный IP зонда (за nginx) — откуда пришёл результат."""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.headers.get("x-real-ip") or (request.client.host if request.client else "")
+
+
 @app.post("/agent/poll")
 async def agent_poll(request: Request):
     global last_agent_poll
@@ -1584,6 +1593,7 @@ async def agent_result(request: Request):
     if task.get("status") == "done":
         return JSONResponse({"ok": True})
     result["via"] = "residential"
+    result["probe_ip"] = _client_ip(request)  # IP зонда — откуда шла проверка
     await tunnel_tasks.update_one(
         {"_id": toid}, {"$set": {"status": "done", "result": result}}
     )
