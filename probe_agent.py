@@ -80,17 +80,23 @@ DEFAULT_SERVICES = [
 
 
 async def _probe_service(name: str, url: str, proxy: str | None = None) -> dict:
-    """Один сервис: через socks-прокси туннеля или напрямую (proxy=None)."""
-    t0 = time.perf_counter()
-    try:
-        async with httpx.AsyncClient(proxy=proxy, timeout=10, verify=False,
-                                     follow_redirects=False,
-                                     headers={"User-Agent": "Mozilla/5.0 nodewiki-checker"}) as cl:
-            r = await cl.get(url)
-        return {"name": name, "ok": r.status_code < 400,
-                "info": f"{r.status_code} · {(time.perf_counter()-t0)*1000:.0f} ms"}
-    except Exception as e:
-        return {"name": name, "ok": False, "info": type(e).__name__}
+    """Один сервис: через socks-прокси туннеля или напрямую (proxy=None).
+    Один ретрай на разовый обрыв (ТСПУ часто рвёт первое соединение)."""
+    last = "нет ответа"
+    for attempt in range(2):
+        t0 = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(proxy=proxy, timeout=10, verify=False,
+                                         follow_redirects=False,
+                                         headers={"User-Agent": "Mozilla/5.0 nodewiki-checker"}) as cl:
+                r = await cl.get(url)
+            return {"name": name, "ok": r.status_code < 400,
+                    "info": f"{r.status_code} · {(time.perf_counter()-t0)*1000:.0f} ms"}
+        except Exception as e:
+            last = type(e).__name__
+            if attempt == 0:
+                await asyncio.sleep(0.3)
+    return {"name": name, "ok": False, "info": last}
 
 
 async def _measure_speed(proxy: str, url: str, window: float, max_bytes: int) -> tuple[float, int]:
@@ -150,29 +156,34 @@ async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict,
             return {"ok": False, "info": "xray не поднялся (конфиг?)"}
 
         proxy = f"socks5://127.0.0.1:{port}"
-        # 1) гео/выход
-        try:
-            async with httpx.AsyncClient(proxy=proxy, timeout=p.get("probe_timeout", 14), verify=False) as cl:
-                data = (await cl.get(probe_url)).json()
-        except (httpx.TimeoutException, httpx.ProxyError, httpx.ConnectError):
-            return {"ok": False, "info": "нет выхода в сеть (таймаут — вероятно DPI/бан)"}
-        except Exception as e:
-            return {"ok": False, "info": f"туннель: {type(e).__name__}"}
-        if data.get("status") != "success":
-            return {"ok": False, "info": "туннель поднялся, но нет выхода в сеть"}
-        geo = f'{data.get("country","")} ({data.get("countryCode","")}) · {data.get("query","")}'
+        # 1) гео/выход — с ретраями и НЕ как стоп-кран: если обрывается, гео просто
+        # «не определился», но сервисы всё равно проверяем (обрыв на гео ≠ нода мертва).
+        geo, geo_err = "", ""
+        for _ in range(3):
+            try:
+                async with httpx.AsyncClient(proxy=proxy, timeout=p.get("probe_timeout", 14), verify=False) as cl:
+                    data = (await cl.get(probe_url)).json()
+                if data.get("status") == "success":
+                    geo = f'{data.get("country","")} ({data.get("countryCode","")}) · {data.get("query","")}'
+                    break
+                geo_err = "нет выхода"
+            except Exception as e:
+                geo_err = type(e).__name__
+            await asyncio.sleep(0.4)
 
-        # 2) открываются ли иностранные сервисы через туннель
+        # 2) ГЛАВНОЕ: открываются ли сервисы через туннель — проверяем ВСЕГДА,
+        # даже если гео не определился. Видно по каждому сервису, что именно рвётся.
         svc = await asyncio.gather(*(_probe_service(n, u, proxy) for n, u in services))
         ok_n = sum(1 for s in svc if s["ok"])
+        loc = geo or f"выход не определился ({geo_err or 'обрыв'})"
         res = {"ok": ok_n > 0, "services": svc, "geo": geo}
         if ok_n == 0:
-            res["info"] = f"сервисы недоступны через ноду · выход {geo}"
+            res["info"] = f"через ноду ничего не открывается — соединение рвётся · {loc}"
         elif ok_n < len(svc):
             res["warn"] = True
-            res["info"] = f"часть сервисов недоступна ({ok_n}/{len(svc)}) · {geo}"
+            res["info"] = f"часть сервисов недоступна ({ok_n}/{len(svc)}) · {loc}"
         else:
-            res["info"] = f"все сервисы открываются · {geo}"
+            res["info"] = f"все сервисы открываются · {loc}"
 
         # 3) ГЛАВНОЕ против замедления: реальная пропускная способность через ноду.
         # маленький GET выше проскакивает даже при ТСПУ-резке — а тут качаем объём
