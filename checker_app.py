@@ -119,12 +119,12 @@ def _parse_services(raw: str) -> list[tuple[str, str]]:
                 out.append((name, url))
     return out
 
+# только реально фильтруемые в РФ сервисы — ChatGPT/Google не блокируются и
+# лишь зашумляют контроль (всегда зелёные). Можно переопределить через env.
 SERVICE_CHECKS = _parse_services(os.environ.get("CHECKER_SERVICES", "")) or [
     ("YouTube",   "https://www.youtube.com/generate_204"),
-    ("ChatGPT",   "https://chatgpt.com/cdn-cgi/trace"),
     ("Telegram",  "https://web.telegram.org/"),
     ("Instagram", "https://www.instagram.com/"),
-    ("Google",    "https://www.gstatic.com/generate_204"),
 ]
 SERVICE_TIMEOUT = 10.0
 XRAY_PROTOS = {"vless", "vmess", "trojan", "shadowsocks"}  # что умеет xray-core

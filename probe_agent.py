@@ -70,12 +70,11 @@ async def _wait_port(port: int, timeout: float) -> bool:
     return False
 
 
+# фолбэк, если чекер не прислал список; только фильтруемые в РФ сервисы
 DEFAULT_SERVICES = [
     ["YouTube", "https://www.youtube.com/generate_204"],
-    ["ChatGPT", "https://chatgpt.com/cdn-cgi/trace"],
     ["Telegram", "https://web.telegram.org/"],
     ["Instagram", "https://www.instagram.com/"],
-    ["Google", "https://www.gstatic.com/generate_204"],
 ]
 
 
