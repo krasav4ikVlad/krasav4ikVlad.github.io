@@ -927,35 +927,33 @@ async def tunnel_check(outbound: dict) -> dict:
             return {"ok": False, "info": "xray не поднялся (конфиг?)"}
 
         proxy = f"socks5://127.0.0.1:{port}"
-        # 1) маршрутизация + гео: реально ли есть выход в сеть
-        try:
-            async with httpx.AsyncClient(proxy=proxy, timeout=TUNNEL_PROBE_TIMEOUT, verify=False) as cl:
-                r = await cl.get(TUNNEL_PROBE_URL)
-                data = r.json()
-        except (httpx.TimeoutException, httpx.ProxyError, httpx.ConnectError):
-            return {"ok": False, "info": "нет выхода в сеть (таймаут — вероятно DPI/бан)"}
-        except Exception as e:
-            return {"ok": False, "info": f"туннель: {type(e).__name__}"}
-        if data.get("status") != "success":
-            return {"ok": False, "info": "туннель поднялся, но нет выхода в сеть"}
-        cc = data.get("countryCode", "")
-        country = data.get("country", "")
-        exit_ip = data.get("query", "")
-        geo = f"{country} ({cc}) · {exit_ip}"
+        # 1) гео/выход — с ретраями и НЕ как стоп-кран: обрыв на гео ≠ нода мертва.
+        geo, geo_err = "", ""
+        for _ in range(3):
+            try:
+                async with httpx.AsyncClient(proxy=proxy, timeout=TUNNEL_PROBE_TIMEOUT, verify=False) as cl:
+                    data = (await cl.get(TUNNEL_PROBE_URL)).json()
+                if data.get("status") == "success":
+                    geo = f'{data.get("country","")} ({data.get("countryCode","")}) · {data.get("query","")}'
+                    break
+                geo_err = "нет выхода"
+            except Exception as e:
+                geo_err = type(e).__name__
+            await asyncio.sleep(0.4)
 
-        # 2) главное: открываются ли иностранные сервисы ЧЕРЕЗ туннель
+        # 2) главное: открываются ли иностранные сервисы ЧЕРЕЗ туннель (всегда)
         services = await check_services(proxy)
         ok_n = sum(1 for s in services if s["ok"])
-
-        result = {"ok": ok_n > 0, "info": geo, "geo": geo,
+        loc = geo or f"выход не определился ({geo_err or 'обрыв'})"
+        result = {"ok": ok_n > 0, "info": loc, "geo": geo,
                   "services": services, "ok_count": ok_n, "total": len(services)}
         if ok_n == 0:
-            result["info"] = f"сервисы недоступны через ноду · выход {geo}"
+            result["info"] = f"через ноду ничего не открывается — соединение рвётся · {loc}"
         elif ok_n < len(services):
             result["warn"] = True
-            result["info"] = f"часть сервисов недоступна ({ok_n}/{len(services)}) · {geo}"
+            result["info"] = f"часть сервисов недоступна ({ok_n}/{len(services)}) · {loc}"
         else:
-            result["info"] = f"все сервисы открываются · {geo}"
+            result["info"] = f"все сервисы открываются · {loc}"
 
         # 3) опционально — замер скорости (выкл по умолчанию)
         if TUNNEL_DO_SPEED:
