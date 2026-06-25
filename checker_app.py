@@ -1247,6 +1247,8 @@ body::before{content:"";position:fixed;inset:0;z-index:-2;
 body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px);opacity:.4;mix-blend-mode:multiply}
 .container{max-width:920px;margin:0 auto;padding:0 22px 80px}
+/* широкая раскладка для страницы результатов: больше места => несколько колонок */
+body.wide .container,body.wide .header-inner{max-width:min(1560px,94vw)}
 header{position:sticky;top:0;z-index:20;backdrop-filter:blur(11px) saturate(1.3);-webkit-backdrop-filter:blur(11px) saturate(1.3);
   background:rgba(11,11,12,.78);border-bottom:1px solid var(--line);margin-bottom:38px}
 .header-inner{max-width:920px;margin:0 auto;padding:15px 22px;display:flex;align-items:center;justify-content:space-between;gap:14px}
@@ -1291,6 +1293,9 @@ textarea::placeholder{color:#494842}
 .spin{display:inline-block;width:11px;height:11px;border:2px solid rgba(198,242,63,.25);border-top-color:var(--lime);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
 /* карточка эндпоинта */
+.ep-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:14px;align-items:start}
+@media (max-width:520px){.ep-grid{grid-template-columns:1fr}}
+.ep-grid .ep{margin-bottom:0}
 .ep{background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--line-bright);border-radius:3px;padding:16px 18px;margin-bottom:14px;animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
 .ep-top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
 .ep-name{font-family:var(--display);font-size:16px;font-weight:700}
@@ -1340,7 +1345,7 @@ textarea::placeholder{color:#494842}
 """
 
 
-def page(title: str, body: str, *, user: dict, refresh: int = 0) -> HTMLResponse:
+def page(title: str, body: str, *, user: dict, refresh: int = 0, wide: bool = False) -> HTMLResponse:
     bal, cap = 0, TOKEN_CAP  # заполняется вызывающим через user; покажем через data
     meta_refresh = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
     doc = f"""<!doctype html>
@@ -1357,7 +1362,7 @@ def page(title: str, body: str, *, user: dict, refresh: int = 0) -> HTMLResponse
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Syne:wght@700;800&display=swap">
   <style>{CSS}</style>
 </head>
-<body>
+<body{' class="wide"' if wide else ''}>
 <header>
   <div class="header-inner">
     <span class="logo"><a class="hub" href="{HUB_URL}">nodewiki</a><b>/</b><a class="app" href="/">checker</a></span>
@@ -1484,7 +1489,7 @@ def render_results(results: list[dict]) -> str:
   </div>
   {checks}{tunnel}
 </div>""")
-    return "".join(cards)
+    return f'<div class="ep-grid">{"".join(cards)}</div>'
 
 
 # ----------------------------------------------------------------------------
@@ -1884,7 +1889,7 @@ async def job_view(request: Request, job_id: str = Path(...)):
 {note}
 {render_results(results)}
 <div class="form-actions"><a class="btn" href="/">← Новая проверка</a></div>"""
-        return page("Прогон через зонд…", body, user=user, refresh=4)
+        return page("Прогон через зонд…", body, user=user, refresh=4, wide=True)
 
     body = f"""
 <div class="page-head">
@@ -1894,7 +1899,7 @@ async def job_view(request: Request, job_id: str = Path(...)):
 {note}
 {render_results(results)}
 <div class="form-actions">{rerun}<a class="btn" href="/">← Новая проверка</a></div>"""
-    return page("Результат", body, user=user)
+    return page("Результат", body, user=user, wide=True)
 
 
 @app.post("/job/{job_id}/rerun")
