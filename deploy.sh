@@ -82,8 +82,12 @@ log "Setting up virtualenv & dependencies..."
 "$APP_DIR/venv/bin/pip" install --quiet fastapi uvicorn python-multipart motor anthropic cryptography
 
 # ---- persistent SECRET_KEY (so sessions survive restarts) ------------------
+# Можно передать существующий SECRET_KEY (env) — нужно при переезде на новый
+# сервер, чтобы SSO с хабом/чекером не сломалось. Иначе генерируется новый.
 SECRET_FILE="$APP_DIR/secret.key"
-if [ ! -s "$SECRET_FILE" ]; then
+if [ -n "${SECRET_KEY:-}" ]; then
+  printf '%s\n' "$SECRET_KEY" > "$SECRET_FILE"
+elif [ ! -s "$SECRET_FILE" ]; then
   python3 -c "import secrets; print(secrets.token_urlsafe(48))" > "$SECRET_FILE"
 fi
 SECRET_KEY="$(cat "$SECRET_FILE")"
