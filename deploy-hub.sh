@@ -59,8 +59,8 @@ SECRET_KEY="$(envget SECRET_KEY "$SV_ENV")"
 if ! command -v nginx >/dev/null 2>&1 || ! command -v certbot >/dev/null 2>&1; then
   log "Installing nginx + certbot..."
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y nginx certbot python3-certbot-nginx python3 python3-venv curl ca-certificates
+  apt-get -o DPkg::Lock::Timeout=300 update -y
+  apt-get -o DPkg::Lock::Timeout=300 install -y nginx certbot python3-certbot-nginx python3 python3-venv curl ca-certificates
 fi
 
 # ---- приложение --------------------------------------------------------------

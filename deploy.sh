@@ -63,8 +63,10 @@ fi
 # ---- packages --------------------------------------------------------------
 log "Installing packages (python, nginx, certbot)..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y python3 python3-venv python3-pip nginx certbot python3-certbot-nginx curl ca-certificates
+# ждём до 5 мин, если apt держит unattended-upgrades (а не падаем на dpkg lock)
+APT="apt-get -o DPkg::Lock::Timeout=300"
+$APT update -y
+$APT install -y python3 python3-venv python3-pip nginx certbot python3-certbot-nginx curl ca-certificates
 
 # ---- app user & dirs -------------------------------------------------------
 id "$APP_USER" &>/dev/null || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"

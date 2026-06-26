@@ -54,8 +54,8 @@ SV_ENV="${SV_ENV:-/opt/script-vault/script-vault.env}"
 # ---- packages (iputils-ping нужен для ICMP) --------------------------------
 log "Installing packages (python, nginx, certbot, iputils-ping)..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y python3 python3-venv python3-pip nginx certbot python3-certbot-nginx \
+apt-get -o DPkg::Lock::Timeout=300 update -y
+apt-get -o DPkg::Lock::Timeout=300 install -y python3 python3-venv python3-pip nginx certbot python3-certbot-nginx \
   iputils-ping unzip curl ca-certificates
 
 # ---- xray-core (для глубокой проверки через туннель) -----------------------
