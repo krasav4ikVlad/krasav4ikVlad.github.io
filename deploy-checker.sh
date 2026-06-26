@@ -40,10 +40,14 @@ die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 envget() { [ -f "$2" ] && grep -h "^$1=" "$2" 2>/dev/null | head -1 | cut -d= -f2- || true; }
 
 [ "$(id -u)" -eq 0 ] || die "Run as root (sudo)."
-# повторный запуск: подхватываем секреты из уже записанного env, если не переданы
+# секреты: 1) из env-переменных, 2) из уже записанного env чекера (переустановка),
+# 3) из env Script Vault, если он на ЭТОМ же сервере (тогда SSO сходится сам).
 ENVF="$APP_DIR/nodewiki-checker.env"
+SV_ENV="${SV_ENV:-/opt/script-vault/script-vault.env}"
 [ -n "$TOKEN_DB" ]   || TOKEN_DB="$(envget TOKEN_DB "$ENVF")"
+[ -n "$TOKEN_DB" ]   || TOKEN_DB="$(envget TOKEN_DB "$SV_ENV")"
 [ -n "$SECRET_KEY" ] || SECRET_KEY="$(envget SECRET_KEY "$ENVF")"
+[ -n "$SECRET_KEY" ] || SECRET_KEY="$(envget SECRET_KEY "$SV_ENV")"
 [ -n "$TOKEN_DB" ] || die "TOKEN_DB обязателен (та же база, что у основного сервера)."
 [ -n "$SECRET_KEY" ] || die "SECRET_KEY обязателен и должен СОВПАДАТЬ с основным сервером (иначе SSO не сработает)."
 
