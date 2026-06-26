@@ -1298,6 +1298,11 @@ textarea::placeholder{color:#494842}
 .ep-top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
 .ep-name{font-family:var(--display);font-size:16px;font-weight:700}
 .ep-addr{font-family:var(--mono);font-size:12.5px;color:var(--lime-dim);word-break:break-all}
+.ep-proto{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.ep-proto-l{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-right:2px}
+.vpill{font-family:var(--mono);font-size:11px;line-height:1;padding:4px 8px;border:1px solid var(--line-bright);border-radius:2px;background:#0d0d0f;color:var(--lime-dim)}
+.ctl-sep{border-top:1px dashed var(--line-bright);opacity:.6;margin:16px 0 14px}
+.tunnel.ctl{background:transparent;border-style:dashed}
 .checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
 .chk{border:1px solid var(--line-bright);border-radius:2px;padding:9px 11px;background:#0d0d0f}
 .chk-name{font-size:10.5px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)}
@@ -1400,9 +1405,10 @@ def render_results(results: list[dict]) -> str:
     for r in results:
         addr = f'{html.escape(r["host"])}:{r["port"]}'
         ipinfo = f' · {html.escape(r["ip"])}' if r.get("ip") else ""
-        # метка протокола/транспорта: vless · reality · xhttp
+        # тип VPN отдельной строкой — бейджи: vless · tls · tcp
         bits = [b for b in (r.get("proto"), ("tls" if r.get("tls") else None), r.get("net")) if b and b != "?"]
-        proto = (" · " + " · ".join(html.escape(str(b)) for b in bits)) if bits else ""
+        pills = "".join(f'<span class="vpill">{html.escape(str(b))}</span>' for b in bits)
+        proto_row = f'<div class="ep-proto"><span class="ep-proto-l">тип vpn</span>{pills}</div>' if pills else ""
         udp_note = ""
         if r.get("udp"):
             udp_note = '<div class="note" style="margin:0 0 12px">UDP/QUIC-протокол: вместо TCP проверяется UDP-доступность; HTTP-проверки неприменимы.</div>'
@@ -1469,8 +1475,9 @@ def render_results(results: list[dict]) -> str:
                         f'<span class="svc-info">{html.escape(s.get("info",""))}</span></div>'
                     )
                 direct_html = f"""
-  <div class="tunnel {dcls}">
-    <span class="tn-label">⤳ контроль без туннеля</span>
+  <div class="ctl-sep"></div>
+  <div class="tunnel {dcls} ctl">
+    <span class="tn-label">справочно · без туннеля</span>
     <span class="tn-head">{dhead}</span>
     <span class="tn-info">{dinfo}</span>
   </div><div class="svc-grid">{"".join(dcells)}</div>"""
@@ -1484,8 +1491,9 @@ def render_results(results: list[dict]) -> str:
 <div class="ep">
   <div class="ep-top">
     <span class="ep-name">{html.escape(r.get("label", r["host"]))}</span>
-    <span class="ep-addr">{addr}{ipinfo}{proto}</span>
+    <span class="ep-addr">{addr}{ipinfo}</span>
   </div>
+  {proto_row}
   {checks}{tunnel}
 </div>""")
     return f'<div class="ep-grid">{"".join(cards)}</div>'
