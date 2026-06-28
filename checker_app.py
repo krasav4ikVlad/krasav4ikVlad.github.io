@@ -638,6 +638,7 @@ def parse_config(text: str) -> tuple[list[dict], str]:
         xray_map = _json_xray_outbounds(obj)
         hy2_map = _json_hy2_specs(obj)
         rem_map = _json_remarks_map(obj)
+        full_map = _json_full_configs(obj)
         for t in targets:
             ob = xray_map.get((t["host"], t["port"]))
             if ob is not None:
@@ -645,6 +646,9 @@ def parse_config(text: str) -> tuple[list[dict], str]:
             sp = hy2_map.get((t["host"], t["port"]))
             if sp is not None:
                 t["_hy2"] = sp  # Hysteria2 -> зонд через sing-box
+            fc = full_map.get((t["host"], t["port"]))
+            if fc is not None:
+                t["_full"] = fc  # полный конфиг -> зонд гоняет как клиент
             rem = rem_map.get((t["host"], t["port"]))
             if rem:
                 t["label"] = rem  # имя ноды из remarks (флаг + название)
@@ -710,6 +714,24 @@ async def fetch_subscription(url: str) -> tuple[str, str]:
 def _outbound_hostport(o: dict) -> tuple[str, int] | None:
     ts = _walk_json_targets(o)
     return (ts[0]["host"], ts[0]["port"]) if ts else None
+
+
+def _json_full_configs(obj) -> dict:
+    """{(host,port): полный конфиг ноды} — чтобы зонд гонял ноду ТОЧНО как клиент
+    (все outbound'ы, fragment, routing), а не голый proxy. Только для протоколов,
+    которые тянет стандартный xray (vless/vmess/trojan/ss); hysteria — через sing-box."""
+    res = {}
+    configs = obj if isinstance(obj, list) else ([obj] if isinstance(obj, dict) else [])
+    for c in configs:
+        if not isinstance(c, dict) or not isinstance(c.get("outbounds"), list):
+            continue
+        for o in c["outbounds"]:
+            if isinstance(o, dict) and o.get("protocol") in XRAY_PROTOS:
+                hp = _outbound_hostport(o)
+                if hp:
+                    res[hp] = c
+                    break
+    return res
 
 
 def _json_remarks_map(obj) -> dict:
@@ -1184,6 +1206,8 @@ def tunnel_unsupported(target: dict) -> dict | None:
     """Если туннель к цели невозможен — вернуть готовый na-результат, иначе None."""
     if target.get("_hy2"):
         return None  # Hysteria2 — зонд умеет через sing-box
+    if target.get("_full"):
+        return None  # полный конфиг — зонд гоняет как клиент
     if target.get("udp"):
         return {"na": True, "info": "нужен sing-box (xray не поддерживает)"}
     # есть либо собранный outbound, либо сырая ссылка (её зонд разберёт xray-knife)
@@ -1244,6 +1268,7 @@ async def run_job(job_id: str) -> None:
                     "outbound": t.get("_xray"),      # запасной (ручной парсер чекера)
                     "link": t.get("_link", ""),       # сырая ссылка -> xray-knife на зонде
                     "hy2": t.get("_hy2"),             # Hysteria2 -> sing-box на зонде
+                    "full": t.get("_full"),           # полный конфиг -> как клиент
                     "status": "queued",
                     "created_dt": datetime.now(timezone.utc),
                 })
@@ -1789,6 +1814,7 @@ async def agent_poll(request: Request):
         "outbound": task.get("outbound"),
         "link": task.get("link", ""),   # зонд распарсит сам через xray-knife
         "hy2": task.get("hy2"),         # Hysteria2 -> sing-box
+        "full": task.get("full"),       # полный конфиг -> как клиент
         "probe_url": TUNNEL_PROBE_URL,
         "speed_url": TUNNEL_SPEED_URL,
         "params": {

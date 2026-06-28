@@ -321,14 +321,34 @@ async def run_tunnel_hy2(spec: dict, probe_url: str, speed_url: str, p: dict,
                                   probe_url, speed_url, p, services)
 
 
+async def run_tunnel_full(cfg: dict, probe_url: str, speed_url: str, p: dict,
+                          services: list) -> dict:
+    """Запустить ПОЛНЫЙ конфиг ноды как клиент (все outbound'ы/fragment/routing),
+    подменив только inbound на наш socks. Это максимально близко к реальному
+    клиенту — с теми же анти-DPI трюками."""
+    if not isinstance(cfg, dict):
+        return {"ok": False, "info": "битый конфиг"}
+    port = _free_port()
+    cfg = dict(cfg)
+    cfg["inbounds"] = [{"listen": "127.0.0.1", "port": port, "protocol": "socks",
+                        "settings": {"udp": True}}]
+    cfg.setdefault("log", {"loglevel": "warning"})
+    return await _raise_and_probe(XRAY_BIN, cfg, port, "xray не установлен на зонде",
+                                  probe_url, speed_url, p, services)
+
+
 async def run_task(task: dict, probe_url: str, speed_url: str, p: dict) -> dict:
     """Туннель-тест + КОНТРОЛЬ (те же сервисы напрямую, без туннеля). Движок
-    выбираем по типу: Hysteria2 -> sing-box, остальное -> xray."""
+    выбираем по типу: Hysteria2 -> sing-box, полный конфиг/остальное -> xray."""
     services = p.get("services") or DEFAULT_SERVICES
     direct_fut = asyncio.gather(*(_probe_service(n, u) for n, u in services))
     hy2 = task.get("hy2")
+    full = task.get("full")
     if hy2:
         res = await run_tunnel_hy2(hy2, probe_url, speed_url, p, services)
+    elif full:
+        # ПОЛНЫЙ конфиг ноды — гоняем как клиент (fragment/routing на месте)
+        res = await run_tunnel_full(full, probe_url, speed_url, p, services)
     else:
         # outbound: сначала xray-knife по ссылке (libXray), иначе готовый от чекера
         outbound = await outbound_from_link(task.get("link", "")) or task.get("outbound")
