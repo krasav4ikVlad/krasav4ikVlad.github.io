@@ -99,10 +99,17 @@ TUNNEL_PROBE_TIMEOUT = 14.0 # запрос гео через туннель
 TUNNEL_PROBE_URL = os.environ.get(
     "CHECKER_PROBE_URL", "http://ip-api.com/json/?fields=status,country,countryCode,query"
 )
-# замер скорости через туннель — ловит ТСПУ-резку «в 0»
+# замер скорости через туннель — ловит ТСПУ-резку «в 0».
+# несколько источников: если один не отдаёт через ноду, пробуем следующий
 TUNNEL_SPEED_URL = os.environ.get(
     "CHECKER_SPEED_URL", "https://speed.cloudflare.com/__down?bytes=20000000"
 )
+TUNNEL_SPEED_URLS = [u.strip() for u in os.environ.get(
+    "CHECKER_SPEED_URLS",
+    "https://speed.cloudflare.com/__down?bytes=20000000,"
+    "https://proof.ovh.net/files/10Mb.dat,"
+    "https://speed.hetzner.de/10MB.bin",
+).split(",") if u.strip()]
 SPEED_WINDOW = float(os.environ.get("CHECKER_SPEED_WINDOW", "8"))  # сек качаем (throttle успевает сработать)
 SPEED_MAX_BYTES = int(os.environ.get("CHECKER_SPEED_MAX_BYTES", "20000000"))  # либо до стольки байт
 SPEED_MIN_MBPS = float(os.environ.get("CHECKER_SPEED_MIN_MBPS", "0.5"))   # ниже — «режется в ноль»
@@ -1665,6 +1672,7 @@ async def agent_poll(request: Request):
             "services": [[n, u] for n, u in SERVICE_CHECKS],
             "speed": {
                 "enabled": True,
+                "urls": TUNNEL_SPEED_URLS,
                 "window": SPEED_WINDOW,
                 "max_bytes": SPEED_MAX_BYTES,
                 "slow_mbps": SPEED_SLOW_MBPS,

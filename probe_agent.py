@@ -138,15 +138,15 @@ async def _probe_service(name: str, url: str, proxy: str | None = None) -> dict:
     return {"name": name, "ok": False, "info": last}
 
 
-async def _measure_speed(proxy: str, url: str, window: float, max_bytes: int) -> tuple[float, int]:
-    """Качаем через туннель до window секунд / max_bytes и считаем установившуюся
-    скорость (Mbps): отбрасываем разгон, берём медиану второй половины интервалов."""
+async def _download_speed(proxy: str, url: str, window: float, max_bytes: int) -> tuple[float, int]:
+    """Качаем ОДИН url через туннель до window секунд / max_bytes и считаем
+    установившуюся скорость (Mbps): отбрасываем разгон, берём медиану хвоста."""
     samples, total, start = [], 0, time.perf_counter()
     try:
         async with httpx.AsyncClient(proxy=proxy, verify=False,
                                      timeout=httpx.Timeout(10.0, read=window + 5)) as cl:
             last_t, last_b = start, 0
-            async with cl.stream("GET", url) as resp:
+            async with cl.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
                 if resp.status_code < 400:
                     async for chunk in resp.aiter_bytes():
                         total += len(chunk)
@@ -167,6 +167,22 @@ async def _measure_speed(proxy: str, url: str, window: float, max_bytes: int) ->
     else:
         steady = avg
     return (min(steady, avg) if total else 0.0), total
+
+
+async def _measure_speed(proxy: str, urls, window: float, max_bytes: int) -> tuple[float, int]:
+    """Реально качаем данные через туннель — главное подтверждение, что туннель
+    пропускает трафик. Несколько источников: если один не отдаёт через ноду
+    (заблокирован/режется на выходе), пробуем следующий."""
+    if isinstance(urls, str):
+        urls = [urls]
+    best_mbps, best_bytes = 0.0, 0
+    for url in urls:
+        mbps, total = await _download_speed(proxy, url, window, max_bytes)
+        if total > best_bytes:
+            best_mbps, best_bytes = mbps, total
+        if total >= max_bytes // 4:   # достаточно скачали — дальше не пробуем
+            break
+    return best_mbps, best_bytes
 
 
 async def _probe_via_proxy(proxy: str, probe_url: str, speed_url: str, p: dict,
@@ -200,26 +216,31 @@ async def _probe_via_proxy(proxy: str, probe_url: str, speed_url: str, p: dict,
     else:
         res["info"] = f"все сервисы открываются · {loc}"
 
-    # 3) реальная пропускная способность через ноду (ловит ТСПУ-резку «в ноль»).
+    # 3) РЕАЛЬНАЯ ЗАГРУЗКА через ноду — главное подтверждение, что туннель пропускает
+    # трафик (маленький GET выше проскакивает и при резке). Качаем, если туннель
+    # подаёт признаки жизни (есть гео ИЛИ открылся хоть один сервис).
     sp = p.get("speed") or {}
-    if speed_url and sp.get("enabled", True) and res["ok"]:
+    urls = sp.get("urls") or ([speed_url] if speed_url else [])
+    if sp.get("enabled", True) and urls and (geo or ok_n > 0):
         mbps, nbytes = await _measure_speed(
-            proxy, speed_url, float(sp.get("window", 8.0)),
-            int(sp.get("max_bytes", 20_000_000)),
+            proxy, urls, float(sp.get("window", 8.0)), int(sp.get("max_bytes", 20_000_000)),
         )
         slow = float(sp.get("slow_mbps", 8.0))
         dead = float(sp.get("min_mbps", 0.5))
+        mb = nbytes / 1e6
         res["speed_mbps"] = round(mbps, 1)
+        res["dl_bytes"] = nbytes
         if nbytes == 0:
-            res["speed"] = "скорость не измерилась"
+            res["speed"] = "загрузка не пошла — данные через ноду не идут"
+            res["slow"] = res["warn"] = True
         elif mbps < dead:
-            res["speed"] = f"{mbps:.1f} Mbps — практически ноль (режется)"
+            res["speed"] = f"{mbps:.1f} Mbps · {mb:.0f} МБ — практически ноль (режется)"
             res["slow"] = res["warn"] = True
         elif mbps < slow:
-            res["speed"] = f"{mbps:.1f} Mbps — медленно (похоже на замедление)"
+            res["speed"] = f"{mbps:.1f} Mbps · {mb:.0f} МБ — медленно (замедление)"
             res["slow"] = res["warn"] = True
         else:
-            res["speed"] = f"{mbps:.0f} Mbps"
+            res["speed"] = f"{mbps:.0f} Mbps · скачано {mb:.0f} МБ"
     return res
 
 
