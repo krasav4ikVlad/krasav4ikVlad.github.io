@@ -44,6 +44,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import socket
 import sys
 import time
@@ -1299,6 +1300,7 @@ async def lifespan(app: FastAPI):
     xray_sem = asyncio.Semaphore(XRAY_CONCURRENCY)
     try:
         await jobs_col.create_index([("owner", 1), ("created_at", -1)])
+        await jobs_col.create_index("share_id")  # публичная ссылка-результат
         # TTL: заявки (с пользовательскими конфигами) автоудаляются
         await jobs_col.create_index("created_dt", expireAfterSeconds=JOBS_TTL_DAYS * 86400)
         await tunnel_tasks.create_index([("status", 1), ("created_dt", 1)])
@@ -1397,7 +1399,24 @@ textarea::placeholder{color:#494842}
 .ep-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:14px;align-items:start}
 @media (max-width:520px){.ep-grid{grid-template-columns:1fr}}
 .ep-grid .ep{margin-bottom:0}
-.ep{background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--line-bright);border-radius:3px;padding:16px 18px;margin-bottom:14px;animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
+.ep{position:relative;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--line-bright);border-radius:3px;padding:16px 18px;margin-bottom:14px;animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
+.ep>*{position:relative;z-index:1}
+/* флаг страны — большим полупрозрачным фоном справа */
+.flag-bg{position:absolute;top:50%;right:-6px;transform:translateY(-50%);font-size:120px;line-height:1;opacity:.07;z-index:0;pointer-events:none;filter:saturate(1.2)}
+/* компактный режим: плотнее, без сервис-сеток и контроля */
+.ep-grid.compact{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+.ep-grid.compact .svc-grid,.ep-grid.compact .ctl-sep,.ep-grid.compact .tunnel.ctl,.ep-grid.compact .ep-proto,.ep-grid.compact .note{display:none}
+.ep-grid.compact .ep{padding:12px 14px}
+.ep-grid.compact .flag-bg{font-size:84px}
+.ep-grid.compact .checks{grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:6px}
+.ep-grid.compact .chk{padding:6px 8px}
+.ep-grid.compact .tunnel{margin-top:8px;padding:8px 11px}
+.view-toggle{display:inline-flex;border:1px solid var(--line-bright);border-radius:2px;overflow:hidden}
+.view-toggle button{background:#0d0d0f;color:var(--muted);border:0;padding:7px 14px;font:inherit;font-size:12px;cursor:pointer}
+.view-toggle button.on{background:var(--lime);color:#11130a;font-weight:700}
+.result-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.share-row{display:flex;gap:8px;margin-left:auto;flex:1;min-width:240px;max-width:560px}
+.share-row input{flex:1;min-width:0;background:#0d0d0f;border:1px solid var(--line-bright);border-radius:2px;color:var(--lime-dim);font-family:var(--mono);font-size:12px;padding:7px 10px}
 .ep-top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
 .ep-name{font-family:var(--display);font-size:16px;font-weight:700}
 .ep-addr{font-family:var(--mono);font-size:12.5px;color:var(--lime-dim);word-break:break-all}
@@ -1451,9 +1470,16 @@ textarea::placeholder{color:#494842}
 """
 
 
-def page(title: str, body: str, *, user: dict, refresh: int = 0, wide: bool = False) -> HTMLResponse:
-    bal, cap = 0, TOKEN_CAP  # заполняется вызывающим через user; покажем через data
+def page(title: str, body: str, *, user: dict | None, refresh: int = 0, wide: bool = False) -> HTMLResponse:
     meta_refresh = f'<meta http-equiv="refresh" content="{refresh}">' if refresh else ""
+    # user=None -> публичная страница (общий результат): без токенов и выхода
+    if user is None:
+        header_actions = f'<a class="btn btn-sm" href="{BASE_URL or "/"}">открыть чекер →</a>'
+    else:
+        tok = ('<span class="tok">токены: <b>∞</b> (тест)</span>' if not TOKENS_ON
+               else f'<span class="tok" id="tok">токены: <b>{user["_bal"]}</b>/{user["_cap"]}</span>')
+        header_actions = (f'{tok}'
+                          f'<form method="post" action="{HUB_URL}/logout"><button class="btn btn-sm" type="submit">выйти</button></form>')
     doc = f"""<!doctype html>
 <html lang="ru">
 <head>
@@ -1472,10 +1498,7 @@ def page(title: str, body: str, *, user: dict, refresh: int = 0, wide: bool = Fa
 <header>
   <div class="header-inner">
     <span class="logo"><a class="hub" href="{HUB_URL}">nodewiki</a><b>/</b><a class="app" href="/">checker</a></span>
-    <div class="header-actions">
-      {'<span class="tok">токены: <b>∞</b> (тест)</span>' if not TOKENS_ON else f'<span class="tok" id="tok">токены: <b>{user["_bal"]}</b>/{user["_cap"]}</span>'}
-      <form method="post" action="{HUB_URL}/logout"><button class="btn btn-sm" type="submit">выйти</button></form>
-    </div>
+    <div class="header-actions">{header_actions}</div>
   </div>
 </header>
 <div class="container">
@@ -1503,11 +1526,17 @@ def render_check(c: dict) -> str:
     return f'<div class="chk {cls}"><div class="chk-name">{c["_n"]}</div><div class="chk-val">{html.escape(c.get("info",""))}</div></div>'
 
 
+_FLAG_RE = re.compile("[\U0001F1E6-\U0001F1FF]{2}")
+
+
 def render_results(results: list[dict]) -> str:
     cards = []
     for r in results:
         addr = f'{html.escape(r["host"])}:{r["port"]}'
         ipinfo = f' · {html.escape(r["ip"])}' if r.get("ip") else ""
+        # флаг страны из метки (🇳🇱 …) — большим полупрозрачным фоном справа
+        m = _FLAG_RE.search(r.get("label", "") or "")
+        flag_bg = f'<span class="flag-bg">{m.group(0)}</span>' if m else ""
         # тип VPN отдельной строкой — бейджи: vless · tls · tcp
         bits = [b for b in (r.get("proto"), ("tls" if r.get("tls") else None), r.get("net")) if b and b != "?"]
         pills = "".join(f'<span class="vpill">{html.escape(str(b))}</span>' for b in bits)
@@ -1592,6 +1621,7 @@ def render_results(results: list[dict]) -> str:
   </div>{svc_grid}{direct_html}"""
         cards.append(f"""
 <div class="ep">
+  {flag_bg}
   <div class="ep-top">
     <span class="ep-name">{html.escape(r.get("label", r["host"]))}</span>
     <span class="ep-addr">{addr}{ipinfo}</span>
@@ -1600,6 +1630,34 @@ def render_results(results: list[dict]) -> str:
   {checks}{tunnel}
 </div>""")
     return f'<div class="ep-grid">{"".join(cards)}</div>'
+
+
+def _result_toolbar(share_url: str = "") -> str:
+    """Панель над результатами: переключатель подробно/компактно + ссылка-шара."""
+    share = ""
+    if share_url:
+        share = (f'<div class="share-row"><input id="shareurl" readonly '
+                 f'value="{html.escape(share_url, quote=True)}" onclick="this.select()">'
+                 f'<button class="btn btn-sm" type="button" onclick="copyShare()">скопировать ссылку</button></div>')
+    return f"""
+<div class="result-bar">
+  <div class="view-toggle">
+    <button type="button" id="vt-full" onclick="setView(false)">подробно</button>
+    <button type="button" id="vt-compact" onclick="setView(true)">компактно</button>
+  </div>
+  {share}
+</div>
+<script>
+function setView(c){{var g=document.querySelector('.ep-grid');if(!g)return;
+ g.classList.toggle('compact',c);
+ var a=document.getElementById('vt-compact'),b=document.getElementById('vt-full');
+ a&&a.classList.toggle('on',c); b&&b.classList.toggle('on',!c);
+ try{{localStorage.setItem('nw_compact',c?'1':'0')}}catch(e){{}}}}
+function copyShare(){{var i=document.getElementById('shareurl');if(!i)return;i.select();
+ navigator.clipboard&&navigator.clipboard.writeText(i.value);
+ var b=event.target,t=b.textContent;b.textContent='скопировано ✓';setTimeout(function(){{b.textContent=t}},1500);}}
+setView((function(){{try{{return localStorage.getItem('nw_compact')==='1'}}catch(e){{return false}}}})());
+</script>"""
 
 
 # ----------------------------------------------------------------------------
@@ -1790,6 +1848,7 @@ async def _enqueue_job(raw_user: dict, targets: list, is_deep: bool, msg: str):
         "targets": targets,
         "deep": is_deep,
         "note": msg,
+        "share_id": secrets.token_urlsafe(9),  # ссылка-результат для всех
         "created_at": now_iso(),
         "created_dt": datetime.now(timezone.utc),  # для TTL
     }
@@ -2013,15 +2072,46 @@ async def job_view(request: Request, job_id: str = Path(...)):
 <div class="form-actions"><a class="btn" href="/">← Новая проверка</a></div>"""
         return page("Прогон через зонд…", body, user=user, refresh=4, wide=True)
 
+    share_url = f"{BASE_URL}/share/{job['share_id']}" if job.get("share_id") else ""
     body = f"""
 <div class="page-head">
   <div><span class="kicker">результат · {html.escape(fmt_dt(job.get("finished_at","")))}</span><h1>Заявка #{html.escape(job_id[-6:])}</h1></div>
   <span class="status s-done">done</span>
 </div>
 {note}
+{_result_toolbar(share_url)}
 {render_results(results)}
 <div class="form-actions">{rerun}<a class="btn" href="/">← Новая проверка</a></div>"""
     return page("Результат", body, user=user, wide=True)
+
+
+@app.get("/share/{share_id}")
+async def share_view(request: Request, share_id: str = Path(...)):
+    """Публичный результат — открывается без входа, по ссылке-шаре."""
+    job = await jobs_col.find_one({"share_id": share_id})
+    if not job or job.get("status") == "draft":
+        return page("Результат не найден",
+                    '<div class="page-head"><div><h1>Результат не найден</h1></div></div>'
+                    '<p class="muted">Ссылка устарела или неверна.</p>', user=None)
+    status = job.get("status", "queued")
+    note = f'<div class="note">{html.escape(job["note"])}</div>' if job.get("note") else ""
+    results = job.get("results", [])
+    when = fmt_dt(job.get("finished_at") or job.get("created_at", ""))
+    if status in ("queued", "running", "probing"):
+        body = (f'<div class="page-head"><div><span class="kicker">общий результат</span>'
+                f'<h1>Проверка ещё идёт…</h1></div></div>{note}'
+                f'<p class="muted">Обнови страницу через несколько секунд.</p>')
+        return page("Результат", body, user=None, refresh=5, wide=True)
+    body = f"""
+<div class="page-head">
+  <div><span class="kicker">общий результат · {html.escape(when)}</span><h1>Результат проверки</h1></div>
+  <span class="status s-{status}">{status}</span>
+</div>
+{note}
+{_result_toolbar()}
+{render_results(results)}
+<div class="form-actions"><a class="btn btn-primary" href="{BASE_URL or '/'}">проверить свой конфиг →</a></div>"""
+    return page("Результат проверки", body, user=None, wide=True)
 
 
 @app.post("/job/{job_id}/rerun")
