@@ -1428,8 +1428,8 @@ textarea::placeholder{color:#494842}
 .ep{position:relative;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--line-bright);border-radius:3px;padding:16px 18px;margin-bottom:14px;animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
 .ep>*{position:relative;z-index:1}
 /* флаг страны — картинкой (эмодзи не рисуются в Windows) */
-.flag-ic{height:13px;width:auto;border-radius:2px;margin-right:8px;vertical-align:-1px;flex:none}
-.flag-bg{position:absolute;top:9px;right:11px;height:50px;width:auto;border-radius:3px;opacity:.55;z-index:0;pointer-events:none}
+.flag-ic{height:14px;width:auto;border-radius:2px;margin-right:8px;vertical-align:-2px;flex:none}
+.ep-name .flag-ic{height:18px;margin-right:10px}
 /* компактный режим: плотный список (по умолчанию скрыт, показывается тумблером) */
 .ep-list{display:none;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:8px}
 .sl{display:flex;align-items:center;gap:11px;padding:11px 13px;border:1px solid var(--line);border-radius:2px;background:var(--panel);font-size:13px;min-width:0;animation:rise .4s ease both}
@@ -1446,8 +1446,8 @@ textarea::placeholder{color:#494842}
 .result-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
 .share-row{display:flex;gap:8px;margin-left:auto;flex:1;min-width:240px;max-width:560px}
 .share-row input{flex:1;min-width:0;background:#0d0d0f;border:1px solid var(--line-bright);border-radius:2px;color:var(--lime-dim);font-family:var(--mono);font-size:12px;padding:7px 10px}
-.ep-top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
-.ep-name{font-family:var(--display);font-size:16px;font-weight:700}
+.ep-top{display:flex;flex-direction:column;align-items:center;text-align:center;gap:5px;margin-bottom:14px}
+.ep-name{font-family:var(--display);font-size:22px;font-weight:800;display:inline-flex;align-items:center;line-height:1.15}
 .ep-addr{font-family:var(--mono);font-size:12.5px;color:var(--lime-dim);word-break:break-all}
 .ep-proto{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 14px}
 .ep-proto-l{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-right:2px}
@@ -1582,7 +1582,6 @@ def render_results(results: list[dict]) -> str:
         ipinfo = f' · {html.escape(r["ip"])}' if r.get("ip") else ""
         # флаг страны из метки — картинкой (эмодзи в Windows = буквы)
         code, node_name = _flag_and_name(r.get("label", r["host"]))
-        flag_bg = _flag_img(code, "flag-bg")
         # тип VPN отдельной строкой — бейджи: vless · tls · tcp
         bits = [b for b in (r.get("proto"), ("tls" if r.get("tls") else None), r.get("net")) if b and b != "?"]
         pills = "".join(f'<span class="vpill">{html.escape(str(b))}</span>' for b in bits)
@@ -1667,7 +1666,6 @@ def render_results(results: list[dict]) -> str:
   </div>{svc_grid}{direct_html}"""
         cards.append(f"""
 <div class="ep">
-  {flag_bg}
   <div class="ep-top">
     <span class="ep-name">{_flag_img(code, "flag-ic")}{html.escape(node_name)}</span>
     <span class="ep-addr">{addr}{ipinfo}</span>
