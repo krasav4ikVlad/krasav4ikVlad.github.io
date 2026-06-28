@@ -84,6 +84,30 @@ if [ ! -x "$KNIFE_BIN" ]; then
 fi
 [ -x "$KNIFE_BIN" ] || KNIFE_BIN=""
 
+# ---- sing-box (Hysteria2/TUIC — xray такое не умеет) ------------------------
+SINGBOX_BIN="$(command -v sing-box || echo /usr/local/bin/sing-box)"
+if [ ! -x "$SINGBOX_BIN" ]; then
+  log "Installing sing-box..."
+  arch="$(uname -m)"; case "$arch" in x86_64) sbarch=amd64;; aarch64|arm64) sbarch=arm64;; *) sbarch=amd64;; esac
+  sbver="$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null | grep -oP '"tag_name":\s*"v\K[^"]+' | head -1)"
+  if [ -n "$sbver" ]; then
+    tmpt="$(mktemp --suffix=.tgz)"; tmpd="$(mktemp -d)"
+    if curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${sbver}/sing-box-${sbver}-linux-${sbarch}.tar.gz" -o "$tmpt" \
+       && tar -xzf "$tmpt" -C "$tmpd"; then
+      sb="$(find "$tmpd" -type f -name 'sing-box' | head -1)"
+      [ -n "$sb" ] && install -m 0755 "$sb" /usr/local/bin/sing-box \
+        || warn "sing-box не распаковался — Hysteria2 будет недоступен."
+    else
+      warn "sing-box не скачался — Hysteria2 будет недоступен."
+    fi
+    rm -rf "$tmpt" "$tmpd"
+  else
+    warn "Не определилась версия sing-box — Hysteria2 будет недоступен."
+  fi
+  SINGBOX_BIN="$(command -v sing-box || echo /usr/local/bin/sing-box)"
+fi
+[ -x "$SINGBOX_BIN" ] || SINGBOX_BIN=""
+
 # ---- приложение ----------------------------------------------------------------
 id "$APP_USER" &>/dev/null || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
 mkdir -p "$APP_DIR"
@@ -102,6 +126,7 @@ CHECKER_URL=$CHECKER_URL
 AGENT_TOKEN=$AGENT_TOKEN
 XRAY_BIN=$XRAY_BIN
 XRAY_KNIFE_BIN=$KNIFE_BIN
+SINGBOX_BIN=$SINGBOX_BIN
 POLL_INTERVAL=$POLL_INTERVAL
 EOF
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"

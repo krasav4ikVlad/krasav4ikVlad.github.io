@@ -43,6 +43,7 @@ CHECKER_URL = os.environ.get("CHECKER_URL", "").rstrip("/")
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 XRAY_BIN = os.environ.get("XRAY_BIN", "xray")
 XRAY_KNIFE_BIN = os.environ.get("XRAY_KNIFE_BIN", "")  # парсер share-ссылок (libXray)
+SINGBOX_BIN = os.environ.get("SINGBOX_BIN", "")        # для Hysteria2 (xray не умеет)
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 
 if not CHECKER_URL or not AGENT_TOKEN:
@@ -168,16 +169,64 @@ async def _measure_speed(proxy: str, url: str, window: float, max_bytes: int) ->
     return (min(steady, avg) if total else 0.0), total
 
 
-async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict,
-                     services: list) -> dict:
-    """Поднять xray и реально сходить наружу + прогнать сервисы через туннель."""
-    port = _free_port()
-    cfg = {
-        "log": {"loglevel": "warning"},
-        "inbounds": [{"listen": "127.0.0.1", "port": port, "protocol": "socks",
-                      "settings": {"udp": True}}],
-        "outbounds": [outbound],
-    }
+async def _probe_via_proxy(proxy: str, probe_url: str, speed_url: str, p: dict,
+                           services: list) -> dict:
+    """Через готовый socks-proxy: гео + сервисы + скорость. Общая часть для
+    любого движка (xray / sing-box)."""
+    # 1) гео/выход — с ретраями и НЕ как стоп-кран (обрыв на гео ≠ нода мертва).
+    geo, geo_err = "", ""
+    for _ in range(3):
+        try:
+            async with httpx.AsyncClient(proxy=proxy, timeout=p.get("probe_timeout", 14), verify=False) as cl:
+                data = (await cl.get(probe_url)).json()
+            if data.get("status") == "success":
+                geo = f'{data.get("country","")} ({data.get("countryCode","")}) · {data.get("query","")}'
+                break
+            geo_err = "нет выхода"
+        except Exception as e:
+            geo_err = type(e).__name__
+        await asyncio.sleep(0.4)
+
+    # 2) ГЛАВНОЕ: открываются ли сервисы через туннель — проверяем ВСЕГДА.
+    svc = await asyncio.gather(*(_probe_service(n, u, proxy) for n, u in services))
+    ok_n = sum(1 for s in svc if s["ok"])
+    loc = geo or f"выход не определился ({geo_err or 'обрыв'})"
+    res = {"ok": ok_n > 0, "services": svc, "geo": geo}
+    if ok_n == 0:
+        res["info"] = f"через ноду ничего не открывается — соединение рвётся · {loc}"
+    elif ok_n < len(svc):
+        res["warn"] = True
+        res["info"] = f"часть сервисов недоступна ({ok_n}/{len(svc)}) · {loc}"
+    else:
+        res["info"] = f"все сервисы открываются · {loc}"
+
+    # 3) реальная пропускная способность через ноду (ловит ТСПУ-резку «в ноль»).
+    sp = p.get("speed") or {}
+    if speed_url and sp.get("enabled", True) and res["ok"]:
+        mbps, nbytes = await _measure_speed(
+            proxy, speed_url, float(sp.get("window", 8.0)),
+            int(sp.get("max_bytes", 20_000_000)),
+        )
+        slow = float(sp.get("slow_mbps", 8.0))
+        dead = float(sp.get("min_mbps", 0.5))
+        res["speed_mbps"] = round(mbps, 1)
+        if nbytes == 0:
+            res["speed"] = "скорость не измерилась"
+        elif mbps < dead:
+            res["speed"] = f"{mbps:.1f} Mbps — практически ноль (режется)"
+            res["slow"] = res["warn"] = True
+        elif mbps < slow:
+            res["speed"] = f"{mbps:.1f} Mbps — медленно (похоже на замедление)"
+            res["slow"] = res["warn"] = True
+        else:
+            res["speed"] = f"{mbps:.0f} Mbps"
+    return res
+
+
+async def _raise_and_probe(bin_path: str, cfg: dict, port: int, missing: str,
+                           probe_url: str, speed_url: str, p: dict, services: list) -> dict:
+    """Записать конфиг, запустить движок (`<bin> run -c`), дождаться socks-порта,
+    прогнать проверки. missing — текст, если бинаря нет."""
     proc = path = None
     try:
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
@@ -185,69 +234,14 @@ async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict,
             path = f.name
         try:
             proc = await asyncio.create_subprocess_exec(
-                XRAY_BIN, "run", "-c", path,
+                bin_path, "run", "-c", path,
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
             )
         except FileNotFoundError:
-            return {"ok": False, "info": "xray не установлен на зонде"}
+            return {"ok": False, "info": missing}
         if not await _wait_port(port, p.get("start_timeout", 10)):
-            return {"ok": False, "info": "xray не поднялся (конфиг?)"}
-
-        proxy = f"socks5://127.0.0.1:{port}"
-        # 1) гео/выход — с ретраями и НЕ как стоп-кран: если обрывается, гео просто
-        # «не определился», но сервисы всё равно проверяем (обрыв на гео ≠ нода мертва).
-        geo, geo_err = "", ""
-        for _ in range(3):
-            try:
-                async with httpx.AsyncClient(proxy=proxy, timeout=p.get("probe_timeout", 14), verify=False) as cl:
-                    data = (await cl.get(probe_url)).json()
-                if data.get("status") == "success":
-                    geo = f'{data.get("country","")} ({data.get("countryCode","")}) · {data.get("query","")}'
-                    break
-                geo_err = "нет выхода"
-            except Exception as e:
-                geo_err = type(e).__name__
-            await asyncio.sleep(0.4)
-
-        # 2) ГЛАВНОЕ: открываются ли сервисы через туннель — проверяем ВСЕГДА,
-        # даже если гео не определился. Видно по каждому сервису, что именно рвётся.
-        svc = await asyncio.gather(*(_probe_service(n, u, proxy) for n, u in services))
-        ok_n = sum(1 for s in svc if s["ok"])
-        loc = geo or f"выход не определился ({geo_err or 'обрыв'})"
-        res = {"ok": ok_n > 0, "services": svc, "geo": geo}
-        if ok_n == 0:
-            res["info"] = f"через ноду ничего не открывается — соединение рвётся · {loc}"
-        elif ok_n < len(svc):
-            res["warn"] = True
-            res["info"] = f"часть сервисов недоступна ({ok_n}/{len(svc)}) · {loc}"
-        else:
-            res["info"] = f"все сервисы открываются · {loc}"
-
-        # 3) ГЛАВНОЕ против замедления: реальная пропускная способность через ноду.
-        # маленький GET выше проскакивает даже при ТСПУ-резке — а тут качаем объём
-        # и видим установившуюся скорость. Низкая = «открывается, но толку нет».
-        sp = p.get("speed") or {}
-        if speed_url and sp.get("enabled", True) and res["ok"]:
-            mbps, nbytes = await _measure_speed(
-                proxy, speed_url, float(sp.get("window", 8.0)),
-                int(sp.get("max_bytes", 20_000_000)),
-            )
-            slow = float(sp.get("slow_mbps", 8.0))
-            dead = float(sp.get("min_mbps", 0.5))
-            res["speed_mbps"] = round(mbps, 1)
-            if nbytes == 0:
-                res["speed"] = "скорость не измерилась"
-            elif mbps < dead:
-                res["speed"] = f"{mbps:.1f} Mbps — практически ноль (режется)"
-                res["slow"] = True
-                res["warn"] = True
-            elif mbps < slow:
-                res["speed"] = f"{mbps:.1f} Mbps — медленно (похоже на замедление)"
-                res["slow"] = True
-                res["warn"] = True
-            else:
-                res["speed"] = f"{mbps:.0f} Mbps"
-        return res
+            return {"ok": False, "info": "движок не поднялся (конфиг?)"}
+        return await _probe_via_proxy(f"socks5://127.0.0.1:{port}", probe_url, speed_url, p, services)
     finally:
         if proc and proc.returncode is None:
             try:
@@ -265,13 +259,62 @@ async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict,
                 pass
 
 
-async def run_task(outbound: dict, probe_url: str, speed_url: str, p: dict) -> dict:
-    """Туннель-тест + КОНТРОЛЬ: те же сервисы напрямую (без туннеля) со своего
-    канала. Если они открываются и так — с этой точки блокировок нет, и
-    результат туннеля непоказателен; чекер это покажет."""
+async def run_tunnel(outbound: dict, probe_url: str, speed_url: str, p: dict,
+                     services: list) -> dict:
+    """xray: socks-inbound + outbound."""
+    port = _free_port()
+    cfg = {
+        "log": {"loglevel": "warning"},
+        "inbounds": [{"listen": "127.0.0.1", "port": port, "protocol": "socks",
+                      "settings": {"udp": True}}],
+        "outbounds": [outbound],
+    }
+    return await _raise_and_probe(XRAY_BIN, cfg, port, "xray не установлен на зонде",
+                                  probe_url, speed_url, p, services)
+
+
+async def run_tunnel_hy2(spec: dict, probe_url: str, speed_url: str, p: dict,
+                         services: list) -> dict:
+    """sing-box: Hysteria2 (xray такое не умеет)."""
+    if not SINGBOX_BIN:
+        return {"ok": False, "info": "sing-box не установлен на зонде (нужен для Hysteria2)"}
+    port = _free_port()
+    cfg = {
+        "log": {"level": "error"},
+        "inbounds": [{"type": "socks", "listen": "127.0.0.1", "listen_port": port}],
+        "outbounds": [{
+            "type": "hysteria2",
+            "server": spec["server"],
+            "server_port": int(spec["port"]),
+            "password": spec.get("password", ""),
+            "tls": {
+                "enabled": True,
+                "server_name": spec.get("sni") or spec["server"],
+                "alpn": spec.get("alpn") or ["h3"],
+                "insecure": bool(spec.get("insecure")),
+            },
+        }],
+    }
+    return await _raise_and_probe(SINGBOX_BIN, cfg, port,
+                                  "sing-box не установлен на зонде (нужен для Hysteria2)",
+                                  probe_url, speed_url, p, services)
+
+
+async def run_task(task: dict, probe_url: str, speed_url: str, p: dict) -> dict:
+    """Туннель-тест + КОНТРОЛЬ (те же сервисы напрямую, без туннеля). Движок
+    выбираем по типу: Hysteria2 -> sing-box, остальное -> xray."""
     services = p.get("services") or DEFAULT_SERVICES
     direct_fut = asyncio.gather(*(_probe_service(n, u) for n, u in services))
-    res = await run_tunnel(outbound, probe_url, speed_url, p, services)
+    hy2 = task.get("hy2")
+    if hy2:
+        res = await run_tunnel_hy2(hy2, probe_url, speed_url, p, services)
+    else:
+        # outbound: сначала xray-knife по ссылке (libXray), иначе готовый от чекера
+        outbound = await outbound_from_link(task.get("link", "")) or task.get("outbound")
+        if not outbound:
+            res = {"ok": False, "info": "конфиг не разобран (нет outbound)"}
+        else:
+            res = await run_tunnel(outbound, probe_url, speed_url, p, services)
     try:
         res["direct"] = list(await direct_fut)
     except Exception:
@@ -300,14 +343,8 @@ async def main():
                 continue
             print(f"[>] задача {task['task_id']} — тестирую через свой канал…")
             try:
-                # outbound: сначала пробуем xray-knife по ссылке (libXray, все типы),
-                # иначе берём заранее собранный чекером outbound.
-                outbound = await outbound_from_link(task.get("link", "")) or task.get("outbound")
-                if not outbound:
-                    result = {"ok": False, "info": "конфиг не разобран (нет outbound)"}
-                else:
-                    result = await run_task(outbound, task["probe_url"],
-                                            task["speed_url"], task.get("params", {}))
+                result = await run_task(task, task["probe_url"],
+                                        task["speed_url"], task.get("params", {}))
             except Exception as e:
                 result = {"ok": False, "info": f"зонд: {type(e).__name__}"}
             try:

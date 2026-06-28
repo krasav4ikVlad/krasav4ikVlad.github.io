@@ -456,6 +456,66 @@ def _uri_target(link: str, proto: str) -> dict | None:
             "net": "udp", "udp": True, "label": label or u.hostname}
 
 
+# ---- Hysteria2 -> sing-box spec (xray такое не умеет, зонд гоняет через sing-box)
+
+
+def hy2_spec_from_link(link: str) -> dict | None:
+    """hysteria2://<auth>@host:port?sni=&alpn=&insecure= -> spec для sing-box."""
+    from urllib.parse import unquote
+    u = urlsplit(link.strip())
+    if u.scheme not in ("hysteria2", "hy2") or not u.hostname or not u.port:
+        return None
+    q = parse_qs(u.query)
+
+    def g(k, d=None):
+        return (q.get(k) or [d])[0]
+
+    pwd = unquote(u.username or "") or unquote(g("auth", "") or "")
+    alpn = [a for a in (g("alpn", "h3") or "").split(",") if a] or ["h3"]
+    return {
+        "server": u.hostname, "port": int(u.port), "password": pwd,
+        "sni": g("sni") or g("peer") or u.hostname, "alpn": alpn,
+        "insecure": (g("insecure", "0") in ("1", "true")),
+    }
+
+
+def hy2_spec_from_json(o: dict) -> dict | None:
+    """xray-форк hysteria-outbound (hysteriaSettings/finalmask) -> spec sing-box."""
+    if not isinstance(o, dict) or o.get("protocol") not in ("hysteria", "hysteria2"):
+        return None
+    s = o.get("settings") or {}
+    ss = o.get("streamSettings") or {}
+    tls = ss.get("tlsSettings") or {}
+    hy = ss.get("hysteriaSettings") or {}
+    server = s.get("address") or s.get("server") or tls.get("serverName")
+    port = s.get("port")
+    pwd = hy.get("auth") or s.get("auth") or s.get("password") or hy.get("password")
+    if not server or not port or not pwd:
+        return None
+    return {
+        "server": server, "port": int(port), "password": pwd,
+        "sni": tls.get("serverName") or server,
+        "alpn": tls.get("alpn") or ["h3"],
+        "insecure": bool(tls.get("allowInsecure")),
+    }
+
+
+def _json_hy2_specs(obj) -> dict:
+    """{(server,port): hy2-spec} из hysteria-outbounds JSON-конфига."""
+    res = {}
+    cands = []
+    if isinstance(obj, dict):
+        if isinstance(obj.get("outbounds"), list):
+            cands = obj["outbounds"]
+        elif obj.get("protocol"):
+            cands = [obj]
+    for o in cands:
+        spec = hy2_spec_from_json(o)
+        if spec:
+            res[(spec["server"], spec["port"])] = spec
+    return res
+
+
 def _parse_share_lines(text: str) -> list[dict]:
     """Построчный разбор share-ссылок (vless/vmess/trojan/ss/hysteria/tuic);
     где можем — сразу подвязываем xray-outbound для туннеля."""
@@ -516,6 +576,10 @@ def _parse_share_lines(text: str) -> list[dict]:
             proto = low.split("://", 1)[0]
             t = _uri_target(line, {"hy2": "hysteria2"}.get(proto, proto))
             if t:
+                if low.startswith(("hysteria2://", "hy2://")):
+                    spec = hy2_spec_from_link(line)
+                    if spec:
+                        t["_hy2"] = spec  # зонд проверит через sing-box
                 targets.append(t)
         # сырая ссылка -> зонд распарсит её сам через xray-knife (libXray)
         for t in targets[n0:]:
@@ -547,10 +611,14 @@ def parse_config(text: str) -> tuple[list[dict], str]:
             return [], "В JSON не найдено ни одного host:port (address/port)."
         # для туннеля: подвязываем xray-outbound к целям по host:port
         xray_map = _json_xray_outbounds(obj)
+        hy2_map = _json_hy2_specs(obj)
         for t in targets:
             ob = xray_map.get((t["host"], t["port"]))
             if ob is not None:
                 t["_xray"] = ob
+            sp = hy2_map.get((t["host"], t["port"]))
+            if sp is not None:
+                t["_hy2"] = sp  # Hysteria2 -> зонд через sing-box
 
     # дедуп по host:port
     seen, uniq = set(), []
@@ -1066,6 +1134,8 @@ async def check_target(sem: asyncio.Semaphore, target: dict) -> dict:
 
 def tunnel_unsupported(target: dict) -> dict | None:
     """Если туннель к цели невозможен — вернуть готовый na-результат, иначе None."""
+    if target.get("_hy2"):
+        return None  # Hysteria2 — зонд умеет через sing-box
     if target.get("udp"):
         return {"na": True, "info": "нужен sing-box (xray не поддерживает)"}
     # есть либо собранный outbound, либо сырая ссылка (её зонд разберёт xray-knife)
@@ -1125,6 +1195,7 @@ async def run_job(job_id: str) -> None:
                     "job_id": job_id, "idx": i, "owner": doc["owner"],
                     "outbound": t.get("_xray"),      # запасной (ручной парсер чекера)
                     "link": t.get("_link", ""),       # сырая ссылка -> xray-knife на зонде
+                    "hy2": t.get("_hy2"),             # Hysteria2 -> sing-box на зонде
                     "status": "queued",
                     "created_dt": datetime.now(timezone.utc),
                 })
@@ -1577,6 +1648,7 @@ async def agent_poll(request: Request):
         "task_id": str(task["_id"]),
         "outbound": task.get("outbound"),
         "link": task.get("link", ""),   # зонд распарсит сам через xray-knife
+        "hy2": task.get("hy2"),         # Hysteria2 -> sing-box
         "probe_url": TUNNEL_PROBE_URL,
         "speed_url": TUNNEL_SPEED_URL,
         "params": {
