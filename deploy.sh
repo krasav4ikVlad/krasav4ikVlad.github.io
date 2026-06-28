@@ -87,12 +87,14 @@ log "Setting up virtualenv & dependencies..."
 # Можно передать существующий SECRET_KEY (env) — нужно при переезде на новый
 # сервер, чтобы SSO с хабом/чекером не сломалось. Иначе генерируется новый.
 SECRET_FILE="$APP_DIR/secret.key"
+# чистим невидимый мусор (пробел/таб/CR), иначе подпись cookie рассинхронится с SSO
+[ -n "${SECRET_KEY:-}" ] && SECRET_KEY="$(printf '%s' "$SECRET_KEY" | tr -d '[:space:]')"
 if [ -n "${SECRET_KEY:-}" ]; then
   printf '%s\n' "$SECRET_KEY" > "$SECRET_FILE"
 elif [ ! -s "$SECRET_FILE" ]; then
   python3 -c "import secrets; print(secrets.token_urlsafe(48))" > "$SECRET_FILE"
 fi
-SECRET_KEY="$(cat "$SECRET_FILE")"
+SECRET_KEY="$(tr -d '[:space:]' < "$SECRET_FILE")"
 
 # ---- env file --------------------------------------------------------------
 log "Writing environment file..."

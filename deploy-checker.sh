@@ -50,6 +50,8 @@ SV_ENV="${SV_ENV:-/opt/script-vault/script-vault.env}"
 [ -n "$SECRET_KEY" ] || SECRET_KEY="$(envget SECRET_KEY "$SV_ENV")"
 [ -n "$TOKEN_DB" ] || die "TOKEN_DB обязателен (та же база, что у основного сервера)."
 [ -n "$SECRET_KEY" ] || die "SECRET_KEY обязателен и должен СОВПАДАТЬ с основным сервером (иначе SSO не сработает)."
+# чистим невидимый мусор — пробел/таб/CR в SECRET_KEY ломает подпись cookie (SSO)
+SECRET_KEY="$(printf '%s' "$SECRET_KEY" | tr -d '[:space:]')"
 
 # ---- packages (iputils-ping нужен для ICMP) --------------------------------
 log "Installing packages (python, nginx, certbot, iputils-ping)..."

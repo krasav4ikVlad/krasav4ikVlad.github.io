@@ -55,6 +55,8 @@ envget() { [ -f "$2" ] && grep -h "^$1=" "$2" 2>/dev/null | head -1 | cut -d= -f
 TOKEN_DB="$(envget TOKEN_DB "$SV_ENV")"
 SECRET_KEY="$(envget SECRET_KEY "$SV_ENV")"
 [ -n "$TOKEN_DB" ] && [ -n "$SECRET_KEY" ] || die "В $SV_ENV нет TOKEN_DB/SECRET_KEY."
+# чистим невидимый мусор — пробел/таб/CR в SECRET_KEY ломает подпись cookie (SSO)
+SECRET_KEY="$(printf '%s' "$SECRET_KEY" | tr -d '[:space:]')"
 
 # ---- пакеты ------------------------------------------------------------------
 if ! command -v nginx >/dev/null 2>&1 || ! command -v certbot >/dev/null 2>&1; then
