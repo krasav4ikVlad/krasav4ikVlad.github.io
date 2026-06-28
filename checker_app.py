@@ -1429,7 +1429,7 @@ textarea::placeholder{color:#494842}
 .ep>*{position:relative;z-index:1}
 /* флаг страны — картинкой (эмодзи не рисуются в Windows) */
 .flag-ic{height:13px;width:auto;border-radius:2px;margin-right:8px;vertical-align:-1px;flex:none}
-.flag-bg{position:absolute;top:50%;right:6px;transform:translateY(-50%);height:128px;width:auto;border-radius:5px;opacity:.1;z-index:0;pointer-events:none;filter:saturate(1.2)}
+.flag-bg{position:absolute;top:9px;right:11px;height:50px;width:auto;border-radius:3px;opacity:.55;z-index:0;pointer-events:none}
 /* компактный режим: плотный список (по умолчанию скрыт, показывается тумблером) */
 .ep-list{display:none;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:8px}
 .sl{display:flex;align-items:center;gap:11px;padding:11px 13px;border:1px solid var(--line);border-radius:2px;background:var(--panel);font-size:13px;min-width:0;animation:rise .4s ease both}
@@ -1696,8 +1696,8 @@ def _result_toolbar(share_url: str = "") -> str:
 <script>
 function setView(c){{
  var grid=document.querySelector('.ep-grid'), list=document.querySelector('.ep-list');
- if(grid) grid.style.display=c?'none':'';
- if(list) list.style.display=c?'':'none';
+ if(grid) grid.style.display=c?'none':'grid';
+ if(list) list.style.display=c?'grid':'none';
  var a=document.getElementById('vt-compact'),b=document.getElementById('vt-full');
  if(a) a.classList.toggle('on',c); if(b) b.classList.toggle('on',!c);
  try{{localStorage.setItem('nw_compact',c?'1':'0')}}catch(e){{}}
