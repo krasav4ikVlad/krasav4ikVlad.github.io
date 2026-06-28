@@ -42,6 +42,7 @@ for _s in (sys.stdout, sys.stderr):
 CHECKER_URL = os.environ.get("CHECKER_URL", "").rstrip("/")
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 XRAY_BIN = os.environ.get("XRAY_BIN", "xray")
+XRAY_KNIFE_BIN = os.environ.get("XRAY_KNIFE_BIN", "")  # парсер share-ссылок (libXray)
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "5"))
 
 if not CHECKER_URL or not AGENT_TOKEN:
@@ -55,6 +56,44 @@ def _free_port() -> int:
     p = s.getsockname()[1]
     s.close()
     return p
+
+
+_PROXY_PROTOS = {"vless", "vmess", "trojan", "shadowsocks", "socks", "http"}
+
+
+async def outbound_from_link(link: str):
+    """Спарсить share-ссылку через xray-knife (libXray) -> xray outbound.
+    Это покрывает все типы/параметры, что понимает xray, в отличие от
+    ручного парсера на чекере. None, если xray-knife нет или не разобрал."""
+    if not XRAY_KNIFE_BIN or not link:
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            XRAY_KNIFE_BIN, "parse", "-c", link, "--json",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=12)
+    except (FileNotFoundError, asyncio.TimeoutError, Exception):
+        return None
+    txt = out.decode("utf-8", "replace").strip()
+    cfg = None
+    for candidate in (txt, txt[txt.find("{"):] if "{" in txt else ""):
+        try:
+            cfg = json.loads(candidate)
+            break
+        except Exception:
+            continue
+    if not isinstance(cfg, dict):
+        return None
+    obs = cfg.get("outbounds")
+    if not isinstance(obs, list):
+        return None
+    for o in obs:
+        if isinstance(o, dict) and o.get("protocol") in _PROXY_PROTOS:
+            o = {k: v for k, v in o.items() if k != "tag"}
+            o["tag"] = "proxy"
+            return o
+    return None
 
 
 async def _wait_port(port: int, timeout: float) -> bool:
@@ -261,8 +300,14 @@ async def main():
                 continue
             print(f"[>] задача {task['task_id']} — тестирую через свой канал…")
             try:
-                result = await run_task(task["outbound"], task["probe_url"],
-                                        task["speed_url"], task.get("params", {}))
+                # outbound: сначала пробуем xray-knife по ссылке (libXray, все типы),
+                # иначе берём заранее собранный чекером outbound.
+                outbound = await outbound_from_link(task.get("link", "")) or task.get("outbound")
+                if not outbound:
+                    result = {"ok": False, "info": "конфиг не разобран (нет outbound)"}
+                else:
+                    result = await run_task(outbound, task["probe_url"],
+                                            task["speed_url"], task.get("params", {}))
             except Exception as e:
                 result = {"ok": False, "info": f"зонд: {type(e).__name__}"}
             try:

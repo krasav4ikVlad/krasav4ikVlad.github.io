@@ -463,6 +463,7 @@ def _parse_share_lines(text: str) -> list[dict]:
     for line in text.splitlines():
         line = line.strip()
         low = line.lower()
+        n0 = len(targets)  # пометим этой ссылкой все цели, добавленные на этой строке
         if low.startswith("vless://"):
             ts = parse_vless(line)
             if ts:
@@ -516,6 +517,9 @@ def _parse_share_lines(text: str) -> list[dict]:
             t = _uri_target(line, {"hy2": "hysteria2"}.get(proto, proto))
             if t:
                 targets.append(t)
+        # сырая ссылка -> зонд распарсит её сам через xray-knife (libXray)
+        for t in targets[n0:]:
+            t["_link"] = line
     return targets
 
 
@@ -1064,7 +1068,8 @@ def tunnel_unsupported(target: dict) -> dict | None:
     """Если туннель к цели невозможен — вернуть готовый na-результат, иначе None."""
     if target.get("udp"):
         return {"na": True, "info": "нужен sing-box (xray не поддерживает)"}
-    if not target.get("_xray"):
+    # есть либо собранный outbound, либо сырая ссылка (её зонд разберёт xray-knife)
+    if not target.get("_xray") and not target.get("_link"):
         return {"na": True, "info": "протокол не поддержан для туннеля"}
     return None
 
@@ -1118,16 +1123,20 @@ async def run_job(job_id: str) -> None:
                 r["tunnel"] = {"pending": True, "info": "ожидает residential-зонд…"}
                 await tunnel_tasks.insert_one({
                     "job_id": job_id, "idx": i, "owner": doc["owner"],
-                    "outbound": t["_xray"], "status": "queued",
+                    "outbound": t.get("_xray"),      # запасной (ручной парсер чекера)
+                    "link": t.get("_link", ""),       # сырая ссылка -> xray-knife на зонде
+                    "status": "queued",
                     "created_dt": datetime.now(timezone.utc),
                 })
                 pending.append(i)
-            else:
+            elif t.get("_xray"):
                 # зонды не настроены — меряем локально (из ДЦ), как раньше
                 async with xray_sem:
                     res = await tunnel_check(t["_xray"])
                 res["via"] = "дата-центр"
                 r["tunnel"] = res
+            else:
+                r["tunnel"] = {"na": True, "info": "нужен зонд (ручной парсер не осилил конфиг)"}
 
         status = "probing" if pending else "done"
         upd = {"status": status, "results": results}
@@ -1160,10 +1169,12 @@ async def reaper() -> None:
                  "created_dt": {"$lt": hard if agent_online else stale}},
             ]
             async for task in tunnel_tasks.find({"$or": cond}):
-                if LOCAL_FALLBACK:
+                if LOCAL_FALLBACK and task.get("outbound"):
                     async with xray_sem:
                         res = await tunnel_check(task["outbound"])
                     res["via"] = "дата-центр (зонд офлайн)"
+                elif not task.get("outbound"):
+                    res = {"na": True, "info": "нужен зонд (конфиг разбирает только он)"}
                 else:
                     res = {"na": True, "info": "residential-зонд офлайн"}
                 await tunnel_tasks.update_one(
@@ -1564,7 +1575,8 @@ async def agent_poll(request: Request):
         return JSONResponse({"task": None})
     return JSONResponse({"task": {
         "task_id": str(task["_id"]),
-        "outbound": task["outbound"],
+        "outbound": task.get("outbound"),
+        "link": task.get("link", ""),   # зонд распарсит сам через xray-knife
         "probe_url": TUNNEL_PROBE_URL,
         "speed_url": TUNNEL_SPEED_URL,
         "params": {

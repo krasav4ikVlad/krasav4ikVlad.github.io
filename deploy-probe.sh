@@ -67,6 +67,23 @@ if ! command -v xray >/dev/null 2>&1 && [ ! -x /usr/local/bin/xray ]; then
 fi
 XRAY_BIN="$(command -v xray || echo /usr/local/bin/xray)"
 
+# ---- xray-knife (libXray-парсер share-ссылок, как у xray-checker) -----------
+KNIFE_BIN="/usr/local/bin/xray-knife"
+if [ ! -x "$KNIFE_BIN" ]; then
+  log "Installing xray-knife..."
+  tmpz="$(mktemp --suffix=.zip)"; tmpd="$(mktemp -d)"
+  if curl -fsSL "https://github.com/lilendian0x00/xray-knife/releases/latest/download/Xray-knife-linux-64.zip" -o "$tmpz" \
+     && unzip -o -q "$tmpz" -d "$tmpd"; then
+    knife="$(find "$tmpd" -type f -name 'xray-knife' | head -1)"
+    [ -n "$knife" ] && install -m 0755 "$knife" "$KNIFE_BIN" \
+      || warn "xray-knife не распаковался — парсинг будет ручным (как раньше)."
+  else
+    warn "Не удалось скачать xray-knife — парсинг будет ручным (как раньше)."
+  fi
+  rm -rf "$tmpz" "$tmpd"
+fi
+[ -x "$KNIFE_BIN" ] || KNIFE_BIN=""
+
 # ---- приложение ----------------------------------------------------------------
 id "$APP_USER" &>/dev/null || useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
 mkdir -p "$APP_DIR"
@@ -84,6 +101,7 @@ cat > "$ENVF" <<EOF
 CHECKER_URL=$CHECKER_URL
 AGENT_TOKEN=$AGENT_TOKEN
 XRAY_BIN=$XRAY_BIN
+XRAY_KNIFE_BIN=$KNIFE_BIN
 POLL_INTERVAL=$POLL_INTERVAL
 EOF
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
