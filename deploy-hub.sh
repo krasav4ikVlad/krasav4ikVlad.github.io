@@ -21,6 +21,7 @@ ALT="${ALT:-www.nodewiki.info}"
 APP_DIR="${APP_DIR:-/opt/nodewiki-hub}"
 APP_USER="${APP_USER:-scriptvault}"   # тот же системный пользователь, что у scripts
 APP_PORT="${APP_PORT:-8001}"
+CHECKER_URL="${CHECKER_URL:-https://checker.nodewiki.info}"  # карточка VPN Checker = online
 SV_ENV="${SV_ENV:-/opt/script-vault/script-vault.env}"
 LE_EMAIL="${LE_EMAIL:-prostotvinkazaza@gmail.com}"
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/krasav4ikVlad/krasav4ikVlad.github.io/refs/heads/claude/script-hosting-app-msq5fe}"
@@ -82,6 +83,7 @@ SECRET_KEY=$SECRET_KEY
 COOKIE_DOMAIN=.nodewiki.info
 BASE_URL=https://$DOMAIN
 SCRIPTS_URL=https://scripts.nodewiki.info
+CHECKER_URL=$CHECKER_URL
 HOST=127.0.0.1
 PORT=$APP_PORT
 EOF
