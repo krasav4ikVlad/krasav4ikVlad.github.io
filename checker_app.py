@@ -637,6 +637,7 @@ def parse_config(text: str) -> tuple[list[dict], str]:
         # для туннеля: подвязываем xray-outbound к целям по host:port
         xray_map = _json_xray_outbounds(obj)
         hy2_map = _json_hy2_specs(obj)
+        rem_map = _json_remarks_map(obj)
         for t in targets:
             ob = xray_map.get((t["host"], t["port"]))
             if ob is not None:
@@ -644,6 +645,9 @@ def parse_config(text: str) -> tuple[list[dict], str]:
             sp = hy2_map.get((t["host"], t["port"]))
             if sp is not None:
                 t["_hy2"] = sp  # Hysteria2 -> зонд через sing-box
+            rem = rem_map.get((t["host"], t["port"]))
+            if rem:
+                t["label"] = rem  # имя ноды из remarks (флаг + название)
 
     # дедуп по host:port
     seen, uniq = set(), []
@@ -706,6 +710,28 @@ async def fetch_subscription(url: str) -> tuple[str, str]:
 def _outbound_hostport(o: dict) -> tuple[str, int] | None:
     ts = _walk_json_targets(o)
     return (ts[0]["host"], ts[0]["port"]) if ts else None
+
+
+def _json_remarks_map(obj) -> dict:
+    """{(host,port): remarks} — имя ноды (флаг + название) из конфига к её host:port.
+    В формате Happ/v2rayN каждый конфиг массива несёт remarks рядом с outbounds."""
+    res = {}
+    configs = obj if isinstance(obj, list) else ([obj] if isinstance(obj, dict) else [])
+    for c in configs:
+        if not isinstance(c, dict):
+            continue
+        rem = c.get("remarks") or c.get("remark") or c.get("ps")
+        obs = c.get("outbounds")
+        if not rem or not isinstance(obs, list):
+            continue
+        for o in obs:
+            if (isinstance(o, dict) and isinstance(o.get("protocol"), str)
+                    and o["protocol"] not in ("freedom", "blackhole", "dns")):
+                hp = _outbound_hostport(o)
+                if hp:
+                    res[hp] = str(rem)[:80]
+                    break  # первый proxy-outbound = нода этого конфига
+    return res
 
 
 def _json_xray_outbounds(obj) -> dict:
@@ -1402,15 +1428,17 @@ textarea::placeholder{color:#494842}
 .ep{position:relative;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--line-bright);border-radius:3px;padding:16px 18px;margin-bottom:14px;animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
 .ep>*{position:relative;z-index:1}
 /* флаг страны — большим полупрозрачным фоном справа */
-.flag-bg{position:absolute;top:50%;right:-6px;transform:translateY(-50%);font-size:120px;line-height:1;opacity:.07;z-index:0;pointer-events:none;filter:saturate(1.2)}
-/* компактный режим: плотнее, без сервис-сеток и контроля */
-.ep-grid.compact{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
-.ep-grid.compact .svc-grid,.ep-grid.compact .ctl-sep,.ep-grid.compact .tunnel.ctl,.ep-grid.compact .ep-proto,.ep-grid.compact .note{display:none}
-.ep-grid.compact .ep{padding:12px 14px}
-.ep-grid.compact .flag-bg{font-size:84px}
-.ep-grid.compact .checks{grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:6px}
-.ep-grid.compact .chk{padding:6px 8px}
-.ep-grid.compact .tunnel{margin-top:8px;padding:8px 11px}
+.flag-bg{position:absolute;top:50%;right:2px;transform:translateY(-50%);font-size:118px;line-height:1;opacity:.13;z-index:0;pointer-events:none;filter:saturate(1.25)}
+/* компактный режим: плотный список (по умолчанию скрыт, показывается тумблером) */
+.ep-list{display:none;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:8px}
+.sl{display:flex;align-items:center;gap:11px;padding:11px 13px;border:1px solid var(--line);border-radius:2px;background:var(--panel);font-size:13px;min-width:0;animation:rise .4s ease both}
+.sl-dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--muted)}
+.sl-ok .sl-dot{background:var(--lime);box-shadow:0 0 7px var(--lime)}
+.sl-warn .sl-dot{background:#f5c542;box-shadow:0 0 6px rgba(245,197,66,.6)}
+.sl-bad .sl-dot{background:#ff5d4e;box-shadow:0 0 6px rgba(255,93,78,.5)}
+.sl-name{font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.sl-meta{margin-left:auto;color:var(--muted);font-family:var(--mono);font-size:12px;white-space:nowrap;flex:none}
+.sl-ok .sl-meta{color:var(--lime-dim)} .sl-warn .sl-meta{color:#f5c542} .sl-bad .sl-meta{color:#ff7a6e}
 .view-toggle{display:inline-flex;border:1px solid var(--line-bright);border-radius:2px;overflow:hidden}
 .view-toggle button{background:#0d0d0f;color:var(--muted);border:0;padding:7px 14px;font:inherit;font-size:12px;cursor:pointer}
 .view-toggle button.on{background:var(--lime);color:#11130a;font-weight:700}
@@ -1648,16 +1676,60 @@ def _result_toolbar(share_url: str = "") -> str:
   {share}
 </div>
 <script>
-function setView(c){{var g=document.querySelector('.ep-grid');if(!g)return;
- g.classList.toggle('compact',c);
+function setView(c){{
+ var grid=document.querySelector('.ep-grid'), list=document.querySelector('.ep-list');
+ if(grid) grid.style.display=c?'none':'';
+ if(list) list.style.display=c?'':'none';
  var a=document.getElementById('vt-compact'),b=document.getElementById('vt-full');
- a&&a.classList.toggle('on',c); b&&b.classList.toggle('on',!c);
- try{{localStorage.setItem('nw_compact',c?'1':'0')}}catch(e){{}}}}
+ if(a) a.classList.toggle('on',c); if(b) b.classList.toggle('on',!c);
+ try{{localStorage.setItem('nw_compact',c?'1':'0')}}catch(e){{}}
+}}
 function copyShare(){{var i=document.getElementById('shareurl');if(!i)return;i.select();
  navigator.clipboard&&navigator.clipboard.writeText(i.value);
  var b=event.target,t=b.textContent;b.textContent='скопировано ✓';setTimeout(function(){{b.textContent=t}},1500);}}
-setView((function(){{try{{return localStorage.getItem('nw_compact')==='1'}}catch(e){{return false}}}})());
+document.addEventListener('DOMContentLoaded',function(){{
+ var c=false; try{{c=localStorage.getItem('nw_compact')==='1'}}catch(e){{}}
+ setView(c);
+}});
 </script>"""
+
+
+def render_compact(results: list[dict]) -> str:
+    """Плотный список: статус-точка + флаг/имя ноды + ключевая метрика."""
+    rows = []
+    for r in results:
+        label = r.get("label", r["host"])
+        addr = f'{r["host"]}:{r["port"]}'
+        tw = r.get("tunnel")
+        if tw:
+            sp = tw.get("speed_mbps")
+            sp_txt = f"{sp:.0f} Mbps" if isinstance(sp, (int, float)) and sp > 0 else ""
+            if tw.get("pending"):
+                st, metric = "pend", "…"
+            elif tw.get("na"):
+                st, metric = "na", "n/a"
+            elif tw.get("slow") or tw.get("warn"):
+                st, metric = "warn", sp_txt or "медленно"
+            elif tw.get("ok"):
+                st, metric = "ok", sp_txt or "ок"
+            else:
+                st, metric = "bad", "не работает"
+        elif r.get("blocked"):
+            st, metric = "bad", r["blocked"][:24]
+        else:
+            tcp = r.get("tcp") or {}
+            if tcp.get("na"):
+                st, metric = "na", "n/a"
+            elif tcp.get("ok"):
+                st, metric = "ok", tcp.get("info", "")
+            else:
+                st, metric = "bad", tcp.get("info", "нет")
+        rows.append(
+            f'<div class="sl sl-{st}"><span class="sl-dot"></span>'
+            f'<span class="sl-name" title="{html.escape(addr)}">{html.escape(str(label))}</span>'
+            f'<span class="sl-meta">{html.escape(str(metric))}</span></div>'
+        )
+    return f'<div class="ep-list">{"".join(rows)}</div>'
 
 
 # ----------------------------------------------------------------------------
@@ -2069,6 +2141,7 @@ async def job_view(request: Request, job_id: str = Path(...)):
 </div>
 {note}
 {render_results(results)}
+{render_compact(results)}
 <div class="form-actions"><a class="btn" href="/">← Новая проверка</a></div>"""
         return page("Прогон через зонд…", body, user=user, refresh=4, wide=True)
 
@@ -2081,6 +2154,7 @@ async def job_view(request: Request, job_id: str = Path(...)):
 {note}
 {_result_toolbar(share_url)}
 {render_results(results)}
+{render_compact(results)}
 <div class="form-actions">{rerun}<a class="btn" href="/">← Новая проверка</a></div>"""
     return page("Результат", body, user=user, wide=True)
 
@@ -2110,6 +2184,7 @@ async def share_view(request: Request, share_id: str = Path(...)):
 {note}
 {_result_toolbar()}
 {render_results(results)}
+{render_compact(results)}
 <div class="form-actions"><a class="btn btn-primary" href="{BASE_URL or '/'}">проверить свой конфиг →</a></div>"""
     return page("Результат проверки", body, user=None, wide=True)
 
