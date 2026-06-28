@@ -639,6 +639,7 @@ def parse_config(text: str) -> tuple[list[dict], str]:
         hy2_map = _json_hy2_specs(obj)
         rem_map = _json_remarks_map(obj)
         full_map = _json_full_configs(obj)
+        src_map = _json_src_configs(obj)
         for t in targets:
             ob = xray_map.get((t["host"], t["port"]))
             if ob is not None:
@@ -649,6 +650,9 @@ def parse_config(text: str) -> tuple[list[dict], str]:
             fc = full_map.get((t["host"], t["port"]))
             if fc is not None:
                 t["_full"] = fc  # полный конфиг -> зонд гоняет как клиент
+            sc = src_map.get((t["host"], t["port"]))
+            if sc is not None:
+                t["_srccfg"] = sc  # исходный блок конфига -> показать «копировать JSON»
             rem = rem_map.get((t["host"], t["port"]))
             if rem:
                 t["label"] = rem  # имя ноды из remarks (флаг + название)
@@ -732,6 +736,48 @@ def _json_full_configs(obj) -> dict:
                     res[hp] = c
                     break
     return res
+
+
+def _json_src_configs(obj) -> dict:
+    """{(host,port): полный конфиг ноды} для ЛЮБОГО proxy-протокола (включая
+    hysteria/tuic) — только для ПОКАЗА («копировать JSON»), чтобы пользователь
+    видел ровно тот блок конфига, что соответствует этой ноде, и сверил с собой."""
+    res = {}
+    configs = obj if isinstance(obj, list) else ([obj] if isinstance(obj, dict) else [])
+    for c in configs:
+        if not isinstance(c, dict) or not isinstance(c.get("outbounds"), list):
+            continue
+        for o in c["outbounds"]:
+            if (isinstance(o, dict) and isinstance(o.get("protocol"), str)
+                    and o["protocol"] not in ("freedom", "blackhole", "dns")):
+                hp = _outbound_hostport(o)
+                if hp:
+                    res[hp] = c
+                    break  # первый proxy-outbound = нода этого конфига
+    return res
+
+
+def _cfg_for_display(t: dict) -> str:
+    """Текст конфига, который реально проверяется/соответствует ноде — для кнопки
+    «копировать JSON», чтобы пользователь сверил его со своим."""
+    # JSON-вход: показываем исходный блок / полный конфиг ровно как в подписке
+    obj = t.get("_srccfg") or t.get("_full")
+    if obj is not None:
+        try:
+            return json.dumps(obj, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            pass
+    # share-ссылка: ровно то, что вставил пользователь (зонд гоняет её через xray-knife)
+    if t.get("_link"):
+        return t["_link"]
+    # запасной вариант — собранный outbound / hy2-spec
+    obj = t.get("_xray") or t.get("_hy2")
+    if obj is not None:
+        try:
+            return json.dumps(obj, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            pass
+    return ""
 
 
 def _json_remarks_map(obj) -> dict:
@@ -1170,6 +1216,9 @@ async def check_target(sem: asyncio.Semaphore, target: dict) -> dict:
         "proto": target.get("proto", "?"), "net": target.get("net", "tcp"),
         "udp": target.get("udp", False), "label": target.get("label", host),
     }
+    cfg = _cfg_for_display(target)
+    if cfg:
+        result["cfg"] = cfg  # «копировать JSON»: что именно проверяется
     ips, err = resolve_safe(host)
     if err:
         result["blocked"] = err
@@ -1455,6 +1504,12 @@ textarea::placeholder{color:#494842}
 /* флаг страны — картинкой (эмодзи не рисуются в Windows) */
 .flag-ic{height:14px;width:auto;border-radius:2px;margin-right:8px;vertical-align:-2px;flex:none}
 .ep-name .flag-ic{height:18px;margin-right:10px}
+/* кнопка «копировать JSON» проверяемого конфига */
+.cfg-btn{position:absolute;top:12px;right:12px;z-index:3;background:#0d0d0f;color:var(--lime-dim);border:1px solid var(--line-bright);border-radius:2px;padding:5px 9px;font:inherit;font-size:11px;letter-spacing:.5px;cursor:pointer}
+.cfg-btn:hover{background:var(--lime);color:#11130a}
+.cfg-ic{margin-left:8px;flex:none;background:#0d0d0f;color:var(--muted);border:1px solid var(--line-bright);border-radius:2px;padding:2px 7px;font:inherit;font-size:12px;cursor:pointer}
+.cfg-ic:hover{color:var(--lime);border-color:var(--lime)}
+.cfg-data{display:none}
 /* компактный режим: плотный список (по умолчанию скрыт, показывается тумблером) */
 .ep-list{display:none;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:8px}
 .sl{display:flex;align-items:center;gap:11px;padding:11px 13px;border:1px solid var(--line);border-radius:2px;background:var(--panel);font-size:13px;min-width:0;animation:rise .4s ease both}
@@ -1472,7 +1527,7 @@ textarea::placeholder{color:#494842}
 .result-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
 .share-row{display:flex;gap:8px;margin-left:auto;flex:1;min-width:240px;max-width:560px}
 .share-row input{flex:1;min-width:0;background:#0d0d0f;border:1px solid var(--line-bright);border-radius:2px;color:var(--lime-dim);font-family:var(--mono);font-size:12px;padding:7px 10px}
-.ep-top{display:flex;flex-direction:column;align-items:flex-start;text-align:left;gap:5px;margin-bottom:14px}
+.ep-top{display:flex;flex-direction:column;align-items:flex-start;text-align:left;gap:5px;margin-bottom:14px;padding-right:96px}
 .ep-name{font-family:var(--display);font-size:22px;font-weight:800;display:inline-flex;align-items:center;line-height:1.15}
 .ep-addr{font-family:var(--mono);font-size:12.5px;color:var(--lime-dim);word-break:break-all}
 .ep-proto{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 14px}
@@ -1620,6 +1675,32 @@ def _avd(av) -> str:
     return "1" if av is True else ("0" if av is False else "na")
 
 
+def _cfg_copy_btn(r: dict, cls: str = "cfg-btn", label: str = "копир. json") -> str:
+    """Кнопка «копировать JSON» + проверяемый конфиг в скрытом элементе той же карточки."""
+    cfg = r.get("cfg")
+    if not cfg:
+        return ""
+    return (f'<button class="{cls}" type="button" onclick="copyCfg(this)" '
+            f'title="скопировать конфиг этой ноды — ровно то, что проверяется">{label}</button>'
+            f'<pre class="cfg-data" hidden>{html.escape(cfg)}</pre>')
+
+
+# JS для копирования конфига — добавляется один раз вместе с результатами
+_CFG_COPY_JS = """
+<script>
+function copyCfg(b){
+ var card=b.closest('.ep,.sl'); if(!card)return;
+ var pre=card.querySelector('.cfg-data'); if(!pre)return;
+ var txt=pre.textContent;
+ if(navigator.clipboard){navigator.clipboard.writeText(txt).catch(function(){});}
+ else{var ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);
+  ta.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(ta);}
+ var t=b.textContent;b.textContent='скопировано ✓';
+ setTimeout(function(){b.textContent=t},1500);
+}
+</script>"""
+
+
 def render_results(results: list[dict]) -> str:
     cards = []
     for r in results:
@@ -1682,7 +1763,7 @@ def render_results(results: list[dict]) -> str:
     <span class="tn-info">{html.escape(tw.get("info",""))}{speed}{via}</span>
   </div>{svc_grid}"""
         cards.append(f"""
-<div class="ep" data-avail="{_avd(_node_avail(r))}">
+<div class="ep" data-avail="{_avd(_node_avail(r))}">{_cfg_copy_btn(r)}
   <div class="ep-top">
     <span class="ep-name">{_flag_img(code, "flag-ic")}{html.escape(node_name)}</span>
     <span class="ep-addr">{addr}{ipinfo}</span>
@@ -1690,7 +1771,7 @@ def render_results(results: list[dict]) -> str:
   {proto_row}
   {checks}{tunnel}
 </div>""")
-    return f'<div class="ep-grid">{"".join(cards)}</div>'
+    return f'<div class="ep-grid">{"".join(cards)}</div>{_CFG_COPY_JS}'
 
 
 def _result_toolbar(share_url: str = "") -> str:
@@ -1778,7 +1859,8 @@ def render_compact(results: list[dict]) -> str:
             f'<div class="sl sl-{st}" data-avail="{avd}"><span class="sl-dot"></span>'
             f'{_flag_img(code, "flag-ic")}'
             f'<span class="sl-name" title="{html.escape(addr)}">{html.escape(str(label))}</span>'
-            f'<span class="sl-meta">{html.escape(str(metric))}</span></div>'
+            f'<span class="sl-meta">{html.escape(str(metric))}</span>'
+            f'{_cfg_copy_btn(r, "cfg-ic", "{ }")}</div>'
         )
     return f'<div class="ep-list">{"".join(rows)}</div>'
 
