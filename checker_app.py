@@ -1422,7 +1422,7 @@ textarea::placeholder{color:#494842}
 .spin{display:inline-block;width:11px;height:11px;border:2px solid rgba(198,242,63,.25);border-top-color:var(--lime);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
 /* карточка эндпоинта */
-.ep-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:14px;align-items:start}
+.ep-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:14px;align-items:stretch}
 @media (max-width:520px){.ep-grid{grid-template-columns:1fr}}
 .ep-grid .ep{margin-bottom:0}
 .ep{position:relative;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--line-bright);border-radius:3px;padding:16px 18px;margin-bottom:14px;animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
@@ -1446,7 +1446,7 @@ textarea::placeholder{color:#494842}
 .result-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
 .share-row{display:flex;gap:8px;margin-left:auto;flex:1;min-width:240px;max-width:560px}
 .share-row input{flex:1;min-width:0;background:#0d0d0f;border:1px solid var(--line-bright);border-radius:2px;color:var(--lime-dim);font-family:var(--mono);font-size:12px;padding:7px 10px}
-.ep-top{display:flex;flex-direction:column;align-items:center;text-align:center;gap:5px;margin-bottom:14px}
+.ep-top{display:flex;flex-direction:column;align-items:flex-start;text-align:left;gap:5px;margin-bottom:14px}
 .ep-name{font-family:var(--display);font-size:22px;font-weight:800;display:inline-flex;align-items:center;line-height:1.15}
 .ep-addr{font-family:var(--mono);font-size:12.5px;color:var(--lime-dim);word-break:break-all}
 .ep-proto{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 14px}
@@ -1630,40 +1630,12 @@ def render_results(results: list[dict]) -> str:
                         f'<span class="svc-info">{html.escape(s.get("info",""))}</span></div>'
                     )
                 svc_grid = f'<div class="svc-grid">{"".join(cells)}</div>'
-            # контроль: те же сервисы НАПРЯМУЮ с зонда (без туннеля)
-            direct_html = ""
-            if tw.get("direct"):
-                d = tw["direct"]
-                d_ok = sum(1 for s in d if s.get("ok"))
-                if d_ok == 0:
-                    dcls, dhead = "tn-ok", "всё заблокировано без туннеля"
-                    dinfo = "блокировки с зонда видны — контроль честный, результату туннеля можно верить"
-                elif d_ok < len(d):
-                    dcls, dhead = "tn-warn", f"без туннеля открыто {d_ok}/{len(d)}"
-                    dinfo = "часть сервисов доступна с зонда и так — для них результат туннеля непоказателен"
-                else:
-                    dcls, dhead = "tn-bad", "всё открыто и БЕЗ туннеля"
-                    dinfo = "с точки зондирования блокировок нет — тест туннеля непоказателен, зонд нужен на заблокированном канале"
-                dcells = []
-                for s in d:
-                    scls = "svc-ok" if s.get("ok") else "svc-bad"
-                    dcells.append(
-                        f'<div class="svc {scls}"><span class="svc-name">{html.escape(s["name"])}</span>'
-                        f'<span class="svc-info">{html.escape(s.get("info",""))}</span></div>'
-                    )
-                direct_html = f"""
-  <div class="ctl-sep"></div>
-  <div class="tunnel {dcls} ctl">
-    <span class="tn-label">справочно · без туннеля</span>
-    <span class="tn-head">{dhead}</span>
-    <span class="tn-info">{dinfo}</span>
-  </div><div class="svc-grid">{"".join(dcells)}</div>"""
             tunnel = f"""
   <div class="tunnel {cls}">
     <span class="tn-label">⟿ туннель</span>
     <span class="tn-head">{head}</span>
     <span class="tn-info">{html.escape(tw.get("info",""))}{speed}{via}</span>
-  </div>{svc_grid}{direct_html}"""
+  </div>{svc_grid}"""
         cards.append(f"""
 <div class="ep">
   <div class="ep-top">
