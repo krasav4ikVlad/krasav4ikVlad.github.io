@@ -1468,6 +1468,7 @@ textarea::placeholder{color:#494842}
 .view-toggle{display:inline-flex;border:1px solid var(--line-bright);border-radius:2px;overflow:hidden}
 .view-toggle button{background:#0d0d0f;color:var(--muted);border:0;padding:7px 14px;font:inherit;font-size:12px;cursor:pointer}
 .view-toggle button.on{background:var(--lime);color:#11130a;font-weight:700}
+.f-hide{display:none!important}
 .result-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
 .share-row{display:flex;gap:8px;margin-left:auto;flex:1;min-width:240px;max-width:560px}
 .share-row input{flex:1;min-width:0;background:#0d0d0f;border:1px solid var(--line-bright);border-radius:2px;color:var(--lime-dim);font-family:var(--mono);font-size:12px;padding:7px 10px}
@@ -1600,6 +1601,25 @@ def _flag_img(code: str, cls: str) -> str:
             if code else "")
 
 
+def _node_avail(r: dict):
+    """Доступна ли нода: True/False, либо None (неизвестно — na/pending)."""
+    tw = r.get("tunnel")
+    if tw:
+        if tw.get("na") or tw.get("pending"):
+            return None
+        return bool(tw.get("ok"))
+    if r.get("blocked"):
+        return False
+    tcp = r.get("tcp") or {}
+    if tcp.get("na"):
+        return None
+    return bool(tcp.get("ok"))
+
+
+def _avd(av) -> str:
+    return "1" if av is True else ("0" if av is False else "na")
+
+
 def render_results(results: list[dict]) -> str:
     cards = []
     for r in results:
@@ -1662,7 +1682,7 @@ def render_results(results: list[dict]) -> str:
     <span class="tn-info">{html.escape(tw.get("info",""))}{speed}{via}</span>
   </div>{svc_grid}"""
         cards.append(f"""
-<div class="ep">
+<div class="ep" data-avail="{_avd(_node_avail(r))}">
   <div class="ep-top">
     <span class="ep-name">{_flag_img(code, "flag-ic")}{html.escape(node_name)}</span>
     <span class="ep-addr">{addr}{ipinfo}</span>
@@ -1686,6 +1706,11 @@ def _result_toolbar(share_url: str = "") -> str:
     <button type="button" id="vt-full" onclick="setView(false)">подробно</button>
     <button type="button" id="vt-compact" onclick="setView(true)">компактно</button>
   </div>
+  <div class="view-toggle">
+    <button type="button" id="ft-all" onclick="setFilter('all')">все</button>
+    <button type="button" id="ft-ok" onclick="setFilter('ok')">доступные</button>
+    <button type="button" id="ft-bad" onclick="setFilter('bad')">недоступные</button>
+  </div>
   {share}
 </div>
 <script>
@@ -1697,12 +1722,23 @@ function setView(c){{
  if(a) a.classList.toggle('on',c); if(b) b.classList.toggle('on',!c);
  try{{localStorage.setItem('nw_compact',c?'1':'0')}}catch(e){{}}
 }}
+function setFilter(f){{
+ document.querySelectorAll('.ep,.sl').forEach(function(el){{
+  var a=el.getAttribute('data-avail');
+  var show = f==='all' || (f==='ok'&&a==='1') || (f==='bad'&&a==='0');
+  el.classList.toggle('f-hide',!show);
+ }});
+ ['all','ok','bad'].forEach(function(k){{var x=document.getElementById('ft-'+k); if(x) x.classList.toggle('on',k===f);}});
+ try{{localStorage.setItem('nw_filter',f)}}catch(e){{}}
+}}
 function copyShare(){{var i=document.getElementById('shareurl');if(!i)return;i.select();
  navigator.clipboard&&navigator.clipboard.writeText(i.value);
  var b=event.target,t=b.textContent;b.textContent='скопировано ✓';setTimeout(function(){{b.textContent=t}},1500);}}
 document.addEventListener('DOMContentLoaded',function(){{
  var c=false; try{{c=localStorage.getItem('nw_compact')==='1'}}catch(e){{}}
  setView(c);
+ var f='all'; try{{f=localStorage.getItem('nw_filter')||'all'}}catch(e){{}}
+ setFilter(f);
 }});
 </script>"""
 
@@ -1737,8 +1773,9 @@ def render_compact(results: list[dict]) -> str:
                 st, metric = "ok", tcp.get("info", "")
             else:
                 st, metric = "bad", tcp.get("info", "нет")
+        avd = "1" if st in ("ok", "warn") else ("0" if st == "bad" else "na")
         rows.append(
-            f'<div class="sl sl-{st}"><span class="sl-dot"></span>'
+            f'<div class="sl sl-{st}" data-avail="{avd}"><span class="sl-dot"></span>'
             f'{_flag_img(code, "flag-ic")}'
             f'<span class="sl-name" title="{html.escape(addr)}">{html.escape(str(label))}</span>'
             f'<span class="sl-meta">{html.escape(str(metric))}</span></div>'
