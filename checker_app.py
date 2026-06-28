@@ -73,6 +73,7 @@ PORT = int(os.environ.get("PORT", "8002"))
 
 CHECKER_WORKERS = int(os.environ.get("CHECKER_WORKERS", "2"))
 TOKEN_CAP = int(os.environ.get("CHECKER_TOKEN_CAP", "300"))
+TOKENS_ON = os.environ.get("CHECKER_TOKENS", "1") != "0"  # 0 = без лимита (режим тестов)
 REFILL_SECONDS = float(os.environ.get("CHECKER_REFILL_SECONDS", "30"))
 ALLOW_PRIVATE = os.environ.get("CHECKER_ALLOW_PRIVATE", "0") == "1"
 
@@ -270,6 +271,8 @@ def fmt_dt(iso: str) -> str:
 
 async def take_tokens(user: dict, cost: int) -> tuple[bool, int]:
     """Дозаправить по времени, затем списать cost. Возвращает (успех, остаток)."""
+    if not TOKENS_ON:           # режим тестов: токены не списываются, лимита нет
+        return True, TOKEN_CAP
     now = time.time()
     tokens = float(user.get("checker_tokens", TOKEN_CAP))
     last = float(user.get("checker_refill_at", now))
@@ -289,6 +292,8 @@ async def take_tokens(user: dict, cost: int) -> tuple[bool, int]:
 
 async def token_balance(user: dict) -> tuple[int, int]:
     """Текущий баланс с учётом дозаправки (не списывая). (баланс, потолок)."""
+    if not TOKENS_ON:
+        return TOKEN_CAP, TOKEN_CAP
     now = time.time()
     tokens = float(user.get("checker_tokens", TOKEN_CAP))
     last = float(user.get("checker_refill_at", now))
@@ -1468,7 +1473,7 @@ def page(title: str, body: str, *, user: dict, refresh: int = 0, wide: bool = Fa
   <div class="header-inner">
     <span class="logo"><a class="hub" href="{HUB_URL}">nodewiki</a><b>/</b><a class="app" href="/">checker</a></span>
     <div class="header-actions">
-      <span class="tok" id="tok">токены: <b>{user["_bal"]}</b>/{user["_cap"]}</span>
+      {'<span class="tok">токены: <b>∞</b> (тест)</span>' if not TOKENS_ON else f'<span class="tok" id="tok">токены: <b>{user["_bal"]}</b>/{user["_cap"]}</span>'}
       <form method="post" action="{HUB_URL}/logout"><button class="btn btn-sm" type="submit">выйти</button></form>
     </div>
   </div>
