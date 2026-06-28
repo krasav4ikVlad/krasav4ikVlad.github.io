@@ -1427,8 +1427,9 @@ textarea::placeholder{color:#494842}
 .ep-grid .ep{margin-bottom:0}
 .ep{position:relative;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--line-bright);border-radius:3px;padding:16px 18px;margin-bottom:14px;animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
 .ep>*{position:relative;z-index:1}
-/* флаг страны — большим полупрозрачным фоном справа */
-.flag-bg{position:absolute;top:50%;right:2px;transform:translateY(-50%);font-size:118px;line-height:1;opacity:.13;z-index:0;pointer-events:none;filter:saturate(1.25)}
+/* флаг страны — картинкой (эмодзи не рисуются в Windows) */
+.flag-ic{height:13px;width:auto;border-radius:2px;margin-right:8px;vertical-align:-1px;flex:none}
+.flag-bg{position:absolute;top:50%;right:6px;transform:translateY(-50%);height:128px;width:auto;border-radius:5px;opacity:.1;z-index:0;pointer-events:none;filter:saturate(1.2)}
 /* компактный режим: плотный список (по умолчанию скрыт, показывается тумблером) */
 .ep-list{display:none;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:8px}
 .sl{display:flex;align-items:center;gap:11px;padding:11px 13px;border:1px solid var(--line);border-radius:2px;background:var(--panel);font-size:13px;min-width:0;animation:rise .4s ease both}
@@ -1557,14 +1558,31 @@ def render_check(c: dict) -> str:
 _FLAG_RE = re.compile("[\U0001F1E6-\U0001F1FF]{2}")
 
 
+def _flag_and_name(label: str) -> tuple[str, str]:
+    """Из метки '🇳🇱 Нидерланды-1' -> (код страны 'nl', имя без эмодзи).
+    Эмодзи-флаги не рисуются в Windows (=две буквы), поэтому флаг — картинкой."""
+    label = label or ""
+    m = _FLAG_RE.search(label)
+    if not m:
+        return "", label
+    code = "".join(chr(ord(c) - 0x1F1E6 + ord("a")) for c in m.group(0))
+    name = _FLAG_RE.sub("", label).strip(" |·-—")
+    return code, (name or label)
+
+
+def _flag_img(code: str, cls: str) -> str:
+    return (f'<img class="{cls}" src="https://flagcdn.com/{code}.svg" alt="" loading="lazy">'
+            if code else "")
+
+
 def render_results(results: list[dict]) -> str:
     cards = []
     for r in results:
         addr = f'{html.escape(r["host"])}:{r["port"]}'
         ipinfo = f' · {html.escape(r["ip"])}' if r.get("ip") else ""
-        # флаг страны из метки (🇳🇱 …) — большим полупрозрачным фоном справа
-        m = _FLAG_RE.search(r.get("label", "") or "")
-        flag_bg = f'<span class="flag-bg">{m.group(0)}</span>' if m else ""
+        # флаг страны из метки — картинкой (эмодзи в Windows = буквы)
+        code, node_name = _flag_and_name(r.get("label", r["host"]))
+        flag_bg = _flag_img(code, "flag-bg")
         # тип VPN отдельной строкой — бейджи: vless · tls · tcp
         bits = [b for b in (r.get("proto"), ("tls" if r.get("tls") else None), r.get("net")) if b and b != "?"]
         pills = "".join(f'<span class="vpill">{html.escape(str(b))}</span>' for b in bits)
@@ -1651,7 +1669,7 @@ def render_results(results: list[dict]) -> str:
 <div class="ep">
   {flag_bg}
   <div class="ep-top">
-    <span class="ep-name">{html.escape(r.get("label", r["host"]))}</span>
+    <span class="ep-name">{_flag_img(code, "flag-ic")}{html.escape(node_name)}</span>
     <span class="ep-addr">{addr}{ipinfo}</span>
   </div>
   {proto_row}
@@ -1698,7 +1716,7 @@ def render_compact(results: list[dict]) -> str:
     """Плотный список: статус-точка + флаг/имя ноды + ключевая метрика."""
     rows = []
     for r in results:
-        label = r.get("label", r["host"])
+        code, label = _flag_and_name(r.get("label", r["host"]))
         addr = f'{r["host"]}:{r["port"]}'
         tw = r.get("tunnel")
         if tw:
@@ -1726,6 +1744,7 @@ def render_compact(results: list[dict]) -> str:
                 st, metric = "bad", tcp.get("info", "нет")
         rows.append(
             f'<div class="sl sl-{st}"><span class="sl-dot"></span>'
+            f'{_flag_img(code, "flag-ic")}'
             f'<span class="sl-name" title="{html.escape(addr)}">{html.escape(str(label))}</span>'
             f'<span class="sl-meta">{html.escape(str(metric))}</span></div>'
         )
@@ -1749,7 +1768,7 @@ async def security_headers(request: Request, call_next):
         "default-src 'self'; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+        "img-src 'self' data: https://flagcdn.com; connect-src 'self'; frame-ancestors 'none'"
     )
     return resp
 
