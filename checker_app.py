@@ -83,6 +83,8 @@ MAX_QUEUE = 500           # глубина очереди
 SUB_TIMEOUT = 15.0
 SUB_MAX_BYTES = 3_000_000
 SUB_MAX_URLS = 5          # URL подписок за одну заявку
+# UA клиента, которому провайдеры отдают ПОЛНЫЙ список (с Hysteria/JSON), а не урезанный
+SUB_UA = os.environ.get("CHECKER_SUB_UA", "Happ/2.0")
 TCP_TIMEOUT = 6.0
 HTTP_TIMEOUT = 8.0
 PING_TIMEOUT = 4
@@ -500,16 +502,26 @@ def hy2_spec_from_json(o: dict) -> dict | None:
     }
 
 
-def _json_hy2_specs(obj) -> dict:
-    """{(server,port): hy2-spec} из hysteria-outbounds JSON-конфига."""
-    res = {}
-    cands = []
+def _collect_outbound_dicts(obj, out=None) -> list:
+    """Все outbound-подобные dict'ы (есть строковый protocol) в любой вложенности —
+    работает и для одного конфига, и для МАССИВА конфигов (формат Happ/v2rayN)."""
+    if out is None:
+        out = []
     if isinstance(obj, dict):
-        if isinstance(obj.get("outbounds"), list):
-            cands = obj["outbounds"]
-        elif obj.get("protocol"):
-            cands = [obj]
-    for o in cands:
+        if isinstance(obj.get("protocol"), str):
+            out.append(obj)
+        for v in obj.values():
+            _collect_outbound_dicts(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _collect_outbound_dicts(v, out)
+    return out
+
+
+def _json_hy2_specs(obj) -> dict:
+    """{(server,port): hy2-spec} из hysteria-outbounds JSON-конфига (или массива)."""
+    res = {}
+    for o in _collect_outbound_dicts(obj):
         spec = hy2_spec_from_json(o)
         if spec:
             res[(spec["server"], spec["port"])] = spec
@@ -658,10 +670,12 @@ async def fetch_subscription(url: str) -> tuple[str, str]:
     _, err = resolve_safe(u.hostname)
     if err:
         return "", f"подписка: {err}"
+    # многие провайдеры отдают РАЗНЫЙ список под разные клиенты: хистерию/полный
+    # JSON — только «богатым» клиентам (Happ/v2rayN). Под нейтральным UA её режут.
     try:
         async with httpx.AsyncClient(
             timeout=SUB_TIMEOUT, follow_redirects=True, max_redirects=3, verify=False,
-            headers={"User-Agent": "nodewiki-checker/1.0"},
+            headers={"User-Agent": SUB_UA},
         ) as cl:
             r = await cl.get(url)
     except Exception as e:
@@ -682,16 +696,11 @@ def _outbound_hostport(o: dict) -> tuple[str, int] | None:
 
 
 def _json_xray_outbounds(obj) -> dict:
-    """{(host,port): outbound} для xray-поддерживаемых outbounds из JSON-конфига."""
+    """{(host,port): outbound} для xray-поддерживаемых outbounds из JSON-конфига
+    (или массива конфигов — формат Happ/v2rayN)."""
     res = {}
-    candidates = []
-    if isinstance(obj, dict):
-        if isinstance(obj.get("outbounds"), list):
-            candidates = obj["outbounds"]
-        elif obj.get("protocol"):
-            candidates = [obj]
-    for o in candidates:
-        if isinstance(o, dict) and o.get("protocol") in XRAY_PROTOS:
+    for o in _collect_outbound_dicts(obj):
+        if o.get("protocol") in XRAY_PROTOS:
             hp = _outbound_hostport(o)
             if hp:
                 oo = {k: v for k, v in o.items() if k != "tag"}
