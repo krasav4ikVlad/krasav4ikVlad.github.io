@@ -96,9 +96,11 @@ users_col = db["users"]
 scripts_col = db["scripts"]
 versions_col = db["versions"]      # история версий скриптов
 access_col = db["access_log"]      # лог обращений к /raw/{slug}
+library_col = db["library"]        # «магазин»: что пользователь добавил себе
 
 VERSIONS_KEEP = 50        # хранить не больше N версий на скрипт
 ACCESS_LOG_TTL_DAYS = 90  # автоудаление записей лога старше N дней (TTL-индекс)
+STORE_DESC_MAX = 600      # длина описания скрипта в магазине
 
 # ----------------------------------------------------------------------------
 # Шифрование секретов в БД (Fernet, ключ выводится из SECRET_KEY).
@@ -588,8 +590,35 @@ h1 {
 }
 .card-url::before { content: "\\21B3  "; color: var(--muted); }
 .card-url:hover { color: var(--lime-soft); border-bottom-color: var(--lime-soft); }
-.card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .card-actions form { display: inline; }
+
+/* магазин */
+.store-desc {
+  color: var(--ink); font-size: 13.5px; line-height: 1.55;
+  margin: 11px 0 14px; white-space: pre-wrap; word-break: break-word;
+}
+.badge {
+  display: inline-block; font-family: var(--mono); font-size: 11px;
+  letter-spacing: .5px; text-transform: uppercase; color: var(--muted);
+  border: 1px solid var(--line-bright); border-radius: 2px; padding: 3px 8px;
+}
+.badge-on { color: var(--lime); border-color: var(--lime); }
+.chip-pub { color: var(--lime); border-color: rgba(198,242,63,.5); cursor: default; }
+.chip-pub:hover { transform: none; box-shadow: none; color: var(--lime); }
+.store-box {
+  background: var(--panel); border: 1px solid var(--line-bright);
+  border-left: 2px solid var(--lime); border-radius: 3px;
+  padding: 16px 18px; margin: 0 0 18px;
+}
+.store-box.published { border-left-color: var(--lime); }
+.store-box-head {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.store-box-head .muted b { color: var(--lime); }
+.store-box textarea { margin-top: 6px; min-height: 64px; }
+.store-box-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 
 /* forms */
 form.editor { animation: rise .55s cubic-bezier(.2, .7, .2, 1) both; }
@@ -1106,6 +1135,8 @@ def page(
   <div class="header-inner">
     <span class="logo"><a class="logo-hub" href="{HUB_URL}" title="На главную nodewiki">nodewiki</a><b>/</b><a class="logo-app" href="/">scripts</a></span>
     <div class="header-actions">
+      <a class="btn btn-sm" href="/store">Магазин</a>
+      <a class="btn btn-sm" href="/library">Библиотека</a>
       <a class="user-chip" href="/settings" title="Настройки">{html.escape(user)}</a>
       <a class="btn btn-sm btn-primary" href="/new">+ Новый скрипт</a>
       <form method="post" action="/logout">
@@ -1157,6 +1188,10 @@ async def lifespan(app: FastAPI):
         await access_col.create_index(
             "ts_dt", expireAfterSeconds=ACCESS_LOG_TTL_DAYS * 24 * 3600
         )
+        # магазин: индекс для витрины + библиотека пользователя
+        await scripts_col.create_index([("published", 1), ("published_at", -1)])
+        await library_col.create_index([("user", 1), ("ref", 1)], unique=True)
+        await library_col.create_index("slug", unique=True)
     except Exception as e:  # не валим старт, если БД временно недоступна
         print(f"[!] Не удалось создать индексы MongoDB: {e}", file=sys.stderr)
     yield
@@ -1392,6 +1427,8 @@ async def index(request: Request, q: str = "", folder: str = "", tag: str = ""):
             f'<a class="chip chip-tag" href="{filt_url(tag=t)}">#{html.escape(t)}</a>'
             for t in row_tags
         )
+        if row.get("published"):
+            chips += f'<span class="chip chip-pub">★ в магазине · ↧{row.get("installs", 0)}</span>'
         meta_chips = f'<div class="chips-row card-chips">{chips}</div>'
         cards.append(f"""
 <div class="card" style="animation-delay: {min(i * 60, 480)}ms">
@@ -1550,6 +1587,50 @@ async def _owned_script(request: Request, script_id: str):
     return user, script
 
 
+def store_panel(row: dict) -> str:
+    """Блок управления публикацией скрипта в магазин (в редакторе)."""
+    sid = str(row["_id"])
+    published = bool(row.get("published"))
+    installs = row.get("installs", 0)
+    desc = html.escape(row.get("store_desc", ""))
+    if published:
+        return f"""
+<div class="store-box published">
+  <div class="store-box-head">
+    <span class="badge badge-on">● опубликован в магазине</span>
+    <span class="muted">добавлений: <b>{installs}</b></span>
+  </div>
+  <p class="muted">Другие пользователи видят название и описание, могут добавить скрипт
+  в свою библиотеку и запускать его, но <b>не видят код и не могут его менять</b>.
+  При изменении содержимого обновление получают все, кто добавил скрипт.</p>
+  <form method="post" action="/scripts/{sid}/publish">
+    <label for="store_desc">Описание для магазина</label>
+    <textarea id="store_desc" name="store_desc" maxlength="{STORE_DESC_MAX}" rows="3"
+      placeholder="Что делает скрипт, для какой ноды/сервиса…">{desc}</textarea>
+    <div class="store-box-actions">
+      <button class="btn btn-sm btn-primary" type="submit">Сохранить описание</button>
+      <button class="btn btn-sm btn-danger" type="submit"
+        formaction="/scripts/{sid}/unpublish">Снять с публикации</button>
+    </div>
+  </form>
+</div>"""
+    return f"""
+<div class="store-box">
+  <div class="store-box-head"><span class="badge">магазин</span>
+    <span class="muted">не опубликован</span></div>
+  <p class="muted">Опубликуйте скрипт в общий магазин: другие смогут найти его по
+  названию и описанию и добавить в свою библиотеку. Код и редактирование им недоступны.</p>
+  <form method="post" action="/scripts/{sid}/publish">
+    <label for="store_desc">Описание для магазина (обязательно)</label>
+    <textarea id="store_desc" name="store_desc" maxlength="{STORE_DESC_MAX}" rows="3" required
+      placeholder="Что делает скрипт, для какой ноды/сервиса…">{desc}</textarea>
+    <div class="store-box-actions">
+      <button class="btn btn-sm btn-primary" type="submit">Опубликовать в магазин</button>
+    </div>
+  </form>
+</div>"""
+
+
 @app.get("/scripts/{script_id}/edit")
 async def edit_form(request: Request, script_id: str = Path(...)):
     user, row = await _owned_script(request, script_id)
@@ -1566,6 +1647,7 @@ async def edit_form(request: Request, script_id: str = Path(...)):
     versions_count = await versions_col.count_documents({"script_id": script_id})
     body = f"""
 <div class="page-head"><div><span class="kicker">редактор</span><h1>Редактирование</h1></div></div>
+{store_panel(row)}
 <div class="share">
   <span class="kicker">прямая ссылка</span>
   <code>{esc_url}</code>
@@ -1691,6 +1773,235 @@ async def duplicate_script(request: Request, script_id: str = Path(...)):
         }
     )
     return RedirectResponse(f"/scripts/{result.inserted_id}/edit", status_code=303)
+
+
+# ---- магазин: публикация, витрина, библиотека -------------------------------
+
+
+async def new_lib_slug() -> str:
+    while True:
+        slug = secrets.token_urlsafe(8)
+        if await library_col.find_one({"slug": slug}) is None \
+                and await scripts_col.find_one({"slug": slug}) is None:
+            return slug
+
+
+@app.post("/scripts/{script_id}/publish")
+async def publish_script(
+    request: Request,
+    script_id: str = Path(...),
+    store_desc: str = Form(""),
+):
+    user, row = await _owned_script(request, script_id)
+    if not user:
+        return login_redirect(request)
+    if row is None:
+        return RedirectResponse("/", status_code=303)
+    desc = store_desc.strip()[:STORE_DESC_MAX]
+    if not desc:  # описание обязательно для магазина
+        return RedirectResponse(f"/scripts/{script_id}/edit", status_code=303)
+    await scripts_col.update_one(
+        {"_id": row["_id"]},
+        {"$set": {
+            "published": True,
+            "store_desc": desc,
+            "owner_name": user["username"],
+            "published_at": row.get("published_at") or now_iso(),
+        }},
+    )
+    return RedirectResponse(f"/scripts/{script_id}/edit", status_code=303)
+
+
+@app.post("/scripts/{script_id}/unpublish")
+async def unpublish_script(request: Request, script_id: str = Path(...)):
+    user, row = await _owned_script(request, script_id)
+    if not user:
+        return login_redirect(request)
+    if row is not None:
+        await scripts_col.update_one(
+            {"_id": row["_id"]}, {"$set": {"published": False}}
+        )
+    return RedirectResponse(f"/scripts/{script_id}/edit", status_code=303)
+
+
+@app.get("/store")
+async def store(request: Request, q: str = ""):
+    user = await current_user(request)
+    if not user:
+        return login_redirect(request)
+    uid = str(user["_id"])
+    q = q.strip()[:100]
+
+    query: dict = {"published": True}
+    if q:
+        rx = {"$regex": re.escape(q), "$options": "i"}
+        query["$or"] = [{"name": rx}, {"store_desc": rx}, {"tags": rx},
+                        {"owner_name": rx}]
+    rows = await scripts_col.find(query).sort("installs", -1).to_list(length=500)
+    # что уже в библиотеке пользователя — чтобы пометить карточки
+    mine = {e["ref"] async for e in library_col.find({"user": uid}, {"ref": 1})}
+
+    toolbar = f"""
+<div class="toolbar">
+  <form class="search-form" method="get" action="/store">
+    <input type="search" name="q" value="{html.escape(q, quote=True)}"
+           placeholder="поиск по названию, описанию, тегам, автору…">
+    <button class="btn" type="submit">Найти</button>
+  </form>
+</div>"""
+
+    if not rows:
+        empty = ('<div class="empty"><div class="glyph">store</div>'
+                 '<p>В магазине пока пусто. Опубликуйте свой скрипт — он появится здесь.</p>'
+                 '<a class="btn btn-primary" href="/">Мои скрипты</a></div>'
+                 if not q else
+                 '<div class="empty"><div class="glyph">not found</div>'
+                 '<p>Ничего не нашлось.</p><a class="btn" href="/store">Сбросить</a></div>')
+        body = (f'<div class="page-head"><div><span class="kicker">магазин</span>'
+                f'<h1>Магазин скриптов</h1></div></div>{toolbar}{empty}')
+        return page("Магазин", body, user=user["username"])
+
+    cards = []
+    for i, row in enumerate(rows):
+        sid = str(row["_id"])
+        installs = row.get("installs", 0)
+        lang = html.escape(script_interp(row)["label"].lower())
+        author = html.escape(row.get("owner_name", "—"))
+        tags = "".join(f'<span class="chip chip-tag">#{html.escape(t)}</span>'
+                       for t in row.get("tags", []))
+        desc = html.escape(row.get("store_desc", "")) or "<i>без описания</i>"
+        is_mine = row.get("owner") == uid
+        in_lib = sid in mine
+        if is_mine:
+            action = '<span class="badge">ваш скрипт</span>'
+        elif in_lib:
+            action = f"""<span class="badge badge-on">● в библиотеке</span>
+    <form method="post" action="/store/{sid}/remove">
+      <button class="btn btn-sm" type="submit">Убрать</button></form>"""
+        else:
+            action = f"""<form method="post" action="/store/{sid}/add">
+      <button class="btn btn-sm btn-primary" type="submit">+ В библиотеку</button></form>"""
+        cards.append(f"""
+<div class="card" style="animation-delay: {min(i * 60, 480)}ms">
+  <div class="card-top">
+    <span class="card-name">{html.escape(row["name"])}</span>
+    <span class="muted">↧ {installs} · автор {author}</span>
+  </div>
+  <div class="chips-row card-chips"><span class="chip chip-lang">{lang}</span>{tags}</div>
+  <p class="store-desc">{desc}</p>
+  <div class="card-actions">{action}</div>
+</div>""")
+    body = (f'<div class="page-head"><div><span class="kicker">магазин</span>'
+            f'<h1>Магазин скриптов</h1></div><span class="muted">скриптов: {len(rows)}</span></div>'
+            f'{toolbar}{"".join(cards)}')
+    return page("Магазин", body, user=user["username"])
+
+
+@app.post("/store/{script_id}/add")
+async def store_add(request: Request, script_id: str = Path(...)):
+    user = await current_user(request)
+    if not user:
+        return login_redirect(request)
+    uid = str(user["_id"])
+    try:
+        oid = ObjectId(script_id)
+    except (InvalidId, TypeError):
+        return RedirectResponse("/store", status_code=303)
+    row = await scripts_col.find_one({"_id": oid, "published": True})
+    if row is None or row.get("owner") == uid:  # нет смысла добавлять свой же
+        return RedirectResponse("/store", status_code=303)
+    # идемпотентно: уже в библиотеке -> ничего не делаем (счётчик не растёт)
+    if await library_col.find_one({"user": uid, "ref": script_id}):
+        return RedirectResponse("/library", status_code=303)
+    try:
+        await library_col.insert_one({
+            "user": uid, "ref": script_id, "slug": await new_lib_slug(),
+            "added_at": now_iso(),
+        })
+    except Exception:  # гонка: параллельный дубль поймал unique-индекс
+        return RedirectResponse("/library", status_code=303)
+    await scripts_col.update_one({"_id": oid}, {"$inc": {"installs": 1}})
+    return RedirectResponse("/library", status_code=303)
+
+
+@app.post("/store/{script_id}/remove")
+async def store_remove(request: Request, script_id: str = Path(...)):
+    user = await current_user(request)
+    if not user:
+        return login_redirect(request)
+    uid = str(user["_id"])
+    res = await library_col.delete_one({"user": uid, "ref": script_id})
+    if res.deleted_count:
+        try:
+            await scripts_col.update_one(
+                {"_id": ObjectId(script_id), "installs": {"$gt": 0}},
+                {"$inc": {"installs": -1}},
+            )
+        except (InvalidId, TypeError):
+            pass
+    ref = request.headers.get("referer", "")
+    back = "/store" if "/store" in ref else "/library"
+    return RedirectResponse(back, status_code=303)
+
+
+@app.get("/library")
+async def library(request: Request):
+    user = await current_user(request)
+    if not user:
+        return login_redirect(request)
+    uid = str(user["_id"])
+    entries = await library_col.find({"user": uid}).sort("_id", -1).to_list(length=500)
+
+    cards = []
+    for i, e in enumerate(entries):
+        try:
+            row = await scripts_col.find_one({"_id": ObjectId(e["ref"])})
+        except (InvalidId, TypeError):
+            row = None
+        if row is None:  # исходный скрипт удалён — чистим запись
+            await library_col.delete_one({"_id": e["_id"]})
+            continue
+        url = raw_url(request, e["slug"])
+        esc_url = html.escape(url, quote=True)
+        cmd = run_command(url, row)
+        lang = html.escape(script_interp(row)["label"].lower())
+        author = html.escape(row.get("owner_name", "—"))
+        installs = row.get("installs", 0)
+        desc = html.escape(row.get("store_desc", "")) or "<i>без описания</i>"
+        tags = "".join(f'<span class="chip chip-tag">#{html.escape(t)}</span>'
+                       for t in row.get("tags", []))
+        gone = "" if row.get("published") else \
+            '<span class="muted"> · снят с публикации автором</span>'
+        cards.append(f"""
+<div class="card" style="animation-delay: {min(i * 60, 480)}ms">
+  <div class="card-top">
+    <span class="card-name">{html.escape(row["name"])}</span>
+    <span class="muted">↧ {installs} · автор {author}{gone}</span>
+  </div>
+  <div class="chips-row card-chips"><span class="chip chip-lang">{lang}</span>{tags}</div>
+  <p class="store-desc">{desc}</p>
+  <a class="card-url" href="{esc_url}" target="_blank" rel="noopener">{esc_url}</a>
+  <div class="card-actions">
+    <button class="btn btn-sm" type="button" data-copy="{esc_url}">Копировать ссылку</button>
+    <button class="btn btn-sm" type="button" data-copy="{html.escape(cmd, quote=True)}">Копировать команду</button>
+    <form method="post" action="/store/{e['ref']}/remove">
+      <button class="btn btn-sm btn-danger" type="submit">Удалить из библиотеки</button>
+    </form>
+  </div>
+</div>""")
+
+    if not cards:
+        body = ('<div class="page-head"><div><span class="kicker">библиотека</span>'
+                '<h1>Моя библиотека</h1></div></div>'
+                '<div class="empty"><div class="glyph">~/library</div>'
+                '<p>Здесь появятся скрипты, которые вы добавили из магазина.</p>'
+                '<a class="btn btn-primary" href="/store">Открыть магазин</a></div>')
+        return page("Библиотека", body, user=user["username"])
+    body = (f'<div class="page-head"><div><span class="kicker">библиотека</span>'
+            f'<h1>Моя библиотека</h1></div><span class="muted">скриптов: {len(cards)}</span></div>'
+            f'<p class="muted">Эти скрипты добавлены из магазина. Код недоступен — '
+            f'их можно только запускать по ссылке. Обновляет их автор.</p>{"".join(cards)}')
+    return page("Библиотека", body, user=user["username"])
 
 
 # ---- лог обращений к ссылке --------------------------------------------------
@@ -2097,8 +2408,20 @@ async def ai_generate(
 
 @app.get("/raw/{slug}")
 async def raw(request: Request, slug: str):
-    """Публичная выдача скрипта — без авторизации, защищено неугадываемым slug."""
+    """Публичная выдача скрипта — без авторизации, защищено неугадываемым slug.
+    slug может быть либо собственным скриптом, либо ссылкой из библиотеки магазина
+    (тогда отдаём содержимое исходного скрипта, подставляя переменные того, кто
+    добавил его себе)."""
     row = await scripts_col.find_one({"slug": slug})
+    subst_owner_id = row.get("owner") if row else None
+    if row is None:  # библиотечная ссылка магазина -> исходный скрипт автора
+        entry = await library_col.find_one({"slug": slug})
+        if entry is not None:
+            try:
+                row = await scripts_col.find_one({"_id": ObjectId(entry["ref"])})
+            except (InvalidId, TypeError):
+                row = None
+            subst_owner_id = entry["user"]  # переменные берём у установившего
     if row is None:
         return PlainTextResponse("Not found\n", status_code=404)
     try:  # лог не должен ломать выдачу скрипта
@@ -2117,9 +2440,9 @@ async def raw(request: Request, slug: str):
         print(f"[!] Не удалось записать лог обращения: {e}", file=sys.stderr)
 
     content = row["content"]
-    if "{{" in content:  # подстановка глобальных переменных владельца
+    if "{{" in content and subst_owner_id:  # подстановка переменных пользователя
         try:
-            owner = await users_col.find_one({"_id": ObjectId(row["owner"])})
+            owner = await users_col.find_one({"_id": ObjectId(subst_owner_id)})
             content = substitute_vars(content, user_variables(owner))
         except Exception as e:
             print(f"[!] Не удалось подставить переменные: {e}", file=sys.stderr)
