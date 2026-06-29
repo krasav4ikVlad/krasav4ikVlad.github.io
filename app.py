@@ -606,6 +606,13 @@ h1 {
 .badge-on { color: var(--lime); border-color: var(--lime); }
 .chip-pub { color: var(--lime); border-color: rgba(198,242,63,.5); cursor: default; }
 .chip-pub:hover { transform: none; box-shadow: none; color: var(--lime); }
+.warn-banner {
+  background: rgba(245, 197, 66, .08); border: 1px solid rgba(245, 197, 66, .5);
+  border-left: 3px solid #f5c542; border-radius: 3px;
+  padding: 13px 16px; margin: 0 0 14px; color: #f0d488;
+  font-size: 13.5px; line-height: 1.55;
+}
+.warn-banner b { color: #ffdf7e; }
 .store-box {
   background: var(--panel); border: 1px solid var(--line-bright);
   border-left: 2px solid var(--lime); border-radius: 3px;
@@ -1600,8 +1607,8 @@ def store_panel(row: dict) -> str:
     <span class="badge badge-on">● опубликован в магазине</span>
     <span class="muted">добавлений: <b>{installs}</b></span>
   </div>
-  <p class="muted">Другие пользователи видят название и описание, могут добавить скрипт
-  в свою библиотеку и запускать его, но <b>не видят код и не могут его менять</b>.
+  <p class="muted">Другие пользователи видят название, описание и код (только для чтения),
+  могут добавить скрипт в свою библиотеку и запускать его, но <b>не могут его менять</b>.
   При изменении содержимого обновление получают все, кто добавил скрипт.</p>
   <form method="post" action="/scripts/{sid}/publish">
     <label for="store_desc">Описание для магазина</label>
@@ -1619,7 +1626,8 @@ def store_panel(row: dict) -> str:
   <div class="store-box-head"><span class="badge">магазин</span>
     <span class="muted">не опубликован</span></div>
   <p class="muted">Опубликуйте скрипт в общий магазин: другие смогут найти его по
-  названию и описанию и добавить в свою библиотеку. Код и редактирование им недоступны.</p>
+  названию и описанию, посмотреть код и добавить в свою библиотеку. Редактировать
+  ваш скрипт они не смогут.</p>
   <form method="post" action="/scripts/{sid}/publish">
     <label for="store_desc">Описание для магазина (обязательно)</label>
     <textarea id="store_desc" name="store_desc" maxlength="{STORE_DESC_MAX}" rows="3" required
@@ -1777,6 +1785,12 @@ async def duplicate_script(request: Request, script_id: str = Path(...)):
 
 # ---- магазин: публикация, витрина, библиотека -------------------------------
 
+STORE_WARNING = (
+    '<div class="warn-banner">⚠ Это чужой скрипт — при запуске он выполнится на '
+    'вашем сервере с вашими правами. <b>Прочитайте код ниже перед использованием</b> '
+    'и убедитесь, что он делает только то, что заявлено в описании.</div>'
+)
+
 
 async def new_lib_slug() -> str:
     while True:
@@ -1889,7 +1903,7 @@ async def store(request: Request, q: str = ""):
   </div>
   <div class="chips-row card-chips"><span class="chip chip-lang">{lang}</span>{tags}</div>
   <p class="store-desc">{desc}</p>
-  <div class="card-actions">{action}</div>
+  <div class="card-actions"><a class="btn btn-sm" href="/store/{sid}">Смотреть код</a>{action}</div>
 </div>""")
     body = (f'<div class="page-head"><div><span class="kicker">магазин</span>'
             f'<h1>Магазин скриптов</h1></div><span class="muted">скриптов: {len(rows)}</span></div>'
@@ -1982,6 +1996,7 @@ async def library(request: Request):
   <p class="store-desc">{desc}</p>
   <a class="card-url" href="{esc_url}" target="_blank" rel="noopener">{esc_url}</a>
   <div class="card-actions">
+    <a class="btn btn-sm" href="/store/{e['ref']}">Смотреть код</a>
     <button class="btn btn-sm" type="button" data-copy="{esc_url}">Копировать ссылку</button>
     <button class="btn btn-sm" type="button" data-copy="{html.escape(cmd, quote=True)}">Копировать команду</button>
     <form method="post" action="/store/{e['ref']}/remove">
@@ -1999,9 +2014,77 @@ async def library(request: Request):
         return page("Библиотека", body, user=user["username"])
     body = (f'<div class="page-head"><div><span class="kicker">библиотека</span>'
             f'<h1>Моя библиотека</h1></div><span class="muted">скриптов: {len(cards)}</span></div>'
-            f'<p class="muted">Эти скрипты добавлены из магазина. Код недоступен — '
-            f'их можно только запускать по ссылке. Обновляет их автор.</p>{"".join(cards)}')
+            f'<p class="muted">Эти скрипты добавлены из магазина. Их можно просматривать '
+            f'и запускать по ссылке, но не редактировать. Обновляет их автор.</p>{"".join(cards)}')
     return page("Библиотека", body, user=user["username"])
+
+
+@app.get("/store/{script_id}")
+async def store_view(request: Request, script_id: str = Path(...)):
+    """Просмотр скрипта из магазина: код доступен только для чтения (не редактировать)."""
+    user = await current_user(request)
+    if not user:
+        return login_redirect(request)
+    uid = str(user["_id"])
+    try:
+        oid = ObjectId(script_id)
+    except (InvalidId, TypeError):
+        return RedirectResponse("/store", status_code=303)
+    row = await scripts_col.find_one({"_id": oid})
+    if row is None:
+        return RedirectResponse("/store", status_code=303)
+    entry = await library_col.find_one({"user": uid, "ref": script_id})
+    is_mine = row.get("owner") == uid
+    # просмотр доступен, если скрипт опубликован, ваш, или уже в библиотеке
+    if not (row.get("published") or is_mine or entry):
+        return RedirectResponse("/store", status_code=303)
+
+    hl_lang = script_interp(row)["hl"]
+    lang = html.escape(script_interp(row)["label"].lower())
+    installs = row.get("installs", 0)
+    author = html.escape(row.get("owner_name", "—"))
+    desc = html.escape(row.get("store_desc", "")) or "<i>без описания</i>"
+    tags = "".join(f'<span class="chip chip-tag">#{html.escape(t)}</span>'
+                   for t in row.get("tags", []))
+
+    runbox, actions = "", ""
+    if is_mine:
+        actions = f'<a class="btn btn-primary" href="/scripts/{script_id}/edit">Открыть в редакторе</a>'
+    elif entry:
+        url = raw_url(request, entry["slug"])
+        esc_url = html.escape(url, quote=True)
+        cmd = run_command(url, row)
+        interp = script_interp(row)
+        runbox = f"""
+<div class="share">
+  <span class="kicker">прямая ссылка</span>
+  <code>{esc_url}</code>
+  <span class="kicker">{"запуск одной командой" if interp["pipe"] else "скачивание"}</span>
+  <code>{html.escape(cmd)}</code>
+  <button class="btn btn-sm" type="button" data-copy="{esc_url}">Копировать ссылку</button>
+  <button class="btn btn-sm" type="button" data-copy="{html.escape(cmd, quote=True)}">Копировать команду</button>
+</div>"""
+        actions = f"""<form method="post" action="/store/{script_id}/remove">
+    <button class="btn btn-danger" type="submit">Удалить из библиотеки</button></form>"""
+    else:
+        runbox = ('<p class="muted">Добавьте скрипт в библиотеку, чтобы получить '
+                  'персональную ссылку запуска.</p>')
+        actions = f"""<form method="post" action="/store/{script_id}/add">
+    <button class="btn btn-primary" type="submit">+ В библиотеку</button></form>"""
+
+    body = f"""
+<div class="page-head">
+  <div><span class="kicker">магазин · просмотр</span><h1>{html.escape(row["name"])}</h1></div>
+  <span class="muted">↧ {installs} · автор {author}</span>
+</div>
+<div class="chips-row card-chips"><span class="chip chip-lang">{lang}</span>{tags}</div>
+<p class="store-desc">{desc}</p>
+{runbox}
+{STORE_WARNING}
+<span class="kicker">содержимое скрипта (только чтение)</span>
+<pre class="code-view"><code class="language-{hl_lang}">{html.escape(row["content"])}</code></pre>
+<div class="form-actions">{actions}<a class="btn" href="/store">← В магазин</a></div>"""
+    return page(f"{row['name']} — магазин", body, user=user["username"], code=True)
 
 
 # ---- лог обращений к ссылке --------------------------------------------------
