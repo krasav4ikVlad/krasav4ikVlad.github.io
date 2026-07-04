@@ -227,6 +227,10 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .toast-err { border-left-color: var(--red); }
 @keyframes slideUp { from { transform: translateY(14px); opacity: 0; } to { transform: none; opacity: 1; } }
 
+.icon { flex-shrink: 0; vertical-align: -3px; }
+.brand-icon svg, .login-logo svg { display: block; }
+.warn-note .icon, .error-note .icon { vertical-align: -2px; margin-right: 2px; }
+
 .spinner {
   display: inline-block; width: 15px; height: 15px;
   border: 2px solid var(--border-2); border-top-color: var(--text);
