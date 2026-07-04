@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
@@ -77,6 +77,16 @@ async def health():
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+def _assets_version() -> str:
+    """Cache-busting token derived from static file mtimes — changes on every deploy."""
+    try:
+        return str(int(max(p.stat().st_mtime for p in STATIC_DIR.iterdir() if p.is_file())))
+    except ValueError:
+        return "0"
+
+
 @app.get("/")
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace("{{v}}", _assets_version())
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
