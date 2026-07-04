@@ -2,8 +2,11 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Панель оператора</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠</text></svg>">
   <link rel="stylesheet" href="/static/styles.css">
@@ -11,16 +14,21 @@
 <body>
   <header id="topbar" class="hidden">
     <div class="topbar-inner">
-      <span class="brand">🛠 Панель оператора</span>
+      <div class="topbar-row1">
+        <span class="brand">
+          <span class="brand-icon">⚡</span>
+          <span>RS Ops<span class="brand-text-full muted-part"> / Панель оператора</span></span>
+        </span>
+        <div class="topbar-right">
+          <span id="me-label"></span>
+          <button class="btn btn-ghost btn-sm" id="logout-btn">Выйти</button>
+        </div>
+      </div>
       <nav>
         <a href="#/search" data-nav="search">Поиск</a>
         <a href="#/audit" data-nav="audit" class="owner-only hidden">Аудит-лог</a>
         <a href="#/operators" data-nav="operators" class="owner-only hidden">Операторы</a>
       </nav>
-      <div class="topbar-right">
-        <span id="me-label"></span>
-        <button class="btn btn-ghost" id="logout-btn">Выйти</button>
-      </div>
     </div>
   </header>
 

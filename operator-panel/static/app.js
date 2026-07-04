@@ -57,6 +57,11 @@ function fmtBytes(b) {
   return (b / GB).toFixed(2).replace(/\.00$/, '') + ' ГБ';
 }
 
+function fmtNum(n) {
+  const v = Number(n);
+  return isNaN(v) ? esc(n) : v.toLocaleString('ru-RU');
+}
+
 function parseTs(v) {
   if (!v) return null;
   if (/^\d{2}\.\d{2}\.\d{4}/.test(v)) {
@@ -215,6 +220,7 @@ function viewLogin() {
   $topbar.classList.add('hidden');
   $view.innerHTML = `
     <div class="login-wrap"><div class="card login-card">
+      <div class="login-logo">⚡</div>
       <h1>Панель оператора</h1>
       <form id="login-form">
         <div class="field"><label>Логин</label><input name="login" required autocomplete="username"></div>
@@ -275,7 +281,7 @@ function viewSearch() {
             <td class="mono">${esc(u.user_id)}</td>
             <td>${u.username ? '@' + esc(u.username) : '—'}</td>
             <td>${esc(u.first_name || '—')}</td>
-            <td>${esc(u.balance)} ₽</td>
+            <td>${fmtNum(u.balance)} ₽</td>
             <td>${subBadge(u.expire_at)}</td>
             <td>${esc(u.email || '—')}</td>
             <td>${esc(u.segment || '—')}</td>
@@ -316,12 +322,12 @@ async function viewUser(userId) {
       </div>
 
       <div class="stats-grid">
-        <div class="stat"><div class="stat-label">Баланс</div><div class="stat-value">${esc(u.balance)} ₽</div></div>
+        <div class="stat"><div class="stat-label">Баланс</div><div class="stat-value">${fmtNum(u.balance)} ₽</div></div>
         <div class="stat"><div class="stat-label">Подписка до</div><div class="stat-value">${fmtDate(vpn.expireAt)}</div></div>
         <div class="stat"><div class="stat-label">Лимит устройств</div><div class="stat-value">${esc(vpn.hwidDeviceLimit ?? '—')}</div></div>
         <div class="stat"><div class="stat-label">ByPass до</div><div class="stat-value">${fmtDate(vpn.bypass_expireAt)}</div></div>
         <div class="stat"><div class="stat-label">ByPass трафик</div><div class="stat-value">${fmtBytes(vpn.bypass_trafficLimitBytes)}</div></div>
-        <div class="stat"><div class="stat-label">Реф. баланс</div><div class="stat-value">${esc(u.ref_withdrawable)} ₽</div></div>
+        <div class="stat"><div class="stat-label">Реф. баланс</div><div class="stat-value">${fmtNum(u.ref_withdrawable)} ₽</div></div>
         <div class="stat"><div class="stat-label">Email</div><div class="stat-value" style="font-size:14px">${esc(u.email || '—')}</div></div>
         <div class="stat"><div class="stat-label">Сегмент</div><div class="stat-value" style="font-size:14px">${esc((u.growth || {}).segment || '—')}</div></div>
       </div>
@@ -506,8 +512,8 @@ async function tabReferrals($c, userId) {
     const d = await api(`/api/users/${userId}/referrals`);
     $c.innerHTML = `<h2>Реферальная статистика</h2>
       <div class="stats-grid" style="margin-bottom:16px">
-        <div class="stat"><div class="stat-label">Доступно к выводу</div><div class="stat-value">${esc(d.withdrawable)} ₽</div></div>
-        <div class="stat"><div class="stat-label">Заработано всего</div><div class="stat-value">${esc(d.earned_total)} ₽</div></div>
+        <div class="stat"><div class="stat-label">Доступно к выводу</div><div class="stat-value">${fmtNum(d.withdrawable)} ₽</div></div>
+        <div class="stat"><div class="stat-label">Заработано всего</div><div class="stat-value">${fmtNum(d.earned_total)} ₽</div></div>
         <div class="stat"><div class="stat-label">Рефералов</div><div class="stat-value">${(d.referrals || []).length}</div></div>
         <div class="stat"><div class="stat-label">Пригласил</div><div class="stat-value" style="font-size:14px">${esc(d.referrer || '—')}</div></div>
       </div>
