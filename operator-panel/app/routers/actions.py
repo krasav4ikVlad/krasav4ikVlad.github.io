@@ -142,16 +142,18 @@ async def change_subscription_expire(user_id: int, body: SubscriptionExpireReque
 
     synced, sync_err = await _sync_remnawave(vpn=vpn, force_local=body.force_local,
                                              expire_at=new_iso)
+    # The bot stores expireAt as a native BSON Date (it calls .strftime on it) —
+    # write a datetime, never a string, or the bot crashes rendering the date.
     await users_col().update_one({"user_data.user_id": user_id},
-                                 {"$set": {"vpn.expireAt": new_iso}})
+                                 {"$set": {"vpn.expireAt": new_dt}})
     await write_audit(
         operator=operator, action=audit.ACTION_SUB_EXPIRE, target_user_id=user_id,
-        old_value={"expireAt": old_expire}, new_value={"expireAt": new_iso},
+        old_value={"expireAt": jsonable(old_expire)}, new_value={"expireAt": new_iso},
         reason=body.reason, ip=client_ip(request),
         remnawave_synced=synced, remnawave_error=sync_err,
         extra={"days": body.days} if body.days is not None else None,
     )
-    return {"ok": True, "old_expire_at": old_expire, "new_expire_at": new_iso,
+    return {"ok": True, "old_expire_at": jsonable(old_expire), "new_expire_at": new_iso,
             "remnawave_synced": synced, "remnawave_error": sync_err}
 
 
@@ -202,13 +204,14 @@ async def update_bypass(user_id: int, body: BypassUpdateRequestFull,
     old_bytes = vpn.get("bypass_trafficLimitBytes") or 0
 
     updates: dict = {}
-    new_expire_iso = None
+    new_expire_dt = None
     if body.days is not None:
-        new_expire_iso = to_iso_z(shift_expire(old_expire, body.days))
+        new_expire_dt = shift_expire(old_expire, body.days)
     elif body.expire_at is not None:
-        new_expire_iso = to_iso_z(parse_any_ts(body.expire_at))
-    if new_expire_iso:
-        updates["vpn.bypass_expireAt"] = new_expire_iso
+        new_expire_dt = parse_any_ts(body.expire_at)
+    if new_expire_dt:
+        # native datetime — same reason as vpn.expireAt: the bot strftime's it
+        updates["vpn.bypass_expireAt"] = new_expire_dt
 
     new_bytes = None
     if body.traffic_limit_gb is not None:
@@ -228,8 +231,8 @@ async def update_bypass(user_id: int, body: BypassUpdateRequestFull,
     await users_col().update_one({"user_data.user_id": user_id}, {"$set": updates})
     await write_audit(
         operator=operator, action=audit.ACTION_BYPASS_UPDATE, target_user_id=user_id,
-        old_value={"bypass_expireAt": old_expire, "bypass_trafficLimitBytes": old_bytes},
-        new_value={"bypass_expireAt": new_expire_iso or old_expire,
+        old_value={"bypass_expireAt": jsonable(old_expire), "bypass_trafficLimitBytes": old_bytes},
+        new_value={"bypass_expireAt": jsonable(new_expire_dt or old_expire),
                    "bypass_trafficLimitBytes": new_bytes if new_bytes is not None else old_bytes},
         reason=body.reason, ip=client_ip(request),
         remnawave_synced=synced, remnawave_error=sync_err,
@@ -324,11 +327,13 @@ async def gift(user_id: int, body: GiftRequestFull, request: Request, operator: 
     old_bytes = vpn.get("bypass_trafficLimitBytes") or 0
 
     updates: dict = {}
+    new_expire_dt = None
     new_expire_iso = None
     new_bytes = None
     if body.days is not None:
-        new_expire_iso = to_iso_z(shift_expire(old_expire, body.days))
-        updates["vpn.expireAt"] = new_expire_iso
+        new_expire_dt = shift_expire(old_expire, body.days)
+        new_expire_iso = to_iso_z(new_expire_dt)
+        updates["vpn.expireAt"] = new_expire_dt  # native datetime, the bot strftime's it
     if body.bypass_gb is not None:
         new_bytes = int(old_bytes + body.bypass_gb * GB)
         updates["vpn.bypass_trafficLimitBytes"] = new_bytes
@@ -340,8 +345,8 @@ async def gift(user_id: int, body: GiftRequestFull, request: Request, operator: 
     await users_col().update_one({"user_data.user_id": user_id}, {"$set": updates})
     await write_audit(
         operator=operator, action=audit.ACTION_GIFT, target_user_id=user_id,
-        old_value={"expireAt": old_expire, "bypass_trafficLimitBytes": old_bytes},
-        new_value={"expireAt": new_expire_iso or old_expire,
+        old_value={"expireAt": jsonable(old_expire), "bypass_trafficLimitBytes": old_bytes},
+        new_value={"expireAt": new_expire_iso or jsonable(old_expire),
                    "bypass_trafficLimitBytes": new_bytes if new_bytes is not None else old_bytes},
         reason=body.reason, ip=client_ip(request),
         remnawave_synced=synced, remnawave_error=sync_err,
