@@ -40,7 +40,7 @@ async def login(body: LoginRequest, request: Request):
 
     settings = get_settings()
     operators = get_db()[settings.operators_collection]
-    operator = await operators.find_one({"login": body.login})
+    operator = await operators.find_one({"login": body.login.strip().lower()})
 
     if operator is None or not verify_password(body.password, operator.get("password_hash", "")):
         register_failed_login(body.login, ip)
