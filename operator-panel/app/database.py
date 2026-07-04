@@ -26,24 +26,39 @@ def get_db() -> AsyncIOMotorDatabase:
     return get_client()[get_settings().mongo_db]
 
 
+async def _safe_create_index(collection, keys, **opts) -> None:
+    """create_index that tolerates an equivalent index already existing under a
+    different name / options (the bot may have created its own indexes on `users`).
+    IndexOptionsConflict=85, IndexKeySpecsConflict=86."""
+    from pymongo.errors import OperationFailure
+
+    try:
+        await collection.create_index(keys, **opts)
+    except OperationFailure as e:
+        if e.code in (85, 86):
+            log.info("Index on %s %s already exists (bot-owned), skipping", collection.name, keys)
+        else:
+            raise
+
+
 async def ensure_indexes() -> None:
-    """Create the indexes the panel relies on. Idempotent."""
+    """Create the indexes the panel relies on. Idempotent, tolerant of bot-owned indexes."""
     settings = get_settings()
     db = get_db()
 
     users = db[settings.users_collection]
-    await users.create_index("user_data.user_id", name="op_panel_user_id")
-    await users.create_index("user_data.username", name="op_panel_username")
-    await users.create_index("info.email", name="op_panel_email", sparse=True)
+    await _safe_create_index(users, "user_data.user_id")
+    await _safe_create_index(users, "user_data.username")
+    await _safe_create_index(users, "info.email", sparse=True)
 
     audit = db[settings.audit_collection]
-    await audit.create_index([("timestamp", -1)], name="op_audit_ts")
-    await audit.create_index([("operator_id", 1), ("timestamp", -1)], name="op_audit_operator")
-    await audit.create_index([("target_user_id", 1), ("timestamp", -1)], name="op_audit_target")
-    await audit.create_index([("action", 1), ("timestamp", -1)], name="op_audit_action")
+    await _safe_create_index(audit, [("timestamp", -1)])
+    await _safe_create_index(audit, [("operator_id", 1), ("timestamp", -1)])
+    await _safe_create_index(audit, [("target_user_id", 1), ("timestamp", -1)])
+    await _safe_create_index(audit, [("action", 1), ("timestamp", -1)])
 
     operators = db[settings.operators_collection]
-    await operators.create_index("login", unique=True, name="op_login_unique")
+    await _safe_create_index(operators, "login", unique=True)
 
     log.info("MongoDB indexes ensured")
 
