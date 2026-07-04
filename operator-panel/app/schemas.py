@@ -21,11 +21,25 @@ class TokenResponse(BaseModel):
 
 # ---------------------------------------------------------------- operators (owner)
 
+def _validate_permission_keys(v: dict[str, bool] | None) -> dict[str, bool] | None:
+    if v is None:
+        return v
+    from .security import PERMISSIONS
+    unknown = set(v) - set(PERMISSIONS)
+    if unknown:
+        raise ValueError(f"Неизвестные права: {', '.join(sorted(unknown))}")
+    return {k: bool(val) for k, val in v.items()}
+
+
 class OperatorCreate(BaseModel):
     login: str = Field(min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_.-]+$")
     password: str = Field(min_length=8, max_length=128)
     name: str = Field(min_length=1, max_length=128)
     role: Literal["operator", "owner"] = "operator"
+    permissions: dict[str, bool] | None = Field(
+        default=None, description="Права оператора; None = все разрешены")
+
+    _perm_keys = field_validator("permissions")(_validate_permission_keys)
 
 
 class OperatorUpdate(BaseModel):
@@ -33,6 +47,9 @@ class OperatorUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=8, max_length=128)
     role: Literal["operator", "owner"] | None = None
     active: bool | None = None
+    permissions: dict[str, bool] | None = None
+
+    _perm_keys = field_validator("permissions")(_validate_permission_keys)
 
 
 class OperatorPublic(BaseModel):
@@ -41,6 +58,7 @@ class OperatorPublic(BaseModel):
     name: str
     role: str
     active: bool
+    permissions: dict[str, bool]  # effective (resolved) permission map
     created_at: str | None = None
     last_login_at: str | None = None
 

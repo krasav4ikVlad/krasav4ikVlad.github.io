@@ -62,26 +62,6 @@ function fmtNum(n) {
   return isNaN(v) ? esc(n) : v.toLocaleString('ru-RU');
 }
 
-// Inline SVG icons (feather-style, stroke = currentColor)
-const SVG_PATHS = {
-  zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
-  wallet: '<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>',
-  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
-  smartphone: '<rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/>',
-  unlock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
-  gift: '<polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/>',
-  mail: '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>',
-  unplug: '<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>',
-  alert: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
-  search: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
-};
-
-function svgIcon(name, size = 16) {
-  return `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" ` +
-    `stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ` +
-    `aria-hidden="true">${SVG_PATHS[name] || ''}</svg>`;
-}
-
 function parseTs(v) {
   if (!v) return null;
   if (/^\d{2}\.\d{2}\.\d{4}/.test(v)) {
@@ -106,6 +86,22 @@ function subBadge(expireAt) {
   if (days < 0) return `<span class="badge badge-red">истекла ${fmtDate(expireAt)}</span>`;
   if (days <= 3) return `<span class="badge badge-yellow">истекает через ${days} дн.</span>`;
   return `<span class="badge badge-green">активна до ${fmtDate(expireAt)} (${days} дн.)</span>`;
+}
+
+const PERM_LABELS = {
+  balance_change: 'Изменение баланса',
+  subscription_expire_change: 'Срок подписки',
+  device_limit_change: 'Лимит устройств',
+  bypass_update: 'ByPass (срок и трафик)',
+  device_reset: 'Отвязка устройств',
+  email_change: 'Изменение email',
+  gift: 'Подарки (дни / ГБ)',
+};
+
+function can(key) {
+  if (!S.me) return false;
+  if (S.me.role === 'owner') return true;
+  return !!(S.me.permissions && S.me.permissions[key]);
 }
 
 function toast(msg, kind = 'ok') {
@@ -179,7 +175,7 @@ function showConfirmStep(cfg, req, remnaError = null) {
       <label style="margin-top:10px; display:flex; gap:8px; align-items:center; color:var(--text)">
         <input type="checkbox" id="force-local" style="width:auto"> Применить только в базе (без синхронизации с нодами)
       </label>` : ''}
-    ${req.danger ? `<div class="warn-note">${svgIcon('alert', 14)} Действие необратимо. Проверьте данные перед подтверждением.</div>` : ''}
+    ${req.danger ? '<div class="warn-note">Действие необратимо. Проверьте данные перед подтверждением.</div>' : ''}
     <div class="modal-actions">
       <button class="btn btn-ghost" id="c-back">Назад</button>
       <button class="btn ${req.danger ? 'btn-danger' : ''}" id="c-ok">Подтвердить</button>
@@ -240,7 +236,6 @@ function viewLogin() {
   $topbar.classList.add('hidden');
   $view.innerHTML = `
     <div class="login-wrap"><div class="card login-card">
-      <div class="login-logo">${svgIcon('zap', 22)}</div>
       <h1>Панель оператора</h1>
       <form id="login-form">
         <div class="field"><label>Логин</label><input name="login" required autocomplete="username"></div>
@@ -353,13 +348,13 @@ async function viewUser(userId) {
       </div>
 
       <div class="actions-bar">
-        <button class="btn" id="act-balance">${svgIcon('wallet')} Баланс</button>
-        <button class="btn" id="act-expire">${svgIcon('calendar')} Срок подписки</button>
-        <button class="btn" id="act-devlimit">${svgIcon('smartphone')} Лимит устройств</button>
-        <button class="btn" id="act-bypass">${svgIcon('unlock')} ByPass</button>
-        <button class="btn" id="act-gift">${svgIcon('gift')} Подарить</button>
-        <button class="btn btn-ghost" id="act-email">${svgIcon('mail')} Email</button>
-        <button class="btn btn-danger" id="act-devreset">${svgIcon('unplug')} Отвязать устройства</button>
+        ${can('balance_change') ? '<button class="btn" id="act-balance">Баланс</button>' : ''}
+        ${can('subscription_expire_change') ? '<button class="btn" id="act-expire">Срок подписки</button>' : ''}
+        ${can('device_limit_change') ? '<button class="btn" id="act-devlimit">Лимит устройств</button>' : ''}
+        ${can('bypass_update') ? '<button class="btn" id="act-bypass">ByPass</button>' : ''}
+        ${can('gift') ? '<button class="btn" id="act-gift">Подарить</button>' : ''}
+        ${can('email_change') ? '<button class="btn btn-ghost" id="act-email">Email</button>' : ''}
+        ${can('device_reset') ? '<button class="btn btn-danger" id="act-devreset">Отвязать устройства</button>' : ''}
       </div>
     </div>
 
@@ -373,13 +368,14 @@ async function viewUser(userId) {
     <div class="card" id="tab-content"></div>`;
 
   // -------- action buttons
-  document.getElementById('act-balance').onclick = () => modalBalance(userId, u, reload);
-  document.getElementById('act-expire').onclick = () => modalExpire(userId, vpn, reload);
-  document.getElementById('act-devlimit').onclick = () => modalDeviceLimit(userId, vpn, reload);
-  document.getElementById('act-bypass').onclick = () => modalBypass(userId, vpn, reload);
-  document.getElementById('act-gift').onclick = () => modalGift(userId, vpn, reload);
-  document.getElementById('act-email').onclick = () => modalEmail(userId, u, reload);
-  document.getElementById('act-devreset').onclick = () => modalDeviceReset(userId, reload);
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  on('act-balance', () => modalBalance(userId, u, reload));
+  on('act-expire', () => modalExpire(userId, vpn, reload));
+  on('act-devlimit', () => modalDeviceLimit(userId, vpn, reload));
+  on('act-bypass', () => modalBypass(userId, vpn, reload));
+  on('act-gift', () => modalGift(userId, vpn, reload));
+  on('act-email', () => modalEmail(userId, u, reload));
+  on('act-devreset', () => modalDeviceReset(userId, reload));
 
   // -------- tabs
   const $tabs = document.getElementById('tabs');
@@ -558,7 +554,7 @@ async function tabDevices($c, userId) {
           <td class="mono">${esc(dev.hwid || '')}</td>
           <td>${esc(dev.platform || '—')}</td>
           <td>${esc(dev.deviceModel || dev.model || '—')}</td>
-          <td><button class="btn btn-danger btn-sm" data-hwid="${esc(dev.hwid || '')}">Отвязать</button></td>
+          <td>${can('device_reset') ? `<button class="btn btn-danger btn-sm" data-hwid="${esc(dev.hwid || '')}">Отвязать</button>` : ''}</td>
         </tr>`).join('')}
       </table></div>` : '<div class="center">Привязанных устройств нет</div>'}
       ${(d.extra_devices || []).length ? `<h2 style="margin-top:16px">Доп. устройства (extraDevices)</h2>
@@ -889,7 +885,8 @@ async function loadOperatorList() {
       ${ops.map(o => `<tr>
         <td class="mono">${esc(o.login)}</td>
         <td>${esc(o.name)}</td>
-        <td><span class="badge ${o.role === 'owner' ? 'badge-yellow' : 'badge-blue'}">${esc(o.role)}</span></td>
+        <td><span class="badge ${o.role === 'owner' ? 'badge-yellow' : 'badge-blue'}">${esc(o.role)}</span>
+          ${o.role === 'operator' ? `<div class="muted" style="font-size:11.5px;margin-top:3px">прав: ${Object.values(o.permissions || {}).filter(Boolean).length}/${Object.keys(PERM_LABELS).length}</div>` : ''}</td>
         <td>${o.active ? '<span class="badge badge-green">активен</span>' : '<span class="badge badge-red">отключён</span>'}</td>
         <td class="mono">${fmtDate(o.last_login_at)}</td>
         <td><button class="btn btn-ghost btn-sm" data-edit="${esc(o.id)}">Изменить</button></td>
@@ -904,6 +901,32 @@ async function loadOperatorList() {
   }
 }
 
+function permCheckboxesHtml(perms) {
+  return `<div class="field" id="perm-block">
+    <label>Права оператора</label>
+    <div class="perm-grid">
+      ${Object.entries(PERM_LABELS).map(([k, l]) => `
+        <label class="perm-item"><input type="checkbox" name="perm_${k}"
+          ${!perms || perms[k] ? 'checked' : ''}> ${l}</label>`).join('')}
+    </div>
+  </div>`;
+}
+
+function readPermCheckboxes($m) {
+  const out = {};
+  Object.keys(PERM_LABELS).forEach(k => {
+    out[k] = $m.querySelector(`[name=perm_${k}]`).checked;
+  });
+  return out;
+}
+
+function bindRolePermToggle($m) {
+  const roleSel = $m.querySelector('[name=role]');
+  const toggle = () => $m.querySelector('#perm-block').classList.toggle('hidden', roleSel.value === 'owner');
+  roleSel.addEventListener('change', toggle);
+  toggle();
+}
+
 function modalOperatorCreate() {
   const $m = openModal(`
     <h2>Новый оператор</h2>
@@ -913,19 +936,20 @@ function modalOperatorCreate() {
       <div class="field"><label>Пароль (мин. 8 символов)</label><input name="password" type="password" required minlength="8"></div>
       <div class="field"><label>Роль</label>
         <select name="role"><option value="operator">operator</option><option value="owner">owner</option></select></div>
+      ${permCheckboxesHtml(null)}
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" onclick="closeModal()">Отмена</button>
         <button type="submit" class="btn">Создать</button>
       </div>
     </form>`);
+  bindRolePermToggle($m);
   $m.querySelector('#op-form').addEventListener('submit', async e => {
     e.preventDefault();
     const f = e.target;
     try {
-      await api('/api/operators', {
-        method: 'POST',
-        body: { login: f.login.value.trim(), name: f.name.value.trim(), password: f.password.value, role: f.role.value },
-      });
+      const body = { login: f.login.value.trim(), name: f.name.value.trim(), password: f.password.value, role: f.role.value };
+      if (body.role === 'operator') body.permissions = readPermCheckboxes($m);
+      await api('/api/operators', { method: 'POST', body });
       closeModal();
       toast('Оператор создан ✓');
       loadOperatorList();
@@ -946,6 +970,7 @@ function modalOperatorEdit(op) {
           <option value="operator" ${op.role === 'operator' ? 'selected' : ''}>operator</option>
           <option value="owner" ${op.role === 'owner' ? 'selected' : ''}>owner</option>
         </select></div>
+      ${permCheckboxesHtml(op.permissions)}
       <label style="display:flex;gap:8px;align-items:center;color:var(--text)">
         <input type="checkbox" name="active" style="width:auto" ${op.active ? 'checked' : ''}> Учётка активна
       </label>
@@ -954,10 +979,12 @@ function modalOperatorEdit(op) {
         <button type="submit" class="btn">Сохранить</button>
       </div>
     </form>`);
+  bindRolePermToggle($m);
   $m.querySelector('#op-form').addEventListener('submit', async e => {
     e.preventDefault();
     const f = e.target;
     const body = { name: f.name.value.trim(), role: f.role.value, active: f.active.checked };
+    if (f.role.value === 'operator') body.permissions = readPermCheckboxes($m);
     if (f.password.value) body.password = f.password.value;
     try {
       await api('/api/operators/' + op.id, { method: 'PATCH', body });

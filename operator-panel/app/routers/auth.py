@@ -14,6 +14,7 @@ from ..security import (
     create_access_token,
     register_failed_login,
     reset_login_attempts,
+    resolved_permissions,
     verify_password,
 )
 from ..utils import to_iso_z, utcnow
@@ -28,6 +29,7 @@ def operator_public(op: dict) -> OperatorPublic:
         name=op.get("name", ""),
         role=op.get("role", "operator"),
         active=op.get("active", False),
+        permissions=resolved_permissions(op),
         created_at=to_iso_z(op["created_at"]) if op.get("created_at") else None,
         last_login_at=to_iso_z(op["last_login_at"]) if op.get("last_login_at") else None,
     )

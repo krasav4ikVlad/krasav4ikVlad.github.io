@@ -26,7 +26,7 @@ from ..schemas import (
     GiftRequestFull,
     SubscriptionExpireRequestFull,
 )
-from ..security import CurrentOperator, client_ip
+from ..security import CurrentOperator, client_ip, ensure_permission
 from ..user_service import find_user_or_404, users_col
 from ..utils import GB, bot_ts_now, jsonable, parse_any_ts, shift_expire, to_iso_z, utcnow
 
@@ -40,6 +40,7 @@ router = APIRouter(prefix="/api/users", tags=["actions"])
 async def change_balance(user_id: int, body: BalanceChangeRequest, request: Request,
                          operator: CurrentOperator):
     """Начислить (amount > 0) или списать (amount < 0) любую сумму. Атомарно."""
+    ensure_permission(operator, audit.ACTION_BALANCE_CHANGE)
     amount = round(float(body.amount), 2)
     if amount == int(amount):
         amount = int(amount)
@@ -126,6 +127,7 @@ async def _sync_remnawave(
 async def change_subscription_expire(user_id: int, body: SubscriptionExpireRequestFull,
                                      request: Request, operator: CurrentOperator):
     """Продлить/сократить подписку на N дней или задать точную дату."""
+    ensure_permission(operator, audit.ACTION_SUB_EXPIRE)
     if (body.days is None) == (body.expire_at is None):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             "Укажите ровно одно: days или expire_at")
@@ -162,6 +164,7 @@ async def change_subscription_expire(user_id: int, body: SubscriptionExpireReque
 @router.post("/{user_id}/subscription/device-limit")
 async def change_device_limit(user_id: int, body: DeviceLimitRequestFull,
                               request: Request, operator: CurrentOperator):
+    ensure_permission(operator, audit.ACTION_DEVICE_LIMIT)
     doc = await find_user_or_404(user_id, projection={"vpn": 1})
     vpn = doc.get("vpn") or {}
     old_limit = vpn.get("hwidDeviceLimit")
@@ -189,6 +192,7 @@ async def update_bypass(user_id: int, body: BypassUpdateRequestFull,
                         request: Request, operator: CurrentOperator):
     """Срок ByPass и/или лимит трафика. traffic_limit_gb — абсолютное значение,
     add_traffic_gb — прибавка (может быть отрицательной)."""
+    ensure_permission(operator, audit.ACTION_BYPASS_UPDATE)
     if body.traffic_limit_gb is not None and body.add_traffic_gb is not None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             "Укажите либо traffic_limit_gb, либо add_traffic_gb")
@@ -267,6 +271,7 @@ async def reset_devices(user_id: int, body: DeviceResetRequest,
                         request: Request, operator: CurrentOperator):
     """Отвязать одно устройство (hwid) или все. Привязки живут в Remnawave —
     force_local здесь не имеет смысла, при ошибке операция просто не выполняется."""
+    ensure_permission(operator, audit.ACTION_DEVICE_RESET)
     doc = await find_user_or_404(user_id, projection={"vpn.uuid": 1})
     uuid = (doc.get("vpn") or {}).get("uuid")
     if not uuid:
@@ -296,6 +301,7 @@ async def reset_devices(user_id: int, body: DeviceResetRequest,
 @router.post("/{user_id}/email")
 async def change_email(user_id: int, body: EmailChangeRequest,
                        request: Request, operator: CurrentOperator):
+    ensure_permission(operator, audit.ACTION_EMAIL_CHANGE)
     doc = await find_user_or_404(user_id, projection={"info.email": 1})
     old_email = (doc.get("info") or {}).get("email")
     new_email = str(body.email).lower()
@@ -317,6 +323,7 @@ async def change_email(user_id: int, body: EmailChangeRequest,
 @router.post("/{user_id}/gift")
 async def gift(user_id: int, body: GiftRequestFull, request: Request, operator: CurrentOperator):
     """Подарить дни подписки и/или гигабайты ByPass одним действием."""
+    ensure_permission(operator, audit.ACTION_GIFT)
     if body.days is None and body.bypass_gb is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             "Укажите days и/или bypass_gb")

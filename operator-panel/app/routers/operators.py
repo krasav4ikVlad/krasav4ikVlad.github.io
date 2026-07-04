@@ -45,6 +45,7 @@ async def create_operator(body: OperatorCreate, request: Request, owner: OwnerOp
         "password_hash": hash_password(body.password),
         "name": body.name.strip(),
         "role": body.role,
+        "permissions": body.permissions,  # None = все права
         "active": True,
         "created_at": utcnow(),
         "created_by": str(owner["_id"]),
@@ -88,6 +89,9 @@ async def update_operator(operator_id: str, body: OperatorUpdate,
     if body.active is not None:
         updates["active"] = body.active
         changed_public["active"] = body.active
+    if body.permissions is not None:
+        updates["permissions"] = body.permissions
+        changed_public["permissions"] = body.permissions
     if body.password is not None:
         updates["password_hash"] = hash_password(body.password)
         changed_public["password"] = "***changed***"

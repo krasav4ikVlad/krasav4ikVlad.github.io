@@ -20,6 +20,38 @@ from .utils import utcnow
 ROLE_OPERATOR = "operator"
 ROLE_OWNER = "owner"
 
+# Granular operator permissions. Keys match audit action types.
+# View access (search / card / histories) is always allowed for any active account.
+PERMISSIONS: dict[str, str] = {
+    "balance_change": "Изменение баланса",
+    "subscription_expire_change": "Срок подписки",
+    "device_limit_change": "Лимит устройств",
+    "bypass_update": "ByPass (срок и трафик)",
+    "device_reset": "Отвязка устройств",
+    "email_change": "Изменение email",
+    "gift": "Подарки (дни / ГБ)",
+}
+
+
+def resolved_permissions(operator: dict) -> dict[str, bool]:
+    """Effective permission map. Owner → everything; operator without an explicit
+    `permissions` field (legacy account) → everything; otherwise per-key flags."""
+    if operator.get("role") == ROLE_OWNER:
+        return {k: True for k in PERMISSIONS}
+    stored = operator.get("permissions")
+    if stored is None:
+        return {k: True for k in PERMISSIONS}
+    return {k: bool(stored.get(k)) for k in PERMISSIONS}
+
+
+def ensure_permission(operator: dict, key: str) -> None:
+    if not resolved_permissions(operator).get(key, False):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"У вашей учётной записи нет права «{PERMISSIONS.get(key, key)}». "
+            f"Обратитесь к владельцу.",
+        )
+
 _bearer = HTTPBearer(auto_error=False)
 
 
