@@ -1,13 +1,17 @@
 """Async client for the Remnawave panel REST API.
 
-Endpoints used (Remnawave v1.x):
+Endpoints used (verified against the official OpenAPI spec, Remnawave API v2.8.0,
+https://docs.rw/api):
     GET    /api/users/{uuid}                  — fetch user
-    PATCH  /api/users                         — update user (body includes uuid)
+    PATCH  /api/users                         — update user (body includes uuid;
+                                                fields: expireAt, trafficLimitBytes,
+                                                hwidDeviceLimit, ...)
     GET    /api/hwid/devices/{userUuid}       — list bound HWID devices
     POST   /api/hwid/devices/delete           — unbind one device {userUuid, hwid}
+    POST   /api/hwid/devices/delete-all       — unbind all devices {userUuid}
 
-If your Remnawave version uses different paths, adjust them here — everything else
-in the app talks only to this module.
+Auth: Bearer JWT. If your Remnawave version uses different paths, adjust them
+here — everything else in the app talks only to this module.
 
 Field mapping (MongoDB -> Remnawave user):
     vpn.uuid                     -> uuid
@@ -116,24 +120,10 @@ class RemnawaveClient:
         await self._request("POST", "/api/hwid/devices/delete", json={"userUuid": user_uuid, "hwid": hwid})
 
     async def delete_all_devices(self, user_uuid: str) -> int:
-        """Unbind every device; returns how many were removed."""
+        """Unbind every device in one call; returns how many were bound before."""
         devices = await self.get_devices(user_uuid)
-        removed = 0
-        errors: list[str] = []
-        for device in devices:
-            hwid = device.get("hwid")
-            if not hwid:
-                continue
-            try:
-                await self.delete_device(user_uuid, hwid)
-                removed += 1
-            except RemnawaveError as e:
-                errors.append(f"{hwid}: {e.message}")
-        if errors:
-            raise RemnawaveError(
-                f"Отвязано {removed} из {len(devices)}; ошибки: {'; '.join(errors[:3])}"
-            )
-        return removed
+        await self._request("POST", "/api/hwid/devices/delete-all", json={"userUuid": user_uuid})
+        return len(devices)
 
 
 def get_remnawave() -> RemnawaveClient:

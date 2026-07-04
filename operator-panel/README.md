@@ -160,16 +160,19 @@ db.grantRolesToUser("operator_panel", ["auditAppendOnly"])
 
 ## Синхронизация с Remnawave
 
-`app/remnawave.py`, используются эндпоинты Remnawave v1.x:
+`app/remnawave.py`, эндпоинты сверены с официальным OpenAPI-спеком
+**Remnawave API v2.8.0** (https://docs.rw/api):
 
 - `GET /api/users/{uuid}` — чтение
-- `PATCH /api/users` — `expireAt`, `hwidDeviceLimit`, `trafficLimitBytes`
-- `GET /api/hwid/devices/{userUuid}` — список устройств
-- `POST /api/hwid/devices/delete` — отвязка `{userUuid, hwid}`
+- `PATCH /api/users` — `expireAt`, `hwidDeviceLimit`, `trafficLimitBytes` (0 = безлимит)
+- `GET /api/hwid/devices/{userUuid}` — список устройств (`{response: {total, devices}}`)
+- `POST /api/hwid/devices/delete` — отвязка одного `{userUuid, hwid}`
+- `POST /api/hwid/devices/delete-all` — отвязка всех `{userUuid}`
 
-Маппинг полей: `vpn.expireAt → expireAt`, `vpn.hwidDeviceLimit → hwidDeviceLimit`,
+Авторизация — Bearer JWT (API-токен из панели). Маппинг полей:
+`vpn.expireAt → expireAt`, `vpn.hwidDeviceLimit → hwidDeviceLimit`,
 `vpn.bypass_trafficLimitBytes → trafficLimitBytes`. `bypass_expireAt` — логика бота,
-хранится только в MongoDB. Если в вашей версии Remnawave пути другие — правится в одном файле.
+хранится только в MongoDB. Если пути изменятся в будущих версиях — правится в одном файле.
 
 ## Развёртывание
 
