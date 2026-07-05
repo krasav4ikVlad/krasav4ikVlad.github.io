@@ -22,7 +22,6 @@ from ..schemas import (
     BypassUpdateRequestFull,
     DeviceLimitRequestFull,
     DeviceResetRequest,
-    GiftRequestFull,
     SubscriptionExpireRequestFull,
 )
 from ..security import CurrentOperator, client_ip, ensure_permission
@@ -84,23 +83,24 @@ async def change_balance(user_id: int, body: BalanceChangeRequest, request: Requ
 # =============================================================== remnawave helper
 
 async def _sync_remnawave(
-    *, vpn: dict, force_local: bool,
+    *, uuid: str | None, what: str, force_local: bool,
     expire_at: str | None = None,
     hwid_device_limit: int | None = None,
     traffic_limit_bytes: int | None = None,
 ) -> tuple[bool | None, str | None]:
-    """Push changes to Remnawave BEFORE Mongo. Returns (synced, error_text).
+    """Push changes to one Remnawave user BEFORE Mongo. Returns (synced, error_text).
 
+    The user document references TWO Remnawave users: vpn.uuid (основная подписка)
+    and vpn.bypass_uuid (ByPass). Каждый вызов обновляет одного из них.
     Raises 502 when sync fails and force_local is not set — Mongo stays untouched.
     """
-    uuid = vpn.get("uuid")
     if not uuid:
         if force_local:
-            return None, "У пользователя нет vpn.uuid — изменение применено только в базе"
+            return None, f"У пользователя нет {what} — изменение применено только в базе"
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "У пользователя нет VPN-подписки (vpn.uuid отсутствует). "
-            "Используйте force_local, чтобы изменить только запись в базе.",
+            f"У пользователя нет {what}. "
+            f"Используйте force_local, чтобы изменить только запись в базе.",
         )
     try:
         await get_remnawave().update_user(
@@ -112,13 +112,26 @@ async def _sync_remnawave(
         return True, None
     except RemnawaveError as e:
         if force_local:
-            log.warning("Remnawave sync skipped (force_local): %s", e.message)
-            return False, e.message
+            log.warning("Remnawave sync skipped (force_local, %s): %s", what, e.message)
+            return False, f"{what}: {e.message}"
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
-            f"Изменение НЕ применено: {e.message}. "
+            f"Изменение НЕ применено ({what}): {e.message}. "
             f"Повторите позже или используйте force_local (только база, без нод).",
         )
+
+
+def _merge_sync(*results: tuple[bool | None, str | None]) -> tuple[bool | None, str | None]:
+    """Combine sync results of several Remnawave calls into one flag + error text."""
+    flags = [r[0] for r in results]
+    errors = [r[1] for r in results if r[1]]
+    if any(f is False for f in flags):
+        synced: bool | None = False
+    elif all(f is True for f in flags) and flags:
+        synced = True
+    else:
+        synced = None
+    return synced, ("; ".join(errors) or None)
 
 
 # =============================================================== subscription expiry
@@ -142,8 +155,14 @@ async def change_subscription_expire(user_id: int, body: SubscriptionExpireReque
         new_dt = parse_any_ts(body.expire_at)  # validated in schema
     new_iso = to_iso_z(new_dt)
 
-    synced, sync_err = await _sync_remnawave(vpn=vpn, force_local=body.force_local,
-                                             expire_at=new_iso)
+    results = [await _sync_remnawave(uuid=vpn.get("uuid"), what="vpn.uuid (основная подписка)",
+                                     force_local=body.force_local, expire_at=new_iso)]
+    # У ByPass отдельный юзер в Remnawave — его срок двигаем той же датой
+    if vpn.get("bypass_uuid"):
+        results.append(await _sync_remnawave(
+            uuid=vpn["bypass_uuid"], what="vpn.bypass_uuid (ByPass)",
+            force_local=body.force_local, expire_at=new_iso))
+    synced, sync_err = _merge_sync(*results)
     # The bot stores expireAt as a native BSON Date (it calls .strftime on it) —
     # write a datetime, never a string, or the bot crashes rendering the date.
     # ByPass is part of the same subscription: its expiry always follows expireAt.
@@ -176,9 +195,17 @@ async def change_device_limit(user_id: int, body: DeviceLimitRequestFull,
     old_limit = vpn.get("hwidDeviceLimit")
     if old_limit == body.limit:
         raise HTTPException(status.HTTP_409_CONFLICT, f"Лимит уже равен {body.limit}")
+    # Лимит устройств можно только уменьшать — увеличение продаётся ботом
+    if old_limit is None or body.limit > old_limit:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Лимит устройств можно только уменьшать (сейчас {old_limit}). "
+            f"Увеличение лимита оператору недоступно.",
+        )
 
-    synced, sync_err = await _sync_remnawave(vpn=vpn, force_local=body.force_local,
-                                             hwid_device_limit=body.limit)
+    synced, sync_err = await _sync_remnawave(
+        uuid=vpn.get("uuid"), what="vpn.uuid (основная подписка)",
+        force_local=body.force_local, hwid_device_limit=body.limit)
     await users_col().update_one({"user_data.user_id": user_id},
                                  {"$set": {"vpn.hwidDeviceLimit": body.limit}})
     await write_audit(
@@ -215,9 +242,11 @@ async def update_bypass(user_id: int, body: BypassUpdateRequestFull,
     else:
         new_bytes = max(0, int(old_bytes + body.add_traffic_gb * GB))
 
-    # Remnawave user's trafficLimitBytes mirrors the bypass traffic limit
-    synced, sync_err = await _sync_remnawave(vpn=vpn, force_local=body.force_local,
-                                             traffic_limit_bytes=new_bytes)
+    # Трафик ByPass живёт на ОТДЕЛЬНОМ Remnawave-юзере (vpn.bypass_uuid),
+    # основного (vpn.uuid) не трогаем — у него свой безлимит
+    synced, sync_err = await _sync_remnawave(
+        uuid=vpn.get("bypass_uuid"), what="vpn.bypass_uuid (ByPass)",
+        force_local=body.force_local, traffic_limit_bytes=new_bytes)
 
     await users_col().update_one({"user_data.user_id": user_id},
                                  {"$set": {"vpn.bypass_trafficLimitBytes": new_bytes}})
@@ -282,50 +311,3 @@ async def reset_devices(user_id: int, body: DeviceResetRequest,
         reason=body.reason, ip=client_ip(request), remnawave_synced=True,
     )
     return {"ok": True, "removed": removed}
-
-
-# =============================================================== gift
-
-@router.post("/{user_id}/gift")
-async def gift(user_id: int, body: GiftRequestFull, request: Request, operator: CurrentOperator):
-    """Подарить дни подписки и/или гигабайты ByPass одним действием."""
-    ensure_permission(operator, audit.ACTION_GIFT)
-    if body.days is None and body.bypass_gb is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            "Укажите days и/или bypass_gb")
-
-    doc = await find_user_or_404(user_id, projection={"vpn": 1})
-    vpn = doc.get("vpn") or {}
-    old_expire = vpn.get("expireAt")
-    old_bytes = vpn.get("bypass_trafficLimitBytes") or 0
-
-    updates: dict = {}
-    new_expire_dt = None
-    new_expire_iso = None
-    new_bytes = None
-    if body.days is not None:
-        new_expire_dt = shift_expire(old_expire, body.days)
-        new_expire_iso = to_iso_z(new_expire_dt)
-        # ByPass expiry always follows the subscription expiry
-        updates["vpn.expireAt"] = new_expire_dt  # native datetime, the bot strftime's it
-        updates["vpn.bypass_expireAt"] = new_expire_dt
-    if body.bypass_gb is not None:
-        new_bytes = int(old_bytes + body.bypass_gb * GB)
-        updates["vpn.bypass_trafficLimitBytes"] = new_bytes
-
-    synced, sync_err = await _sync_remnawave(
-        vpn=vpn, force_local=body.force_local,
-        expire_at=new_expire_iso, traffic_limit_bytes=new_bytes,
-    )
-    await users_col().update_one({"user_data.user_id": user_id}, {"$set": updates})
-    await write_audit(
-        operator=operator, action=audit.ACTION_GIFT, target_user_id=user_id,
-        old_value={"expireAt": jsonable(old_expire), "bypass_trafficLimitBytes": old_bytes},
-        new_value={"expireAt": new_expire_iso or jsonable(old_expire),
-                   "bypass_trafficLimitBytes": new_bytes if new_bytes is not None else old_bytes},
-        reason=body.reason, ip=client_ip(request),
-        remnawave_synced=synced, remnawave_error=sync_err,
-        extra={"gift_days": body.days, "gift_bypass_gb": body.bypass_gb},
-    )
-    return {"ok": True, "updates": jsonable(updates),
-            "remnawave_synced": synced, "remnawave_error": sync_err}

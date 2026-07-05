@@ -133,11 +133,6 @@ class DeviceResetRequest(ReasonMixin):
     )
 
 
-class GiftRequest(ReasonMixin):
-    days: int | None = Field(default=None, ge=1, le=3650)
-    bypass_gb: float | None = Field(default=None, gt=0, le=1_000_000)
-
-
 class ForceLocalMixin(BaseModel):
     """Если Remnawave недоступна, оператор может явно применить изменение только в MongoDB."""
     force_local: bool = False
@@ -154,6 +149,3 @@ class DeviceLimitRequestFull(DeviceLimitRequest, ForceLocalMixin):
 class BypassUpdateRequestFull(BypassUpdateRequest, ForceLocalMixin):
     pass
 
-
-class GiftRequestFull(GiftRequest, ForceLocalMixin):
-    pass

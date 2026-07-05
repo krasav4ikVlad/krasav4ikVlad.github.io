@@ -94,7 +94,6 @@ const PERM_LABELS = {
   device_limit_change: 'Лимит устройств',
   bypass_update: 'ByPass (трафик)',
   device_reset: 'Отвязка устройств',
-  gift: 'Подарки (дни / ГБ)',
 };
 
 function can(key) {
@@ -407,7 +406,6 @@ async function viewUser(userId) {
         ${can('subscription_expire_change') ? '<button class="btn" id="act-expire">Срок подписки</button>' : ''}
         ${can('device_limit_change') ? '<button class="btn" id="act-devlimit">Лимит устройств</button>' : ''}
         ${can('bypass_update') ? '<button class="btn" id="act-bypass">ByPass</button>' : ''}
-        ${can('gift') ? '<button class="btn" id="act-gift">Подарить</button>' : ''}
         ${can('device_reset') ? '<button class="btn btn-danger" id="act-devreset">Отвязать все устройства</button>' : ''}
       </div>
     </div>
@@ -427,7 +425,6 @@ async function viewUser(userId) {
   on('act-expire', () => modalExpire(userId, vpn, reload));
   on('act-devlimit', () => modalDeviceLimit(userId, vpn, reload));
   on('act-bypass', () => modalBypass(userId, vpn, reload));
-  on('act-gift', () => modalGift(userId, vpn, reload));
   on('act-devreset', () => modalDeviceReset(userId, reload));
 
   // -------- tabs
@@ -602,9 +599,8 @@ async function tabDevices($c, userId) {
     $c.innerHTML = `<h2>Устройства (из Remnawave) · лимит: ${esc(d.limit ?? '—')}</h2>
       ${d.warning ? `<div class="warn-note">${esc(d.warning)}</div>` : ''}
       ${(d.devices || []).length ? `<div class="table-wrap"><table>
-        <tr><th>HWID</th><th>Платформа</th><th>Модель</th><th></th></tr>
+        <tr><th>Платформа</th><th>Модель</th><th></th></tr>
         ${d.devices.map(dev => `<tr>
-          <td class="mono">${esc(dev.hwid || '')}</td>
           <td>${esc(dev.platform || '—')}</td>
           <td>${esc(dev.deviceModel || dev.model || '—')}</td>
           <td>${can('device_reset') ? `<button class="btn btn-danger btn-sm" data-hwid="${esc(dev.hwid || '')}">Отвязать</button>` : ''}</td>
@@ -701,20 +697,25 @@ function modalExpire(userId, vpn, onDone) {
 }
 
 function modalDeviceLimit(userId, vpn, onDone) {
+  const current = vpn.hwidDeviceLimit;
   actionModal({
-    title: `Лимит устройств (сейчас ${vpn.hwidDeviceLimit ?? '—'})`,
+    title: `Лимит устройств (сейчас ${current ?? '—'})`,
     url: `/api/users/${userId}/subscription/device-limit`,
     onDone,
     supportsForceLocal: true,
-    fieldsHtml: `<div class="field"><label>Новый лимит</label>
-      <input name="limit" type="number" min="0" max="1000" required placeholder="7"></div>`,
+    fieldsHtml: `
+      <div class="muted" style="margin-bottom:12px">Лимит можно только уменьшать — увеличение покупается в боте.</div>
+      <div class="field"><label>Новый лимит (меньше ${esc(current ?? '—')})</label>
+      <input name="limit" type="number" min="0" max="${current != null ? current - 1 : 1000}" required placeholder="Например: ${current != null ? current - 1 : 5}"></div>`,
     buildRequest($m) {
       const limit = parseInt($m.querySelector('[name=limit]').value, 10);
       if (isNaN(limit) || limit < 0) throw new Error('Введите корректный лимит');
+      if (current == null) throw new Error('У пользователя не задан лимит устройств — менять нечего');
+      if (limit >= current) throw new Error(`Лимит можно только уменьшать (сейчас ${current})`);
       return {
         body: { limit },
-        danger: vpn.hwidDeviceLimit != null && limit < vpn.hwidDeviceLimit,
-        confirmHtml: `Лимит устройств: <b>${esc(vpn.hwidDeviceLimit ?? '—')}</b><span class="arrow">→</span><b>${limit}</b>`,
+        danger: true,
+        confirmHtml: `Лимит устройств: <b>${esc(current)}</b><span class="arrow">→</span><b>${limit}</b>`,
       };
     },
   });
@@ -754,38 +755,13 @@ function modalBypass(userId, vpn, onDone) {
   });
 }
 
-function modalGift(userId, vpn, onDone) {
-  actionModal({
-    title: 'Подарить пользователю',
-    url: `/api/users/${userId}/gift`,
-    onDone,
-    supportsForceLocal: true,
-    fieldsHtml: `
-      <div class="muted" style="margin-bottom:12px">Дни продлевают и подписку, и ByPass (их срок общий).</div>
-      <div class="field"><label>Дней подписки (пусто = не дарить)</label>
-        <input name="days" type="number" min="1" max="3650" placeholder="7"></div>
-      <div class="field"><label>ГБ ByPass (пусто = не дарить)</label>
-        <input name="gb" type="number" step="0.1" min="0.1" placeholder="5"></div>`,
-    buildRequest($m) {
-      const days = $m.querySelector('[name=days]').value.trim();
-      const gb = $m.querySelector('[name=gb]').value.trim();
-      if (!days && !gb) throw new Error('Укажите дни и/или гигабайты');
-      const body = {};
-      const parts = [];
-      if (days) { body.days = parseInt(days, 10); parts.push(`+${body.days} дн. подписки`); }
-      if (gb) { body.bypass_gb = parseFloat(gb); parts.push(`+${body.bypass_gb} ГБ ByPass`); }
-      return { body, danger: false, confirmHtml: `Подарок: <b>${esc(parts.join(' и '))}</b>` };
-    },
-  });
-}
-
 function modalDeviceReset(userId, onDone, hwid = null) {
   actionModal({
     title: hwid ? 'Отвязать устройство' : 'Отвязать ВСЕ устройства',
     url: `/api/users/${userId}/devices/reset`,
     onDone,
     fieldsHtml: hwid
-      ? `<div class="muted" style="margin-bottom:12px">Устройство: <span class="mono">${esc(hwid)}</span></div>`
+      ? `<div class="muted" style="margin-bottom:12px">Будет отвязано выбранное устройство.</div>`
       : `<div class="warn-note" style="margin-bottom:12px">Будут отвязаны все HWID-привязки пользователя в Remnawave.
          Пользователю придётся заново подключить свои устройства.</div>`,
     buildRequest() {
@@ -793,7 +769,7 @@ function modalDeviceReset(userId, onDone, hwid = null) {
         body: hwid ? { hwid } : {},
         danger: true,
         confirmHtml: hwid
-          ? `Отвязать устройство <span class="mono">${esc(hwid)}</span>`
+          ? `Отвязать выбранное устройство пользователя ${esc(userId)}`
           : `Отвязать <b>ВСЕ</b> устройства пользователя ${esc(userId)}`,
       };
     },
