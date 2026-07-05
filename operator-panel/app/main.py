@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
@@ -91,3 +91,15 @@ async def index():
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     html = html.replace("{{v}}", _assets_version())
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+# Path-form deep links (Telegram-кнопки иногда портят #fragment в URL) —
+# отдаём редирект на hash-роут SPA; неавторизованный увидит форму входа.
+@app.get("/user/{user_id}")
+async def user_deeplink(user_id: int):
+    return RedirectResponse(f"/#/user/{user_id}")
+
+
+@app.get("/ticket/{user_id}")
+async def ticket_deeplink(user_id: int):
+    return RedirectResponse(f"/#/ticket/{user_id}")

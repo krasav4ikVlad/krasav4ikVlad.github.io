@@ -246,6 +246,26 @@ tr:hover td { background: rgba(20,20,20,.02); }
 .msg .msg-meta { font-size: 10.5px; margin-top: 5px; color: var(--dim); }
 .msg-operator .msg-meta { color: #9a9a94; }
 
+/* ================= lightbox ================= */
+.lightbox-overlay {
+  position: fixed; inset: 0; background: rgba(10,10,10,.88); z-index: 150;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.lightbox-overlay img, .lightbox-overlay video {
+  max-width: 94vw; max-height: 90vh; border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+.lightbox-close {
+  position: absolute; top: 16px; right: 16px;
+  width: 40px; height: 40px; border-radius: 50%;
+  background: rgba(255,255,255,.12); border: none; color: #fff;
+  font-size: 18px; cursor: pointer;
+}
+.lightbox-close:hover { background: rgba(255,255,255,.22); }
+
+.th-sort { user-select: none; }
+.th-sort:hover { color: var(--text); }
+
 /* ================= modal ================= */
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(20,20,20,.45); z-index: 100;

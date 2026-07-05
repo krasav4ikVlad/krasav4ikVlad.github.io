@@ -788,52 +788,103 @@ const TICKET_BADGES = {
 };
 function ticketBadge(st) { return TICKET_BADGES[st] || `<span class="badge badge-gray">${esc(st)}</span>`; }
 
-async function viewTickets(page = 1) {
-  const keep = document.getElementById('tk-filter') != null;
-  const status = keep ? document.getElementById('tk-filter').value : '';
-  if (!keep) {
-    $view.innerHTML = `
-      <h1>Тикеты поддержки</h1>
-      <div class="card">
-        <div class="filter-bar">
-          <select id="tk-filter">
-            <option value="">Все статусы</option>
-            <option value="pending">🟡 Ожидают</option>
-            <option value="open">🟢 У оператора</option>
-            <option value="closed">🔴 Закрытые</option>
-          </select>
-          <button class="btn btn-sm" id="tk-apply">Применить</button>
-        </div>
-        <div id="tk-list"></div>
-      </div>`;
-    document.getElementById('tk-apply').onclick = () => viewTickets(1);
-    document.getElementById('tk-filter').onchange = () => viewTickets(1);
-  }
+function viewTickets() {
+  if (!S.tk) S.tk = { status: 'open', page: 1, sort: 'pending_at', order: 'desc' };
+  const tk = S.tk;
+  $view.innerHTML = `
+    <h1>Тикеты поддержки</h1>
+    <div class="card">
+      <div class="filter-bar">
+        <select id="tk-filter">
+          <option value="" ${tk.status === '' ? 'selected' : ''}>Все статусы</option>
+          <option value="pending" ${tk.status === 'pending' ? 'selected' : ''}>🟡 Ожидают</option>
+          <option value="open" ${tk.status === 'open' ? 'selected' : ''}>🟢 У оператора</option>
+          <option value="closed" ${tk.status === 'closed' ? 'selected' : ''}>🔴 Закрытые</option>
+        </select>
+        <span class="muted" style="align-self:center; font-size:12px" id="tk-updated"></span>
+      </div>
+      <div id="tk-list">${spinnerHtml()}</div>
+    </div>`;
+  document.getElementById('tk-filter').onchange = e => {
+    tk.status = e.target.value;
+    tk.page = 1;
+    loadTickets();
+  };
+  loadTickets();
+  // автообновление списка — можно сидеть и ждать новые тикеты
+  S.ticketTimer = setInterval(() => loadTickets(true), 20000);
+}
+
+const TK_SORT_LABELS = [
+  ['status', 'Статус'],
+  ['user', 'Пользователь'],
+  ['pending_at', 'Дата обращения'],
+];
+
+async function loadTickets(silent = false) {
+  const tk = S.tk;
   const $list = document.getElementById('tk-list');
-  $list.innerHTML = spinnerHtml();
-  const qs = new URLSearchParams({ page, page_size: 30 });
-  if (status) qs.set('status', status);
+  if (!$list) return;
+  if (!silent) $list.innerHTML = spinnerHtml();
+  const qs = new URLSearchParams({
+    page: tk.page, page_size: 30, sort: tk.sort, order: tk.order,
+  });
+  if (tk.status) qs.set('status', tk.status);
+  let data;
   try {
-    const data = await api('/api/tickets?' + qs);
-    $list.innerHTML = data.items.length ? `<div class="table-wrap"><table>
-      <tr><th>Статус</th><th>Пользователь</th><th>Обращение</th><th>Последнее сообщение</th></tr>
-      ${data.items.map(t => `
-        <tr style="cursor:pointer" onclick="location.hash='#/ticket/${t.user_id}'">
-          <td>${ticketBadge(t.status)}</td>
-          <td>${esc(t.first_name || '—')} ${t.username ? '<span class="muted">@' + esc(t.username) + '</span>' : ''}
-            <div class="mono muted" style="font-size:11.5px">${esc(t.user_id)}</div></td>
-          <td class="mono" style="white-space:nowrap">${fmtDate(t.pending_at)}</td>
-          <td class="muted" style="max-width:280px">${t.last_message
-            ? `${t.last_message.direction === 'operator' ? '↩' : t.last_message.direction === 'system' ? '·' : '💬'} ${esc(t.last_message.text)}`
-            : '—'}</td>
-        </tr>`).join('')}
-    </table></div>` + pagerHtml(data) : '<div class="center">Тикетов нет</div>';
-    const pv = $list.querySelector('#pg-prev'), nx = $list.querySelector('#pg-next');
-    if (pv) pv.onclick = () => viewTickets(data.page - 1);
-    if (nx) nx.onclick = () => viewTickets(data.page + 1);
+    data = await api('/api/tickets?' + qs);
   } catch (err) {
-    $list.innerHTML = `<div class="error-note">${esc(err.message)}</div>`;
+    if (!silent) $list.innerHTML = `<div class="error-note">${esc(err.message)}</div>`;
+    return;
   }
+  const pages = Math.max(1, Math.ceil(data.total / data.page_size));
+  if (tk.page > pages) { tk.page = pages; return loadTickets(silent); }
+
+  const arrow = key => tk.sort === key ? (tk.order === 'desc' ? ' ↓' : ' ↑') : '';
+  const ths = TK_SORT_LABELS.map(([key, label]) =>
+    `<th class="th-sort" data-sort="${key}">${label}${arrow(key)}</th>`).join('');
+
+  $list.innerHTML = data.items.length ? `<div class="table-wrap"><table>
+    <tr>${ths}<th>Последнее сообщение</th></tr>
+    ${data.items.map(t => `
+      <tr style="cursor:pointer" onclick="location.hash='#/ticket/${t.user_id}'">
+        <td>${ticketBadge(t.status)}</td>
+        <td>${esc(t.first_name || '—')} ${t.username ? '<span class="muted">@' + esc(t.username) + '</span>' : ''}
+          <div class="mono muted" style="font-size:11.5px">${esc(t.user_id)}</div></td>
+        <td class="mono" style="white-space:nowrap">${fmtDate(t.pending_at)}</td>
+        <td class="muted" style="max-width:280px">${t.last_message
+          ? `${t.last_message.direction === 'operator' ? '↩' : t.last_message.direction === 'system' ? '·' : '💬'} ${esc(t.last_message.text)}`
+          : '—'}</td>
+      </tr>`).join('')}
+  </table></div>
+  <div class="pager">
+    <span>${data.total} тикетов</span>
+    <button class="btn btn-ghost btn-sm" id="pg-prev" ${tk.page <= 1 ? 'disabled' : ''}>←</button>
+    <select id="pg-select" style="width:auto; padding:5px 10px; font-size:13px">
+      ${Array.from({ length: pages }, (_, i) =>
+        `<option value="${i + 1}" ${i + 1 === tk.page ? 'selected' : ''}>стр. ${i + 1} / ${pages}</option>`).join('')}
+    </select>
+    <button class="btn btn-ghost btn-sm" id="pg-next" ${tk.page >= pages ? 'disabled' : ''}>→</button>
+  </div>` : '<div class="center">Тикетов нет</div>';
+
+  const updated = document.getElementById('tk-updated');
+  if (updated) updated.textContent = 'обновлено ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  $list.querySelectorAll('.th-sort').forEach(th => {
+    th.style.cursor = 'pointer';
+    th.onclick = () => {
+      const key = th.dataset.sort;
+      if (tk.sort === key) tk.order = tk.order === 'desc' ? 'asc' : 'desc';
+      else { tk.sort = key; tk.order = 'desc'; }
+      tk.page = 1;
+      loadTickets();
+    };
+  });
+  const pv = $list.querySelector('#pg-prev'), nx = $list.querySelector('#pg-next'),
+        sel = $list.querySelector('#pg-select');
+  if (pv) pv.onclick = () => { tk.page--; loadTickets(); };
+  if (nx) nx.onclick = () => { tk.page++; loadTickets(); };
+  if (sel) sel.onchange = e => { tk.page = parseInt(e.target.value, 10); loadTickets(); };
 }
 
 async function viewTicket(userId) {
@@ -963,6 +1014,23 @@ async function fetchAttachment(fileId) {
   return url;
 }
 
+function openLightbox(url, kind) {
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="lightbox-overlay">
+      ${kind === 'video'
+        ? `<video controls autoplay src="${url}"></video>`
+        : `<img src="${url}" alt="вложение">`}
+      <button class="lightbox-close" title="Закрыть">✕</button>
+    </div>`;
+  const overlay = root.querySelector('.lightbox-overlay');
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay || e.target.classList.contains('lightbox-close')) closeModal();
+  });
+  const onKey = e => { if (e.key === 'Escape') { closeModal(); document.removeEventListener('keydown', onKey); } };
+  document.addEventListener('keydown', onKey);
+}
+
 function hydrateAttachments(root) {
   root.querySelectorAll('[data-file]').forEach(async el => {
     if (el.dataset.hydrated) return;
@@ -971,8 +1039,13 @@ function hydrateAttachments(root) {
     if (type === 'download') {
       el.onclick = async () => {
         el.disabled = true;
-        try { window.open(await fetchAttachment(el.dataset.file), '_blank'); }
-        catch (e) { toast('Не удалось загрузить вложение', 'err'); }
+        try {
+          const url = await fetchAttachment(el.dataset.file);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = el.textContent.replace(/^📄 /, '').replace(/ — открыть$/, '') || 'file';
+          a.click();
+        } catch (e) { toast('Не удалось загрузить вложение', 'err'); }
         el.disabled = false;
       };
       return;
@@ -981,11 +1054,12 @@ function hydrateAttachments(root) {
       const url = await fetchAttachment(el.dataset.file);
       if (type === 'img') {
         el.innerHTML = `<img src="${url}" alt="вложение">`;
-        el.querySelector('img').onclick = () => window.open(url, '_blank');
+        el.querySelector('img').onclick = () => openLightbox(url, 'img');
       } else if (type === 'audio') {
         el.innerHTML = `<audio controls src="${url}"></audio>`;
       } else if (type === 'video') {
         el.innerHTML = `<video controls src="${url}"></video>`;
+        el.querySelector('video').addEventListener('dblclick', () => openLightbox(url, 'video'));
       }
     } catch (e) {
       el.innerHTML = '<span class="muted" style="font-size:12px">вложение недоступно</span>';

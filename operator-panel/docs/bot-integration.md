@@ -7,7 +7,9 @@
 
 ## 1. Кнопка «Профиль на сайте»
 
-Ссылка ведёт на карточку пользователя в панели (`/#/user/{uid}`). Безопасность:
+Ссылка ведёт на карточку пользователя в панели (`/user/{uid}` — путь без `#`:
+некоторые Telegram-клиенты портят fragment в URL кнопок, поэтому сервер панели
+сам редиректит этот путь на SPA-роут). Безопасность:
 панель сама требует вход — неавторизованный, перейдя по ссылке, увидит только
 форму логина, а после входа попадёт ровно на карточку этого пользователя
 (deep-link сохраняется через логин).
@@ -30,7 +32,7 @@ from config import SUPPORT_CHAT_ID, REMNAWAVE_TOKEN, PANEL_URL   # добави�
 def _user_info_kb(uid: int) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     kb.button(text='🔄 Обновить', callback_data=f'admin:{uid}:info_refresh')
-    kb.button(text='🖥 Профиль на сайте', url=f'{PANEL_URL}/#/user/{uid}')   # <--- НОВОЕ
+    kb.button(text='🖥 Профиль на сайте', url=f'{PANEL_URL}/user/{uid}')   # <--- НОВОЕ
     kb.button(text='📲 Очистить подключения', callback_data=f'admin:{uid}:devices_delete_all')
     kb.button(text='🧩 Быстрые ответы', callback_data=f'admin:{uid}:qr_menu')
     kb.button(text='🔒 Закрыть тикет', callback_data='admin:close_ticket')
@@ -41,7 +43,7 @@ def _user_info_kb(uid: int) -> InlineKeyboardBuilder:
 В `_send_and_pin_user_info` — та же кнопка в обе клавиатуры (основную и fallback):
 
 ```python
-kb.button(text='🖥 Профиль на сайте', url=f'{PANEL_URL}/#/user/{uid}')
+kb.button(text='🖥 Профиль на сайте', url=f'{PANEL_URL}/user/{uid}')
 ```
 
 ## 2. Общая история сообщений (`support_messages`)

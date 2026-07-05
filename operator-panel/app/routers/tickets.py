@@ -89,10 +89,19 @@ async def _store_message(*, user_id: int, direction: str, text: str,
 
 # ---------------------------------------------------------------- list
 
+SORT_FIELDS = {
+    "pending_at": "info.support.pending_at",
+    "status": "info.support.status",
+    "user": "user_data.first_name",
+}
+
+
 @router.get("")
 async def list_tickets(
     _op: CurrentOperator,
     status_filter: str | None = Query(default=None, alias="status", max_length=16),
+    sort: str = Query(default="pending_at", max_length=16),
+    order: str = Query(default="desc", max_length=4),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30, ge=1, le=100),
 ):
@@ -101,12 +110,15 @@ async def list_tickets(
         if status_filter not in TICKET_STATUSES:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Неверный статус")
         query["info.support.status"] = status_filter
+    if sort not in SORT_FIELDS:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Неверное поле сортировки")
+    direction = -1 if order != "asc" else 1
 
     col = users_col()
     total = await col.count_documents(query)
     cursor = (
         col.find(query, {"user_data": 1, "info.support": 1})
-        .sort("info.support.pending_at", -1)
+        .sort(SORT_FIELDS[sort], direction)
         .skip((page - 1) * page_size)
         .limit(page_size)
     )
