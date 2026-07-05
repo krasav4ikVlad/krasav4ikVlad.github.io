@@ -28,6 +28,7 @@ PERMISSIONS: dict[str, str] = {
     "device_limit_change": "Лимит устройств",
     "bypass_update": "ByPass (трафик)",
     "device_reset": "Отвязка устройств",
+    "tickets": "Тикеты (ответы и закрытие)",
 }
 
 

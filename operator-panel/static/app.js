@@ -94,6 +94,7 @@ const PERM_LABELS = {
   device_limit_change: 'Лимит устройств',
   bypass_update: 'ByPass (трафик)',
   device_reset: 'Отвязка устройств',
+  tickets: 'Тикеты (ответы и закрытие)',
 };
 
 function can(key) {
@@ -257,7 +258,8 @@ function viewLogin() {
       S.me = data.operator;
       localStorage.setItem('op_token', S.token);
       if (S.me.must_change_password) S.pendingPwd = f.password.value;
-      location.hash = '#/search';
+      location.hash = S.nextHash && !S.nextHash.startsWith('#/login') ? S.nextHash : '#/search';
+      S.nextHash = null;
       render();
     } catch (err) {
       errEl.textContent = err.message;
@@ -312,7 +314,8 @@ function viewForcePassword() {
       S.me = me;
       S.pendingPwd = null;
       toast('Пароль установлен ✓');
-      location.hash = '#/search';
+      location.hash = S.nextHash && !S.nextHash.startsWith('#/login') ? S.nextHash : '#/search';
+      S.nextHash = null;
       render();
     } catch (err) {
       errEl.textContent = err.message;
@@ -776,6 +779,181 @@ function modalDeviceReset(userId, onDone, hwid = null) {
   });
 }
 
+// ================================================================ tickets
+
+const TICKET_BADGES = {
+  pending: '<span class="badge badge-yellow">🟡 ожидает</span>',
+  open: '<span class="badge badge-green">🟢 оператор</span>',
+  closed: '<span class="badge badge-red">🔴 закрыт</span>',
+};
+function ticketBadge(st) { return TICKET_BADGES[st] || `<span class="badge badge-gray">${esc(st)}</span>`; }
+
+async function viewTickets(page = 1) {
+  const keep = document.getElementById('tk-filter') != null;
+  const status = keep ? document.getElementById('tk-filter').value : '';
+  if (!keep) {
+    $view.innerHTML = `
+      <h1>Тикеты поддержки</h1>
+      <div class="card">
+        <div class="filter-bar">
+          <select id="tk-filter">
+            <option value="">Все статусы</option>
+            <option value="pending">🟡 Ожидают</option>
+            <option value="open">🟢 У оператора</option>
+            <option value="closed">🔴 Закрытые</option>
+          </select>
+          <button class="btn btn-sm" id="tk-apply">Применить</button>
+        </div>
+        <div id="tk-list"></div>
+      </div>`;
+    document.getElementById('tk-apply').onclick = () => viewTickets(1);
+    document.getElementById('tk-filter').onchange = () => viewTickets(1);
+  }
+  const $list = document.getElementById('tk-list');
+  $list.innerHTML = spinnerHtml();
+  const qs = new URLSearchParams({ page, page_size: 30 });
+  if (status) qs.set('status', status);
+  try {
+    const data = await api('/api/tickets?' + qs);
+    $list.innerHTML = data.items.length ? `<div class="table-wrap"><table>
+      <tr><th>Статус</th><th>Пользователь</th><th>Обращение</th><th>Последнее сообщение</th></tr>
+      ${data.items.map(t => `
+        <tr style="cursor:pointer" onclick="location.hash='#/ticket/${t.user_id}'">
+          <td>${ticketBadge(t.status)}</td>
+          <td>${esc(t.first_name || '—')} ${t.username ? '<span class="muted">@' + esc(t.username) + '</span>' : ''}
+            <div class="mono muted" style="font-size:11.5px">${esc(t.user_id)}</div></td>
+          <td class="mono" style="white-space:nowrap">${fmtDate(t.pending_at)}</td>
+          <td class="muted" style="max-width:280px">${t.last_message
+            ? `${t.last_message.direction === 'operator' ? '↩' : t.last_message.direction === 'system' ? '·' : '💬'} ${esc(t.last_message.text)}`
+            : '—'}</td>
+        </tr>`).join('')}
+    </table></div>` + pagerHtml(data) : '<div class="center">Тикетов нет</div>';
+    const pv = $list.querySelector('#pg-prev'), nx = $list.querySelector('#pg-next');
+    if (pv) pv.onclick = () => viewTickets(data.page - 1);
+    if (nx) nx.onclick = () => viewTickets(data.page + 1);
+  } catch (err) {
+    $list.innerHTML = `<div class="error-note">${esc(err.message)}</div>`;
+  }
+}
+
+async function viewTicket(userId) {
+  $view.innerHTML = spinnerHtml('Загружаем тикет…');
+  let data;
+  try {
+    data = await api('/api/tickets/' + userId);
+  } catch (err) {
+    $view.innerHTML = `<div class="card"><div class="error-note">${esc(err.message)}</div>
+      <div style="margin-top:12px"><a href="#/tickets" class="btn btn-ghost">← К тикетам</a></div></div>`;
+    return;
+  }
+  const t = data.ticket;
+  $view.innerHTML = `
+    <div style="margin-bottom:12px"><a href="#/tickets" class="muted" style="text-decoration:none">← К тикетам</a></div>
+    <div class="card">
+      <div class="user-header">
+        <div>
+          <h1 style="margin-bottom:2px">Тикет #${esc(t.user_id)}</h1>
+          <div class="muted">${esc(t.first_name || '')} ${t.username ? '@' + esc(t.username) : ''}</div>
+        </div>
+        <div id="tk-status">${ticketBadge(t.status)}</div>
+      </div>
+      <div class="actions-bar">
+        <a class="btn btn-ghost" href="#/user/${t.user_id}">Карточка пользователя</a>
+        ${can('tickets') && t.status !== 'closed'
+          ? '<button class="btn btn-danger" id="tk-close">Закрыть тикет</button>' : ''}
+        <button class="btn btn-ghost" id="tk-refresh">Обновить</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Переписка</h2>
+      <div class="muted" style="font-size:12px; margin-bottom:10px">
+        Здесь видны сообщения, прошедшие через сайт и бота с момента подключения интеграции.
+        Полная история старых тикетов — в Telegram-треде.</div>
+      <div class="chat" id="tk-chat"></div>
+      ${can('tickets') ? `
+      <form id="tk-reply" style="margin-top:14px">
+        <div class="field"><label>Ответ пользователю (уйдёт в ЛС и продублируется в тред)</label>
+          <textarea name="text" rows="3" required minlength="1" maxlength="3500"
+            placeholder="Текст ответа…"></textarea></div>
+        <div style="display:flex; justify-content:flex-end">
+          <button class="btn" type="submit">Отправить</button>
+        </div>
+      </form>` : '<div class="muted" style="margin-top:10px">У вас нет права отвечать в тикеты.</div>'}
+    </div>`;
+
+  renderChat(data.messages);
+
+  const refresh = async () => {
+    try {
+      const d = await api('/api/tickets/' + userId);
+      renderChat(d.messages);
+      document.getElementById('tk-status').innerHTML = ticketBadge(d.ticket.status);
+    } catch (e) { /* тихо: таймер может пережить уход со страницы */ }
+  };
+  document.getElementById('tk-refresh').onclick = refresh;
+  S.ticketTimer = setInterval(refresh, 15000);
+
+  const closeBtn = document.getElementById('tk-close');
+  if (closeBtn) closeBtn.onclick = () => {
+    const $m = openModal(`
+      <h2>Закрыть тикет</h2>
+      <div class="confirm-box">Тикет #${esc(userId)} будет закрыт. Пользователь получит запрос оценки, тред в Telegram переименуется в 🔴.</div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+        <button class="btn btn-danger" id="tk-close-ok">Закрыть тикет</button>
+      </div>`);
+    $m.querySelector('#tk-close-ok').onclick = async () => {
+      try {
+        await api(`/api/tickets/${userId}/close`, { method: 'POST' });
+        closeModal();
+        toast('Тикет закрыт ✓');
+        viewTicket(userId);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    };
+  };
+
+  const form = document.getElementById('tk-reply');
+  if (form) form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const text = form.text.value.trim();
+    if (!text) return;
+    const btn = form.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+      await api(`/api/tickets/${userId}/reply`, { method: 'POST', body: { text } });
+      form.text.value = '';
+      toast('Отправлено ✓');
+      await refresh();
+    } catch (err) {
+      toast(err.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+function renderChat(messages) {
+  const $chat = document.getElementById('tk-chat');
+  if (!$chat) return;
+  if (!messages.length) {
+    $chat.innerHTML = '<div class="center">Сообщений пока нет</div>';
+    return;
+  }
+  $chat.innerHTML = messages.map(m => {
+    const cls = m.direction === 'operator' ? 'msg-operator' : m.direction === 'system' ? 'msg-system' : 'msg-user';
+    const who = m.direction === 'operator'
+      ? (m.operator_login ? esc(m.operator_login) + (m.source === 'tg' ? ' (TG)' : ' (сайт)') : 'оператор')
+      : m.direction === 'system' ? '' : 'пользователь';
+    return `<div class="msg ${cls}">
+      <div>${esc(m.text)}</div>
+      <div class="msg-meta">${who ? who + ' · ' : ''}${fmtDate(m.timestamp)}</div>
+    </div>`;
+  }).join('');
+  $chat.scrollTop = $chat.scrollHeight;
+}
+
 // ================================================================ audit view (owner)
 
 async function viewAudit(page = 1) {
@@ -853,6 +1031,8 @@ const ACTION_LABELS = {
   operator_update: 'Изменение оператора',
   operator_password_reset: 'Сброс пароля оператора',
   password_change: 'Смена своего пароля',
+  ticket_reply: 'Ответ в тикете',
+  ticket_close: 'Закрытие тикета',
 };
 function actionLabel(a) { return ACTION_LABELS[a] || a; }
 
@@ -1057,17 +1237,27 @@ function setNav(active) {
 
 async function render() {
   const hash = location.hash || '#/search';
+  if (S.ticketTimer) { clearInterval(S.ticketTimer); S.ticketTimer = null; }
 
-  if (!S.token) { viewLogin(); return; }
+  if (!S.token) {
+    if (!hash.startsWith('#/login')) S.nextHash = hash;
+    viewLogin(); return;
+  }
   if (!S.me) {
     const ok = await loadMe();
-    if (!ok) { viewLogin(); return; }
+    if (!ok) {
+      if (!hash.startsWith('#/login')) S.nextHash = hash;
+      viewLogin(); return;
+    }
   }
 
   if (S.me && S.me.must_change_password) { viewForcePassword(); return; }
 
   const userMatch = hash.match(/^#\/user\/(\d+)$/);
   if (userMatch) { setNav('search'); viewUser(parseInt(userMatch[1], 10)); return; }
+  const ticketMatch = hash.match(/^#\/ticket\/(\d+)$/);
+  if (ticketMatch) { setNav('tickets'); viewTicket(parseInt(ticketMatch[1], 10)); return; }
+  if (hash.startsWith('#/tickets')) { setNav('tickets'); viewTickets(); return; }
   if (hash.startsWith('#/audit')) { setNav('audit'); viewAudit(); return; }
   if (hash.startsWith('#/operators')) { setNav('operators'); viewOperators(); return; }
   if (hash.startsWith('#/login')) {

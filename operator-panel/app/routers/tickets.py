@@ -1,0 +1,237 @@
+"""Support tickets — the same lifecycle the Telegram bot drives.
+
+Ticket state lives where the bot keeps it: users.info.support
+{thread_id, status: pending|open|closed, pending_at}. The panel mirrors every
+action to Telegram so both views stay consistent:
+  * reply  -> PM to the user + copy into the support-chat forum thread,
+              status -> open (оператор подключился), topic title updated
+  * close  -> status -> closed, topic title updated, notice in the thread,
+              rating keyboard sent to the user (the bot handles rate:{1..5})
+
+Message history is shared via the support_messages collection — the panel
+writes its messages there; the bot is patched to do the same (see
+docs/bot-integration.md). Old tickets have no backlog, only new messages.
+"""
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException, Query, Request, status
+from pydantic import BaseModel, Field
+
+from .. import audit
+from ..audit import write_audit
+from ..config import get_settings
+from ..database import get_db
+from ..security import CurrentOperator, client_ip, ensure_permission
+from ..telegram import RATING_KEYBOARD, TelegramError, get_telegram
+from ..user_service import users_col
+from ..utils import jsonable, utcnow
+
+router = APIRouter(prefix="/api/tickets", tags=["tickets"])
+
+TICKET_STATUSES = ("pending", "open", "closed")
+
+
+def _messages_col():
+    return get_db()[get_settings().support_messages_collection]
+
+
+class TicketReplyRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=3500)
+
+
+def _esc(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _ticket_brief(doc: dict) -> dict:
+    ud = doc.get("user_data") or {}
+    support = ((doc.get("info") or {}).get("support")) or {}
+    return {
+        "user_id": ud.get("user_id"),
+        "username": ud.get("username"),
+        "first_name": ud.get("first_name"),
+        "status": (support.get("status") or "pending").lower(),
+        "thread_id": support.get("thread_id"),
+        "pending_at": jsonable(support.get("pending_at")),
+    }
+
+
+async def _find_ticket_user(user_id: int) -> tuple[dict, dict]:
+    doc = await users_col().find_one(
+        {"user_data.user_id": user_id},
+        {"user_data": 1, "info.support": 1},
+    )
+    if doc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Пользователь {user_id} не найден")
+    support = ((doc.get("info") or {}).get("support")) or {}
+    if not support.get("thread_id"):
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "У пользователя нет тикета (он ещё не писал в поддержку)")
+    return doc, support
+
+
+async def _store_message(*, user_id: int, direction: str, text: str,
+                         operator_login: str | None = None, source: str = "site") -> dict:
+    msg = {
+        "user_id": user_id,
+        "direction": direction,          # user | operator | system
+        "text": text,
+        "operator_login": operator_login,
+        "source": source,                # site | tg
+        "timestamp": utcnow(),
+    }
+    await _messages_col().insert_one(msg)
+    msg.pop("_id", None)
+    return msg
+
+
+# ---------------------------------------------------------------- list
+
+@router.get("")
+async def list_tickets(
+    _op: CurrentOperator,
+    status_filter: str | None = Query(default=None, alias="status", max_length=16),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=30, ge=1, le=100),
+):
+    query: dict = {"info.support.thread_id": {"$exists": True}}
+    if status_filter:
+        if status_filter not in TICKET_STATUSES:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Неверный статус")
+        query["info.support.status"] = status_filter
+
+    col = users_col()
+    total = await col.count_documents(query)
+    cursor = (
+        col.find(query, {"user_data": 1, "info.support": 1})
+        .sort("info.support.pending_at", -1)
+        .skip((page - 1) * page_size)
+        .limit(page_size)
+    )
+    items = []
+    async for doc in cursor:
+        brief = _ticket_brief(doc)
+        last = await _messages_col().find_one({"user_id": brief["user_id"]},
+                                              sort=[("timestamp", -1)])
+        if last:
+            brief["last_message"] = {
+                "direction": last.get("direction"),
+                "text": (last.get("text") or "")[:120],
+                "timestamp": jsonable(last.get("timestamp")),
+            }
+        items.append(brief)
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+# ---------------------------------------------------------------- ticket view
+
+@router.get("/{user_id}")
+async def ticket_detail(user_id: int, _op: CurrentOperator,
+                        limit: int = Query(default=200, ge=1, le=1000)):
+    doc, _support = await _find_ticket_user(user_id)
+    messages = [
+        {k: jsonable(v) for k, v in m.items() if k != "_id"}
+        async for m in _messages_col().find({"user_id": user_id})
+        .sort("timestamp", -1).limit(limit)
+    ]
+    messages.reverse()
+    return {"ticket": _ticket_brief(doc), "messages": messages}
+
+
+# ---------------------------------------------------------------- reply
+
+@router.post("/{user_id}/reply")
+async def reply_ticket(user_id: int, body: TicketReplyRequest,
+                       request: Request, operator: CurrentOperator):
+    ensure_permission(operator, "tickets")
+    doc, support = await _find_ticket_user(user_id)
+    thread_id = support["thread_id"]
+    old_status = (support.get("status") or "pending").lower()
+    text = body.text.strip()
+
+    tg = get_telegram()
+    # 1) пользователю в ЛС — как relay из треда, текст без обвязки
+    try:
+        await tg.send_to_user(user_id, _esc(text))
+    except TelegramError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                            f"Сообщение НЕ отправлено пользователю: {e.message}")
+
+    # 2) зеркало в тред — чтобы операторы в TG видели переписку с сайта
+    try:
+        await tg.send_to_thread(
+            thread_id,
+            f"💻 <b>Ответ с сайта</b> — {_esc(operator.get('name') or operator['login'])}:\n\n{_esc(text)}",
+        )
+    except TelegramError as e:
+        # юзеру уже ушло; тред не синкнулся — фиксируем, но не откатываем
+        await _store_message(user_id=user_id, direction="system",
+                             text=f"⚠️ Не удалось продублировать в тред: {e.message}")
+
+    # 3) оператор подключился -> open (как выбор «оператор» в боте)
+    if old_status != "open":
+        await users_col().update_one(
+            {"user_data.user_id": user_id},
+            {"$set": {"info.support.status": "open"}},
+        )
+        await tg.set_thread_status_title(thread_id, user_id, "open")
+
+    msg = await _store_message(user_id=user_id, direction="operator", text=text,
+                               operator_login=operator["login"])
+    await write_audit(
+        operator=operator, action=audit.ACTION_TICKET_REPLY, target_user_id=user_id,
+        old_value={"status": old_status}, new_value={"status": "open"},
+        reason=None, ip=client_ip(request),
+        extra={"text": text[:500]},
+    )
+    return {"ok": True, "status": "open", "message": jsonable(msg)}
+
+
+# ---------------------------------------------------------------- close
+
+@router.post("/{user_id}/close")
+async def close_ticket(user_id: int, request: Request, operator: CurrentOperator):
+    ensure_permission(operator, "tickets")
+    doc, support = await _find_ticket_user(user_id)
+    thread_id = support["thread_id"]
+    old_status = (support.get("status") or "pending").lower()
+    if old_status == "closed":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Тикет уже закрыт")
+
+    await users_col().update_one(
+        {"user_data.user_id": user_id},
+        {"$set": {"info.support.status": "closed"}},
+    )
+
+    tg = get_telegram()
+    await tg.set_thread_status_title(thread_id, user_id, "closed")
+    try:
+        await tg.send_to_thread(
+            thread_id,
+            f"🔴 <b>Тикет закрыт оператором с сайта</b> "
+            f"({_esc(operator.get('name') or operator['login'])})",
+        )
+    except TelegramError:
+        pass
+    # оценка пользователю — те же кнопки rate:{1..5}, их обрабатывает бот
+    user_notified = True
+    try:
+        await tg.send_to_user(
+            user_id,
+            "✅ <b>Спасибо за обращение!</b>\n"
+            "Ваш тикет закрыт. Пожалуйста, оцените работу поддержки:",
+            reply_markup=RATING_KEYBOARD,
+        )
+    except TelegramError:
+        user_notified = False
+
+    await _store_message(user_id=user_id, direction="system",
+                         text=f"Тикет закрыт оператором {operator['login']} (сайт)",
+                         operator_login=operator["login"])
+    await write_audit(
+        operator=operator, action=audit.ACTION_TICKET_CLOSE, target_user_id=user_id,
+        old_value={"status": old_status}, new_value={"status": "closed"},
+        reason=None, ip=client_ip(request),
+        extra={"user_notified": user_notified},
+    )
+    return {"ok": True, "status": "closed", "user_notified": user_notified}

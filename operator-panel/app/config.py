@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     users_collection: str = "users"
     operators_collection: str = "operators"
     audit_collection: str = "operator_logs"
+    support_messages_collection: str = "support_messages"
+
+    # --- Telegram (бот техподдержки — для ответов в тикеты с сайта) ---
+    tg_bot_token: str = ""      # токен САППОРТ-бота (тот же, что в боте поддержки)
+    support_chat_id: int = 0    # id чата поддержки с топиками (-100...)
 
     # --- Auth ---
     jwt_secret: str  # REQUIRED — no default on purpose, service refuses to start without it

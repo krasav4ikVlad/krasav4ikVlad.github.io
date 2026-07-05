@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .database import close_client, ensure_indexes
-from .routers import actions, audit_log, auth, operators, users
+from .routers import actions, audit_log, auth, operators, tickets, users
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,6 +57,7 @@ app.include_router(users.router)
 app.include_router(actions.router)
 app.include_router(audit_log.router)
 app.include_router(operators.router)
+app.include_router(tickets.router)
 
 
 @app.exception_handler(Exception)
