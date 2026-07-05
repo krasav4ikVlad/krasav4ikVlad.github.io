@@ -55,12 +55,23 @@ kb.button(text='🖥 Профиль на сайте', url=f'{PANEL_URL}/#/user/{
 {
   user_id: 802421217,
   direction: "user" | "operator" | "system",
-  text: "...",                  // текст/подпись или "<photo>", "<voice>" и т.п.
+  text: "...",                            // текст или подпись к вложению ('' если её нет)
+  attachment: {                           // null для чисто текстовых сообщений
+    type: "photo" | "video" | "document" | "voice" | "video_note"
+        | "animation" | "audio" | "sticker",
+    file_id: "...",                       // Telegram file_id — сайт скачает через getFile
+    name: "имя_файла.pdf"                 // для документов/аудио (опционально)
+  },
   operator_login: "имя_оператора" | null,
   source: "tg" | "site",
   timestamp: ISODate
 }
 ```
+
+Панель показывает вложения прямо в чате тикета: фото и стикеры — картинкой,
+голосовые/аудио — плеером, видео/кружки/гифки — видеоплеером, документы —
+кнопкой «открыть». Файлы она скачивает сама через `getFile` тем же ботом
+(лимит Bot API — 20 МБ на файл), поэтому боту достаточно сохранить `file_id`.
 
 **loader.py** — добавить коллекцию:
 
@@ -68,28 +79,61 @@ kb.button(text='🖥 Профиль на сайте', url=f'{PANEL_URL}/#/user/{
 support_messages = db['support_messages']
 ```
 
-**utils/utils.py** — добавить хелпер:
+**utils/utils.py** — добавить хелперы:
 
 ```python
 from loader import users, bot, support_quick_replies, support_messages  # добавить support_messages
 
 
 def _message_text_for_log(message: types.Message) -> str:
+    """Текст сообщения или подпись к вложению; спец-типы — плейсхолдером."""
     if message.text:
         return message.text
     if message.caption:
-        ct = getattr(message, 'content_type', 'media')
-        return f'<{ct}> {message.caption}'
-    return f'<{getattr(message, "content_type", "media")}>'
+        return message.caption
+    if message.location:
+        return '<локация>'
+    if message.contact:
+        return '<контакт>'
+    if message.poll:
+        return '<опрос>'
+    if message.dice:
+        return '<кубик>'
+    return ''
+
+
+def _attachment_for_log(message: types.Message) -> dict | None:
+    """file_id вложения — сайт скачает его через getFile."""
+    if message.photo:
+        return {'type': 'photo', 'file_id': message.photo[-1].file_id}
+    if message.video:
+        return {'type': 'video', 'file_id': message.video.file_id}
+    if message.document:
+        return {'type': 'document', 'file_id': message.document.file_id,
+                'name': message.document.file_name or 'документ'}
+    if message.voice:
+        return {'type': 'voice', 'file_id': message.voice.file_id}
+    if message.video_note:
+        return {'type': 'video_note', 'file_id': message.video_note.file_id}
+    if message.animation:
+        return {'type': 'animation', 'file_id': message.animation.file_id}
+    if message.audio:
+        return {'type': 'audio', 'file_id': message.audio.file_id,
+                'name': message.audio.file_name or 'аудио'}
+    if message.sticker:
+        return {'type': 'sticker', 'file_id': message.sticker.file_id}
+    return None
 
 
 async def log_support_message(uid: int, direction: str, text: str,
-                              operator_login: str | None = None):
+                              operator_login: str | None = None,
+                              attachment: dict | None = None):
     try:
         await support_messages.insert_one({
             'user_id': uid,
             'direction': direction,
             'text': (text or '')[:3500],
+            'attachment': attachment,
             'operator_login': operator_login,
             'source': 'tg',
             'timestamp': datetime.datetime.now(datetime.timezone.utc),
@@ -112,13 +156,15 @@ async def handle_user_message(message: types.Message):
         return
 
     uid = message.from_user.id
-    await log_support_message(uid, 'user', _message_text_for_log(message))   # <-- единственное место
+    await log_support_message(uid, 'user', _message_text_for_log(message),
+                              attachment=_attachment_for_log(message))   # <-- единственное место
 
     user_doc = await users.find_one({'user_data.user_id': uid}) or {}
     # ... дальше без изменений
 ```
 
 Больше нигде в этом хендлере логировать не нужно — иначе будут дубли.
+(Импортируйте `_attachment_for_log` вместе с остальными хелперами.)
 
 **handlers/admin.py** — логируем ответы операторов из треда. В
 `relay_operator_message_to_user`, в ветке успеха после `_set_reaction(message, '👍')`:
@@ -127,7 +173,9 @@ async def handle_user_message(message: types.Message):
 from utils.utils import log_support_message, _message_text_for_log   # к существующим импортам
 
 op_login = (message.from_user.username or message.from_user.full_name or 'operator')
-await log_support_message(uid, 'operator', _message_text_for_log(message), operator_login=op_login)
+await log_support_message(uid, 'operator', _message_text_for_log(message),
+                          operator_login=op_login,
+                          attachment=_attachment_for_log(message))
 ```
 
 Опционально — в обработчиках закрытия тикета (`on_admin_close_ticket_btn`,

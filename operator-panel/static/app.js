@@ -934,9 +934,71 @@ async function viewTicket(userId) {
   });
 }
 
+const ATT_CACHE = {}; // file_id -> blob URL (чтобы автообновление не перекачивало файлы)
+
+function attachmentHtml(m) {
+  const a = m.attachment;
+  if (!a || !a.file_id) return '';
+  const id = esc(a.file_id);
+  if (a.type === 'photo' || a.type === 'sticker') {
+    return `<div class="att" data-file="${id}" data-att-type="img"><span class="spinner"></span></div>`;
+  }
+  if (a.type === 'voice' || a.type === 'audio') {
+    return `<div class="att" data-file="${id}" data-att-type="audio"><span class="spinner"></span></div>`;
+  }
+  if (a.type === 'video' || a.type === 'video_note' || a.type === 'animation') {
+    return `<div class="att" data-file="${id}" data-att-type="video"><span class="spinner"></span></div>`;
+  }
+  return `<div class="att"><button class="att-chip" data-file="${id}" data-att-type="download">📄 ${esc(a.name || 'Файл')} — открыть</button></div>`;
+}
+
+async function fetchAttachment(fileId) {
+  if (ATT_CACHE[fileId]) return ATT_CACHE[fileId];
+  const resp = await fetch('/api/tickets/file/' + encodeURIComponent(fileId), {
+    headers: { Authorization: 'Bearer ' + S.token },
+  });
+  if (!resp.ok) throw new Error('Вложение недоступно');
+  const url = URL.createObjectURL(await resp.blob());
+  ATT_CACHE[fileId] = url;
+  return url;
+}
+
+function hydrateAttachments(root) {
+  root.querySelectorAll('[data-file]').forEach(async el => {
+    if (el.dataset.hydrated) return;
+    el.dataset.hydrated = '1';
+    const type = el.dataset.attType;
+    if (type === 'download') {
+      el.onclick = async () => {
+        el.disabled = true;
+        try { window.open(await fetchAttachment(el.dataset.file), '_blank'); }
+        catch (e) { toast('Не удалось загрузить вложение', 'err'); }
+        el.disabled = false;
+      };
+      return;
+    }
+    try {
+      const url = await fetchAttachment(el.dataset.file);
+      if (type === 'img') {
+        el.innerHTML = `<img src="${url}" alt="вложение">`;
+        el.querySelector('img').onclick = () => window.open(url, '_blank');
+      } else if (type === 'audio') {
+        el.innerHTML = `<audio controls src="${url}"></audio>`;
+      } else if (type === 'video') {
+        el.innerHTML = `<video controls src="${url}"></video>`;
+      }
+    } catch (e) {
+      el.innerHTML = '<span class="muted" style="font-size:12px">вложение недоступно</span>';
+    }
+  });
+}
+
 function renderChat(messages) {
   const $chat = document.getElementById('tk-chat');
   if (!$chat) return;
+  const key = JSON.stringify(messages.map(m => m.timestamp));
+  if ($chat.dataset.key === key) return; // ничего нового — не перерисовываем (не сбрасываем плееры)
+  $chat.dataset.key = key;
   if (!messages.length) {
     $chat.innerHTML = '<div class="center">Сообщений пока нет</div>';
     return;
@@ -946,11 +1008,10 @@ function renderChat(messages) {
     const who = m.direction === 'operator'
       ? (m.operator_login ? esc(m.operator_login) + (m.source === 'tg' ? ' (TG)' : ' (сайт)') : 'оператор')
       : m.direction === 'system' ? '' : 'пользователь';
-    return `<div class="msg ${cls}">
-      <div>${esc(m.text)}</div>
-      <div class="msg-meta">${who ? who + ' · ' : ''}${fmtDate(m.timestamp)}</div>
-    </div>`;
+    const text = m.text ? `<div class="msg-text">${esc(m.text)}</div>` : '';
+    return `<div class="msg ${cls}">${text}${attachmentHtml(m)}<div class="msg-meta">${who ? who + ' · ' : ''}${fmtDate(m.timestamp)}</div></div>`;
   }).join('');
+  hydrateAttachments($chat);
   $chat.scrollTop = $chat.scrollHeight;
 }
 

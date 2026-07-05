@@ -80,6 +80,23 @@ class TelegramClient:
             "disable_web_page_preview": True,
         })
 
+    async def get_file(self, file_id: str) -> tuple[bytes, str]:
+        """Download an attachment by Telegram file_id. Returns (content, file_path).
+        Works for files up to 20 MB (Bot API limit)."""
+        result = await self._call("getFile", {"file_id": file_id})
+        path = (result or {}).get("file_path")
+        if not path:
+            raise TelegramError("Файл недоступен (нет file_path)")
+        url = f"https://api.telegram.org/file/bot{self.token}/{path}"
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.get(url)
+        except httpx.HTTPError as e:
+            raise TelegramError(f"Не удалось скачать файл: {e.__class__.__name__}")
+        if resp.status_code != 200:
+            raise TelegramError(f"Не удалось скачать файл (HTTP {resp.status_code})")
+        return resp.content, path
+
     async def set_thread_status_title(self, thread_id: int, user_id: int, status: str) -> None:
         """Rename the forum topic to '🟢 Тикет #uid' — same convention as the bot."""
         emoji = STATUS_EMOJI.get(status, "🟡")

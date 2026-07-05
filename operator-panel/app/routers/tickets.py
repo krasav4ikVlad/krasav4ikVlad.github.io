@@ -71,13 +71,15 @@ async def _find_ticket_user(user_id: int) -> tuple[dict, dict]:
 
 
 async def _store_message(*, user_id: int, direction: str, text: str,
-                         operator_login: str | None = None, source: str = "site") -> dict:
+                         operator_login: str | None = None, source: str = "site",
+                         attachment: dict | None = None) -> dict:
     msg = {
         "user_id": user_id,
         "direction": direction,          # user | operator | system
         "text": text,
         "operator_login": operator_login,
         "source": source,                # site | tg
+        "attachment": attachment,        # {type, file_id, name?} | None
         "timestamp": utcnow(),
     }
     await _messages_col().insert_one(msg)
@@ -121,6 +123,38 @@ async def list_tickets(
             }
         items.append(brief)
     return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+# ---------------------------------------------------------------- attachments
+
+@router.get("/file/{file_id}")
+async def ticket_file(file_id: str, _op: CurrentOperator):
+    """Проксирует вложение из Telegram (getFile) авторизованному оператору.
+    file_id берётся из support_messages.attachment.file_id."""
+    import mimetypes
+    import re as _re
+    from pathlib import PurePosixPath
+
+    from fastapi.responses import Response
+
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{10,200}", file_id):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Некорректный file_id")
+    try:
+        content, path = await get_telegram().get_file(file_id)
+    except TelegramError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Вложение недоступно: {e.message}")
+
+    mime = mimetypes.guess_type(path)[0]
+    if mime is None:
+        mime = "audio/ogg" if path.endswith(".oga") else "application/octet-stream"
+    return Response(
+        content,
+        media_type=mime,
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Content-Disposition": f'inline; filename="{PurePosixPath(path).name}"',
+        },
+    )
 
 
 # ---------------------------------------------------------------- ticket view
