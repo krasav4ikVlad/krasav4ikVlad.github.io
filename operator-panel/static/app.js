@@ -237,6 +237,7 @@ function viewLogin() {
   $view.innerHTML = `
     <div class="login-wrap"><div class="card login-card">
       <h1>Панель оператора</h1>
+      <div class="login-sub">поддержка · управление пользователями</div>
       <form id="login-form">
         <div class="field"><label>Логин</label><input name="login" required autocomplete="username"></div>
         <div class="field"><label>Пароль</label><input name="password" type="password" required autocomplete="current-password"></div>
