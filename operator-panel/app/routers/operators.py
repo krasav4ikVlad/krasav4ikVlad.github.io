@@ -12,7 +12,8 @@ from ..audit import write_audit
 from ..config import get_settings
 from ..database import get_db
 from ..schemas import OperatorCreate, OperatorPublic, OperatorUpdate
-from ..security import OwnerOperator, client_ip, generate_temp_password, hash_password
+from ..security import (OwnerOperator, client_ip, generate_temp_password,
+                        hash_password, invalidate_operator_cache)
 from ..utils import utcnow
 from .auth import operator_public
 
@@ -89,6 +90,7 @@ async def reset_operator_password(operator_id: str, request: Request, owner: Own
         {"$set": {"password_hash": hash_password(temp_password),
                   "must_change_password": True}},
     )
+    invalidate_operator_cache(operator_id)
     await write_audit(
         operator=owner, action=audit.ACTION_OPERATOR_PWD_RESET, target_user_id=None,
         new_value={"login": existing["login"]},
@@ -128,6 +130,7 @@ async def update_operator(operator_id: str, body: OperatorUpdate,
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Нет изменений")
 
     await _col().update_one({"_id": oid}, {"$set": updates})
+    invalidate_operator_cache(operator_id)
     updated = await _col().find_one({"_id": oid})
 
     await write_audit(

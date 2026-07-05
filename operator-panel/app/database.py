@@ -18,6 +18,9 @@ def get_client() -> AsyncIOMotorClient:
             settings.mongo_url,
             serverSelectionTimeoutMS=5000,
             uuidRepresentation="standard",
+            # Mongo на другом сервере: сжатие сильно ускоряет передачу больших
+            # документов (у пользователей огромные массивы logs/transactions)
+            compressors="zlib",
         )
     return _client
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -42,6 +43,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Operator Support Panel", version="1.0.0", lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)  # no public API docs
+app.add_middleware(GZipMiddleware, minimum_size=1024)  # большие JSON-ответы жмутся в разы
 
 settings = get_settings()
 if settings.cors_origins:

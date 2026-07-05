@@ -110,19 +110,44 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+# Короткий кэш операторов: без него каждый API-запрос делает лишний сетевой
+# круг до MongoDB (она на другом сервере) только ради проверки учётки.
+# Деактивация/смена прав применяются мгновенно — соответствующие эндпоинты
+# сбрасывают кэш; TTL — страховка для правок напрямую в базе.
+_OP_CACHE_TTL = 15.0
+_op_cache: dict[str, tuple[float, dict]] = {}
+
+
+def invalidate_operator_cache(operator_id: str | None = None) -> None:
+    if operator_id is None:
+        _op_cache.clear()
+    else:
+        _op_cache.pop(operator_id, None)
+
+
 async def _resolve_operator(
     credentials: HTTPAuthorizationCredentials | None,
 ) -> dict:
-    """Resolve the JWT to a live operator document (so deactivation applies immediately)."""
+    """Resolve the JWT to a live operator document."""
     if credentials is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Требуется авторизация")
     payload = decode_token(credentials.credentials)
     settings = get_settings()
+    sub = payload.get("sub", "")
     try:
-        oid = ObjectId(payload["sub"])
+        oid = ObjectId(sub)
     except (InvalidId, KeyError):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Недействительный токен")
-    operator = await get_db()[settings.operators_collection].find_one({"_id": oid})
+
+    now = time.monotonic()
+    cached = _op_cache.get(sub)
+    if cached and now - cached[0] < _OP_CACHE_TTL:
+        operator = cached[1]
+    else:
+        operator = await get_db()[settings.operators_collection].find_one({"_id": oid})
+        if operator is not None:
+            _op_cache[sub] = (now, operator)
+
     if operator is None or not operator.get("active", False):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Учётная запись отключена")
     return operator

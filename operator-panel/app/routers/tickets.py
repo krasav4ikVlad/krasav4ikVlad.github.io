@@ -122,18 +122,29 @@ async def list_tickets(
         .skip((page - 1) * page_size)
         .limit(page_size)
     )
-    items = []
-    async for doc in cursor:
-        brief = _ticket_brief(doc)
-        last = await _messages_col().find_one({"user_id": brief["user_id"]},
-                                              sort=[("timestamp", -1)])
-        if last:
-            brief["last_message"] = {
-                "direction": last.get("direction"),
-                "text": (last.get("text") or "")[:120],
-                "timestamp": jsonable(last.get("timestamp")),
-            }
-        items.append(brief)
+    items = [_ticket_brief(doc) async for doc in cursor]
+
+    # Последние сообщения всех тикетов страницы — ОДНИМ запросом (был N+1,
+    # что при удалённой Mongo давало 30+ сетевых кругов на каждое обновление)
+    ids = [b["user_id"] for b in items if b["user_id"] is not None]
+    if ids:
+        pipeline = [
+            {"$match": {"user_id": {"$in": ids}}},
+            {"$sort": {"timestamp": -1}},
+            {"$group": {"_id": "$user_id",
+                        "direction": {"$first": "$direction"},
+                        "text": {"$first": "$text"},
+                        "timestamp": {"$first": "$timestamp"}}},
+        ]
+        last_map = {d["_id"]: d async for d in _messages_col().aggregate(pipeline)}
+        for brief in items:
+            last = last_map.get(brief["user_id"])
+            if last:
+                brief["last_message"] = {
+                    "direction": last.get("direction"),
+                    "text": (last.get("text") or "")[:120],
+                    "timestamp": jsonable(last.get("timestamp")),
+                }
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 

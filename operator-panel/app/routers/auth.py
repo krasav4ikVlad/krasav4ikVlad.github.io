@@ -14,6 +14,7 @@ from ..security import (
     create_access_token,
     hash_password,
     register_failed_login,
+    invalidate_operator_cache,
     reset_login_attempts,
     resolved_permissions,
     verify_password,
@@ -81,6 +82,7 @@ async def change_password(body: ChangePasswordRequest, request: Request,
         {"$set": {"password_hash": hash_password(body.new_password),
                   "must_change_password": False}},
     )
+    invalidate_operator_cache(str(operator["_id"]))
     await write_audit(operator=operator, action=ACTION_PASSWORD_CHANGE,
                       target_user_id=None, ip=client_ip(request))
     updated = {**operator, "must_change_password": False}

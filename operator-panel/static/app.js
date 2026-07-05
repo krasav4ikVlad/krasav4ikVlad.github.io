@@ -840,7 +840,7 @@ function viewTickets() {
   };
   loadTickets();
   // автообновление списка — можно сидеть и ждать новые тикеты
-  S.ticketTimer = setInterval(() => loadTickets(true), 20000);
+  S.ticketTimer = setInterval(() => loadTickets(true), 5000);
 }
 
 const TK_SORT_LABELS = [
@@ -973,7 +973,7 @@ async function viewTicket(userId) {
     } catch (e) { /* тихо: таймер может пережить уход со страницы */ }
   };
   document.getElementById('tk-refresh').onclick = refresh;
-  S.ticketTimer = setInterval(refresh, 15000);
+  S.ticketTimer = setInterval(refresh, 5000);
 
   const closeBtn = document.getElementById('tk-close');
   if (closeBtn) closeBtn.onclick = () => {

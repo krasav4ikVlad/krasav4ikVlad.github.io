@@ -6,7 +6,7 @@ from datetime import timedelta
 from fastapi import APIRouter, Query
 
 from ..security import CurrentOperator
-from ..user_service import brief_view, find_user_or_404, search_users
+from ..user_service import brief_view, find_user_or_404, search_users, users_col
 from ..utils import jsonable, parse_any_ts
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -100,6 +100,42 @@ def _paginate(items: list, page: int, page_size: int) -> dict:
     }
 
 
+async def _sliced_page(user_id: int, array_field: str, page: int, page_size: int) -> dict | None:
+    """Страница embedded-массива (новые сверху) без выкачивания всего массива:
+    у активных пользователей logs/transactions — тысячи записей и мегабайты,
+    а Mongo на другом сервере. Возвращает None, если у сервера/мока нет нужных
+    операторов агрегации — тогда вызывающий код падает обратно на полную выборку."""
+    end_excl_expr = {"$max": [0, {"$subtract": [
+        {"$size": {"$ifNull": [f"${array_field}", []]}}, (page - 1) * page_size]}]}
+    pipeline = [
+        {"$match": {"user_data.user_id": user_id}},
+        {"$project": {
+            "_id": 0,
+            "total": {"$size": {"$ifNull": [f"${array_field}", []]}},
+            "items": {"$slice": [
+                {"$ifNull": [f"${array_field}", []]},
+                {"$max": [0, {"$subtract": [
+                    {"$size": {"$ifNull": [f"${array_field}", []]}}, page * page_size]}]},
+                {"$max": [1, {"$min": [page_size, end_excl_expr]}]},
+            ]},
+        }},
+    ]
+    try:
+        docs = await users_col().aggregate(pipeline).to_list(1)
+    except Exception:
+        return None
+    if not docs:
+        return None
+    doc = docs[0]
+    total = doc.get("total", 0)
+    # страница за пределами массива -> пустой список
+    if (page - 1) * page_size >= total:
+        items: list = []
+    else:
+        items = list(reversed(doc.get("items") or []))
+    return {"total": total, "page": page, "page_size": page_size, "items": jsonable(items)}
+
+
 @router.get("/{user_id}/logs")
 async def user_logs(
     user_id: int,
@@ -111,6 +147,13 @@ async def user_logs(
     page_size: int = Query(default=50, ge=1, le=500),
     _op: CurrentOperator = None,
 ):
+    # Без фильтров отдаём страницу прямо из Mongo ($slice) — не гоняем весь массив.
+    # None = юзер не найден ИЛИ агрегация недоступна -> обычный путь ниже (там и 404)
+    if not any((search, action_type, date_from, date_to)):
+        sliced = await _sliced_page(user_id, "logs", page, page_size)
+        if sliced is not None:
+            return sliced
+
     doc = await find_user_or_404(user_id, projection={"logs": 1})
     entries = list(reversed(doc.get("logs") or []))  # newest first
     if action_type:
@@ -131,6 +174,16 @@ async def user_transactions(
     page_size: int = Query(default=50, ge=1, le=500),
     _op: CurrentOperator = None,
 ):
+    # Без фильтров — постраничные $slice-окна обоих массивов вместо полной выборки
+    if not any((search, date_from, date_to)):
+        import asyncio
+        bl, tx = await asyncio.gather(
+            _sliced_page(user_id, "info.logs_balance", page, page_size),
+            _sliced_page(user_id, "info.transactions", page, page_size),
+        )
+        if bl is not None and tx is not None:
+            return {"balance_log": bl, "transactions": tx}
+
     doc = await find_user_or_404(user_id, projection={"info.transactions": 1, "info.logs_balance": 1})
     info = doc.get("info") or {}
     balance_log = _filter_entries(
