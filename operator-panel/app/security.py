@@ -56,6 +56,14 @@ _bearer = HTTPBearer(auto_error=False)
 
 # ---------------------------------------------------------------- passwords
 
+def generate_temp_password() -> str:
+    """Readable one-time password like 'Kf4-mQp2-9tZx' (no ambiguous chars)."""
+    import secrets
+    alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"
+    part = lambda n: "".join(secrets.choice(alphabet) for _ in range(n))  # noqa: E731
+    return f"{part(3)}-{part(4)}-{part(4)}"
+
+
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("ascii")
 
@@ -102,8 +110,8 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-async def get_current_operator(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+async def _resolve_operator(
+    credentials: HTTPAuthorizationCredentials | None,
 ) -> dict:
     """Resolve the JWT to a live operator document (so deactivation applies immediately)."""
     if credentials is None:
@@ -120,6 +128,25 @@ async def get_current_operator(
     return operator
 
 
+async def get_current_operator_any_state(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> dict:
+    """Auth without the temp-password gate — only for /auth/me and /auth/change-password."""
+    return await _resolve_operator(credentials)
+
+
+async def get_current_operator(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> dict:
+    operator = await _resolve_operator(credentials)
+    if operator.get("must_change_password"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Вы вошли с временным паролем — сначала установите свой (кнопка «Сменить пароль»).",
+        )
+    return operator
+
+
 async def require_owner(operator: Annotated[dict, Depends(get_current_operator)]) -> dict:
     if operator.get("role") != ROLE_OWNER:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Доступно только владельцу")
@@ -127,6 +154,7 @@ async def require_owner(operator: Annotated[dict, Depends(get_current_operator)]
 
 
 CurrentOperator = Annotated[dict, Depends(get_current_operator)]
+CurrentOperatorAnyState = Annotated[dict, Depends(get_current_operator_any_state)]
 OwnerOperator = Annotated[dict, Depends(require_owner)]
 
 

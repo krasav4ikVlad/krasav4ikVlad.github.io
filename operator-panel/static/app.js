@@ -257,6 +257,62 @@ function viewLogin() {
       S.token = data.access_token;
       S.me = data.operator;
       localStorage.setItem('op_token', S.token);
+      if (S.me.must_change_password) S.pendingPwd = f.password.value;
+      location.hash = '#/search';
+      render();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove('hidden');
+    }
+  });
+}
+
+// ================================================================ forced password change
+
+function viewForcePassword() {
+  $topbar.classList.add('hidden');
+  $view.innerHTML = `
+    <div class="login-wrap"><div class="card login-card">
+      <h1>Новый пароль</h1>
+      <div class="login-sub">вы вошли с временным паролем</div>
+      <div class="muted" style="margin-bottom:16px; font-size:13px">
+        Придумайте свой пароль (минимум 8 символов). Временный пароль после этого перестанет действовать.</div>
+      <form id="pwd-form">
+        ${S.pendingPwd ? '' : `<div class="field"><label>Временный пароль</label>
+          <input name="current" type="password" required autocomplete="current-password"></div>`}
+        <div class="field"><label>Новый пароль</label>
+          <input name="pwd1" type="password" required minlength="8" autocomplete="new-password"></div>
+        <div class="field"><label>Ещё раз</label>
+          <input name="pwd2" type="password" required minlength="8" autocomplete="new-password"></div>
+        <button class="btn" style="width:100%" type="submit">Сохранить и продолжить</button>
+        <div class="error-note hidden" id="pwd-err"></div>
+      </form>
+      <div style="text-align:center; margin-top:14px">
+        <a href="#" id="pwd-logout" class="muted" style="font-size:13px">Выйти</a>
+      </div>
+    </div></div>`;
+  document.getElementById('pwd-logout').onclick = e => { e.preventDefault(); logout(); };
+  document.getElementById('pwd-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target;
+    const errEl = document.getElementById('pwd-err');
+    errEl.classList.add('hidden');
+    if (f.pwd1.value !== f.pwd2.value) {
+      errEl.textContent = 'Пароли не совпадают';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    try {
+      const me = await api('/api/auth/change-password', {
+        method: 'POST',
+        body: {
+          current_password: S.pendingPwd || f.current.value,
+          new_password: f.pwd1.value,
+        },
+      });
+      S.me = me;
+      S.pendingPwd = null;
+      toast('Пароль установлен ✓');
       location.hash = '#/search';
       render();
     } catch (err) {
@@ -819,6 +875,8 @@ const ACTION_LABELS = {
   device_limit_change: 'Лимит устройств', bypass_update: 'ByPass', device_reset: 'Отвязка устройств',
   email_change: 'Email', gift: 'Подарок', operator_create: 'Создание оператора',
   operator_update: 'Изменение оператора',
+  operator_password_reset: 'Сброс пароля оператора',
+  password_change: 'Смена своего пароля',
 };
 function actionLabel(a) { return ACTION_LABELS[a] || a; }
 
@@ -861,7 +919,8 @@ async function loadOperatorList() {
         <td>${esc(o.name)}</td>
         <td><span class="badge ${o.role === 'owner' ? 'badge-yellow' : 'badge-blue'}">${esc(o.role)}</span>
           ${o.role === 'operator' ? `<div class="muted" style="font-size:11.5px;margin-top:3px">прав: ${Object.values(o.permissions || {}).filter(Boolean).length}/${Object.keys(PERM_LABELS).length}</div>` : ''}</td>
-        <td>${o.active ? '<span class="badge badge-green">активен</span>' : '<span class="badge badge-red">отключён</span>'}</td>
+        <td>${o.active ? '<span class="badge badge-green">активен</span>' : '<span class="badge badge-red">отключён</span>'}
+          ${o.must_change_password ? '<div style="margin-top:3px"><span class="badge badge-yellow">врем. пароль</span></div>' : ''}</td>
         <td class="mono">${fmtDate(o.last_login_at)}</td>
         <td><button class="btn btn-ghost btn-sm" data-edit="${esc(o.id)}">Изменить</button></td>
       </tr>`).join('')}
@@ -907,7 +966,8 @@ function modalOperatorCreate() {
     <form id="op-form">
       <div class="field"><label>Логин (a-z, 0-9, _.-)</label><input name="login" required minlength="3" pattern="[a-zA-Z0-9_.\\-]+"></div>
       <div class="field"><label>Имя</label><input name="name" required></div>
-      <div class="field"><label>Пароль (мин. 8 символов)</label><input name="password" type="password" required minlength="8"></div>
+      <div class="muted" style="font-size:12.5px; margin-bottom:12px">
+        Пароль будет сгенерирован автоматически (временный). Оператор сменит его при первом входе.</div>
       <div class="field"><label>Роль</label>
         <select name="role"><option value="operator">operator</option><option value="owner">owner</option></select></div>
       ${permCheckboxesHtml(null)}
@@ -921,11 +981,10 @@ function modalOperatorCreate() {
     e.preventDefault();
     const f = e.target;
     try {
-      const body = { login: f.login.value.trim(), name: f.name.value.trim(), password: f.password.value, role: f.role.value };
+      const body = { login: f.login.value.trim(), name: f.name.value.trim(), role: f.role.value };
       if (body.role === 'operator') body.permissions = readPermCheckboxes($m);
-      await api('/api/operators', { method: 'POST', body });
-      closeModal();
-      toast('Оператор создан ✓');
+      const res = await api('/api/operators', { method: 'POST', body });
+      showTempPasswordModal(res.operator.login, res.temp_password, 'Оператор создан');
       loadOperatorList();
     } catch (err) {
       toast(err.message, 'err');
@@ -938,7 +997,6 @@ function modalOperatorEdit(op) {
     <h2>Оператор ${esc(op.login)}</h2>
     <form id="op-form">
       <div class="field"><label>Имя</label><input name="name" value="${esc(op.name)}"></div>
-      <div class="field"><label>Новый пароль (пусто = не менять)</label><input name="password" type="password" minlength="8"></div>
       <div class="field"><label>Роль</label>
         <select name="role">
           <option value="operator" ${op.role === 'operator' ? 'selected' : ''}>operator</option>
@@ -952,14 +1010,28 @@ function modalOperatorEdit(op) {
         <button type="button" class="btn btn-ghost" onclick="closeModal()">Отмена</button>
         <button type="submit" class="btn">Сохранить</button>
       </div>
+      <div style="border-top:1px solid var(--border); margin-top:16px; padding-top:14px">
+        <button type="button" class="btn btn-danger btn-sm" id="op-reset-pwd">Сбросить пароль</button>
+        <div class="muted" style="font-size:12px; margin-top:6px">
+          Будет сгенерирован новый временный пароль, оператор сменит его при входе.</div>
+      </div>
     </form>`);
   bindRolePermToggle($m);
+  $m.querySelector('#op-reset-pwd').onclick = async () => {
+    if (!confirm(`Сбросить пароль для «${op.login}»? Текущий пароль перестанет действовать.`)) return;
+    try {
+      const res = await api(`/api/operators/${op.id}/reset-password`, { method: 'POST' });
+      showTempPasswordModal(res.login, res.temp_password, 'Пароль сброшен');
+      loadOperatorList();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  };
   $m.querySelector('#op-form').addEventListener('submit', async e => {
     e.preventDefault();
     const f = e.target;
     const body = { name: f.name.value.trim(), role: f.role.value, active: f.active.checked };
     if (f.role.value === 'operator') body.permissions = readPermCheckboxes($m);
-    if (f.password.value) body.password = f.password.value;
     try {
       await api('/api/operators/' + op.id, { method: 'PATCH', body });
       closeModal();
@@ -969,6 +1041,30 @@ function modalOperatorEdit(op) {
       toast(err.message, 'err');
     }
   });
+}
+
+function showTempPasswordModal(login, tempPassword, title) {
+  const $m = openModal(`
+    <h2>${esc(title)}</h2>
+    <div class="muted" style="margin-bottom:12px; font-size:13px">
+      Передайте оператору логин и временный пароль. Пароль показывается
+      <b>только один раз</b> — при первом входе оператор установит свой.</div>
+    <div class="confirm-box">
+      Логин: <b class="mono">${esc(login)}</b><br>
+      Временный пароль: <b class="mono" id="tmp-pwd">${esc(tempPassword)}</b>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="tmp-copy">Скопировать</button>
+      <button class="btn" onclick="closeModal()">Готово</button>
+    </div>`);
+  $m.querySelector('#tmp-copy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(`Логин: ${login}\nВременный пароль: ${tempPassword}`);
+      toast('Скопировано ✓');
+    } catch (e) {
+      toast('Не удалось скопировать — выделите вручную', 'err');
+    }
+  };
 }
 
 // ================================================================ router
@@ -991,6 +1087,8 @@ async function render() {
     const ok = await loadMe();
     if (!ok) { viewLogin(); return; }
   }
+
+  if (S.me && S.me.must_change_password) { viewForcePassword(); return; }
 
   const userMatch = hash.match(/^#\/user\/(\d+)$/);
   if (userMatch) { setNav('search'); viewUser(parseInt(userMatch[1], 10)); return; }

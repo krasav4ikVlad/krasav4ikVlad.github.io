@@ -12,7 +12,7 @@ from ..audit import write_audit
 from ..config import get_settings
 from ..database import get_db
 from ..schemas import OperatorCreate, OperatorPublic, OperatorUpdate
-from ..security import OwnerOperator, client_ip, hash_password
+from ..security import OwnerOperator, client_ip, generate_temp_password, hash_password
 from ..utils import utcnow
 from .auth import operator_public
 
@@ -35,18 +35,23 @@ async def list_operators(_owner: OwnerOperator):
     return [operator_public(doc) async for doc in _col().find().sort("created_at", 1)]
 
 
-@router.post("", response_model=OperatorPublic, status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED)
 async def create_operator(body: OperatorCreate, request: Request, owner: OwnerOperator):
+    """Создание учётки: пароль генерируется сервером (временный), показывается
+    владельцу один раз. Оператор обязан сменить его при первом входе."""
     login = body.login.lower()
     if await _col().find_one({"login": login}):
         raise HTTPException(status.HTTP_409_CONFLICT, f"Логин «{body.login}» уже занят")
+
+    temp_password = generate_temp_password()
     doc = {
         "login": login,
-        "password_hash": hash_password(body.password),
+        "password_hash": hash_password(temp_password),
         "name": body.name.strip(),
         "role": body.role,
         "permissions": body.permissions,  # None = все права
         "active": True,
+        "must_change_password": True,
         "created_at": utcnow(),
         "created_by": str(owner["_id"]),
         "last_login_at": None,
@@ -59,10 +64,37 @@ async def create_operator(body: OperatorCreate, request: Request, owner: OwnerOp
 
     await write_audit(
         operator=owner, action=audit.ACTION_OPERATOR_CREATE, target_user_id=None,
-        new_value={"login": doc["login"], "name": doc["name"], "role": doc["role"]},
+        new_value={"login": doc["login"], "name": doc["name"], "role": doc["role"],
+                   "temp_password": True},
         ip=client_ip(request),
     )
-    return operator_public(doc)
+    # temp_password отдаётся в ответе ОДИН раз и нигде не сохраняется в открытом виде
+    return {"operator": operator_public(doc).model_dump(), "temp_password": temp_password}
+
+
+@router.post("/{operator_id}/reset-password")
+async def reset_operator_password(operator_id: str, request: Request, owner: OwnerOperator):
+    """Сброс пароля: генерирует новый временный, оператор обязан сменить его при входе."""
+    oid = _oid(operator_id)
+    existing = await _col().find_one({"_id": oid})
+    if existing is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Оператор не найден")
+    if oid == owner["_id"]:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "Свой пароль меняйте через «Сменить пароль», а не сбросом")
+
+    temp_password = generate_temp_password()
+    await _col().update_one(
+        {"_id": oid},
+        {"$set": {"password_hash": hash_password(temp_password),
+                  "must_change_password": True}},
+    )
+    await write_audit(
+        operator=owner, action=audit.ACTION_OPERATOR_PWD_RESET, target_user_id=None,
+        new_value={"login": existing["login"]},
+        ip=client_ip(request),
+    )
+    return {"login": existing["login"], "temp_password": temp_password}
 
 
 @router.patch("/{operator_id}", response_model=OperatorPublic)
@@ -92,9 +124,6 @@ async def update_operator(operator_id: str, body: OperatorUpdate,
     if body.permissions is not None:
         updates["permissions"] = body.permissions
         changed_public["permissions"] = body.permissions
-    if body.password is not None:
-        updates["password_hash"] = hash_password(body.password)
-        changed_public["password"] = "***changed***"
     if not updates:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Нет изменений")
 

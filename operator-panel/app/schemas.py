@@ -32,8 +32,9 @@ def _validate_permission_keys(v: dict[str, bool] | None) -> dict[str, bool] | No
 
 
 class OperatorCreate(BaseModel):
+    """Пароль не задаётся вручную: сервер генерирует временный,
+    оператор обязан сменить его при первом входе."""
     login: str = Field(min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_.-]+$")
-    password: str = Field(min_length=8, max_length=128)
     name: str = Field(min_length=1, max_length=128)
     role: Literal["operator", "owner"] = "operator"
     permissions: dict[str, bool] | None = Field(
@@ -44,12 +45,16 @@ class OperatorCreate(BaseModel):
 
 class OperatorUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
-    password: str | None = Field(default=None, min_length=8, max_length=128)
     role: Literal["operator", "owner"] | None = None
     active: bool | None = None
     permissions: dict[str, bool] | None = None
 
     _perm_keys = field_validator("permissions")(_validate_permission_keys)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class OperatorPublic(BaseModel):
@@ -58,6 +63,7 @@ class OperatorPublic(BaseModel):
     name: str
     role: str
     active: bool
+    must_change_password: bool = False
     permissions: dict[str, bool]  # effective (resolved) permission map
     created_at: str | None = None
     last_login_at: str | None = None

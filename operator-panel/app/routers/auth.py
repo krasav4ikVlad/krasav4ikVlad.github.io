@@ -3,15 +3,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from ..audit import ACTION_LOGIN, write_audit
+from ..audit import ACTION_LOGIN, ACTION_PASSWORD_CHANGE, write_audit
 from ..config import get_settings
 from ..database import get_db
-from ..schemas import LoginRequest, OperatorPublic, TokenResponse
+from ..schemas import ChangePasswordRequest, LoginRequest, OperatorPublic, TokenResponse
 from ..security import (
-    CurrentOperator,
+    CurrentOperatorAnyState,
     check_login_allowed,
     client_ip,
     create_access_token,
+    hash_password,
     register_failed_login,
     reset_login_attempts,
     resolved_permissions,
@@ -29,6 +30,7 @@ def operator_public(op: dict) -> OperatorPublic:
         name=op.get("name", ""),
         role=op.get("role", "operator"),
         active=op.get("active", False),
+        must_change_password=bool(op.get("must_change_password")),
         permissions=resolved_permissions(op),
         created_at=to_iso_z(op["created_at"]) if op.get("created_at") else None,
         last_login_at=to_iso_z(op["last_login_at"]) if op.get("last_login_at") else None,
@@ -59,5 +61,27 @@ async def login(body: LoginRequest, request: Request):
 
 
 @router.get("/me", response_model=OperatorPublic)
-async def me(operator: CurrentOperator):
+async def me(operator: CurrentOperatorAnyState):
     return operator_public(operator)
+
+
+@router.post("/change-password", response_model=OperatorPublic)
+async def change_password(body: ChangePasswordRequest, request: Request,
+                          operator: CurrentOperatorAnyState):
+    """Смена собственного пароля. Обязательна после входа с временным паролем."""
+    if not verify_password(body.current_password, operator.get("password_hash", "")):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Текущий пароль неверен")
+    if body.current_password == body.new_password:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "Новый пароль совпадает с текущим")
+
+    settings = get_settings()
+    await get_db()[settings.operators_collection].update_one(
+        {"_id": operator["_id"]},
+        {"$set": {"password_hash": hash_password(body.new_password),
+                  "must_change_password": False}},
+    )
+    await write_audit(operator=operator, action=ACTION_PASSWORD_CHANGE,
+                      target_user_id=None, ip=client_ip(request))
+    updated = {**operator, "must_change_password": False}
+    return operator_public(updated)

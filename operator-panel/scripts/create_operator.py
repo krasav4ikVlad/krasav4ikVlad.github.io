@@ -86,6 +86,7 @@ async def main() -> None:
         "name": args.name,
         "role": args.role,
         "active": True,
+        "must_change_password": False,  # пароль задан осознанно с консоли
         "created_at": utcnow(),
         "created_by": "console",
         "last_login_at": None,
