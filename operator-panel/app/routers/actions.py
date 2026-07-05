@@ -22,7 +22,6 @@ from ..schemas import (
     BypassUpdateRequestFull,
     DeviceLimitRequestFull,
     DeviceResetRequest,
-    EmailChangeRequest,
     GiftRequestFull,
     SubscriptionExpireRequestFull,
 )
@@ -51,7 +50,8 @@ async def change_balance(user_id: int, body: BalanceChangeRequest, request: Requ
         "timestamp": bot_ts_now(),
     }
     query: dict = {"user_data.user_id": user_id}
-    if amount < 0 and not body.allow_negative:
+    if amount < 0:
+        # Баланс никогда не уходит в минус — атомарное условие в самом запросе
         query["info.balance"] = {"$gte": -amount}
 
     before = await users_col().find_one_and_update(
@@ -61,13 +61,13 @@ async def change_balance(user_id: int, body: BalanceChangeRequest, request: Requ
         return_document=ReturnDocument.BEFORE,
     )
     if before is None:
-        # Either the user doesn't exist or the guarded deduction would go negative
+        # Either the user doesn't exist or the deduction would go negative
         doc = await find_user_or_404(user_id, projection={"info.balance": 1})
         current = (doc.get("info") or {}).get("balance", 0)
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"Недостаточно средств: баланс {current}, списание {-amount}. "
-            f"Включите «разрешить минус», если списание нужно провести всё равно.",
+            f"Баланс не может уйти в минус.",
         )
 
     old_balance = (before.get("info") or {}).get("balance", 0)
@@ -76,7 +76,7 @@ async def change_balance(user_id: int, body: BalanceChangeRequest, request: Requ
         operator=operator, action=audit.ACTION_BALANCE_CHANGE, target_user_id=user_id,
         old_value={"balance": old_balance}, new_value={"balance": new_balance},
         reason=body.reason, ip=client_ip(request),
-        extra={"amount": amount, "allow_negative": body.allow_negative},
+        extra={"amount": amount},
     )
     return {"ok": True, "old_balance": old_balance, "new_balance": new_balance}
 
@@ -146,11 +146,17 @@ async def change_subscription_expire(user_id: int, body: SubscriptionExpireReque
                                              expire_at=new_iso)
     # The bot stores expireAt as a native BSON Date (it calls .strftime on it) —
     # write a datetime, never a string, or the bot crashes rendering the date.
-    await users_col().update_one({"user_data.user_id": user_id},
-                                 {"$set": {"vpn.expireAt": new_dt}})
+    # ByPass is part of the same subscription: its expiry always follows expireAt.
+    old_bypass_expire = vpn.get("bypass_expireAt")
+    await users_col().update_one(
+        {"user_data.user_id": user_id},
+        {"$set": {"vpn.expireAt": new_dt, "vpn.bypass_expireAt": new_dt}},
+    )
     await write_audit(
         operator=operator, action=audit.ACTION_SUB_EXPIRE, target_user_id=user_id,
-        old_value={"expireAt": jsonable(old_expire)}, new_value={"expireAt": new_iso},
+        old_value={"expireAt": jsonable(old_expire),
+                   "bypass_expireAt": jsonable(old_bypass_expire)},
+        new_value={"expireAt": new_iso, "bypass_expireAt": new_iso},
         reason=body.reason, ip=client_ip(request),
         remnawave_synced=synced, remnawave_error=sync_err,
         extra={"days": body.days} if body.days is not None else None,
@@ -190,58 +196,40 @@ async def change_device_limit(user_id: int, body: DeviceLimitRequestFull,
 @router.post("/{user_id}/bypass")
 async def update_bypass(user_id: int, body: BypassUpdateRequestFull,
                         request: Request, operator: CurrentOperator):
-    """Срок ByPass и/или лимит трафика. traffic_limit_gb — абсолютное значение,
-    add_traffic_gb — прибавка (может быть отрицательной)."""
+    """Лимит трафика ByPass: traffic_limit_gb — точное значение,
+    add_traffic_gb — прибавка (может быть отрицательной).
+    Срок ByPass не меняется отдельно — он всегда равен сроку подписки."""
     ensure_permission(operator, audit.ACTION_BYPASS_UPDATE)
     if body.traffic_limit_gb is not None and body.add_traffic_gb is not None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             "Укажите либо traffic_limit_gb, либо add_traffic_gb")
-    if body.days is not None and body.expire_at is not None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            "Укажите либо days, либо expire_at")
-    if all(v is None for v in (body.days, body.expire_at, body.traffic_limit_gb, body.add_traffic_gb)):
+    if body.traffic_limit_gb is None and body.add_traffic_gb is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Нет изменений")
 
     doc = await find_user_or_404(user_id, projection={"vpn": 1})
     vpn = doc.get("vpn") or {}
-    old_expire = vpn.get("bypass_expireAt")
     old_bytes = vpn.get("bypass_trafficLimitBytes") or 0
 
-    updates: dict = {}
-    new_expire_dt = None
-    if body.days is not None:
-        new_expire_dt = shift_expire(old_expire, body.days)
-    elif body.expire_at is not None:
-        new_expire_dt = parse_any_ts(body.expire_at)
-    if new_expire_dt:
-        # native datetime — same reason as vpn.expireAt: the bot strftime's it
-        updates["vpn.bypass_expireAt"] = new_expire_dt
-
-    new_bytes = None
     if body.traffic_limit_gb is not None:
         new_bytes = int(body.traffic_limit_gb * GB)
-    elif body.add_traffic_gb is not None:
+    else:
         new_bytes = max(0, int(old_bytes + body.add_traffic_gb * GB))
-    if new_bytes is not None:
-        updates["vpn.bypass_trafficLimitBytes"] = new_bytes
 
-    # Remnawave user's trafficLimitBytes mirrors the bypass traffic limit;
-    # bypass expiry is bot-side logic and lives only in MongoDB.
-    synced, sync_err = None, None
-    if new_bytes is not None:
-        synced, sync_err = await _sync_remnawave(vpn=vpn, force_local=body.force_local,
-                                                 traffic_limit_bytes=new_bytes)
+    # Remnawave user's trafficLimitBytes mirrors the bypass traffic limit
+    synced, sync_err = await _sync_remnawave(vpn=vpn, force_local=body.force_local,
+                                             traffic_limit_bytes=new_bytes)
 
-    await users_col().update_one({"user_data.user_id": user_id}, {"$set": updates})
+    await users_col().update_one({"user_data.user_id": user_id},
+                                 {"$set": {"vpn.bypass_trafficLimitBytes": new_bytes}})
     await write_audit(
         operator=operator, action=audit.ACTION_BYPASS_UPDATE, target_user_id=user_id,
-        old_value={"bypass_expireAt": jsonable(old_expire), "bypass_trafficLimitBytes": old_bytes},
-        new_value={"bypass_expireAt": jsonable(new_expire_dt or old_expire),
-                   "bypass_trafficLimitBytes": new_bytes if new_bytes is not None else old_bytes},
+        old_value={"bypass_trafficLimitBytes": old_bytes},
+        new_value={"bypass_trafficLimitBytes": new_bytes},
         reason=body.reason, ip=client_ip(request),
         remnawave_synced=synced, remnawave_error=sync_err,
     )
-    return {"ok": True, "updates": jsonable(updates),
+    return {"ok": True, "old_traffic_limit_bytes": old_bytes,
+            "new_traffic_limit_bytes": new_bytes,
             "remnawave_synced": synced, "remnawave_error": sync_err}
 
 
@@ -296,28 +284,6 @@ async def reset_devices(user_id: int, body: DeviceResetRequest,
     return {"ok": True, "removed": removed}
 
 
-# =============================================================== email
-
-@router.post("/{user_id}/email")
-async def change_email(user_id: int, body: EmailChangeRequest,
-                       request: Request, operator: CurrentOperator):
-    ensure_permission(operator, audit.ACTION_EMAIL_CHANGE)
-    doc = await find_user_or_404(user_id, projection={"info.email": 1})
-    old_email = (doc.get("info") or {}).get("email")
-    new_email = str(body.email).lower()
-    if old_email == new_email:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Email уже установлен в это значение")
-
-    await users_col().update_one({"user_data.user_id": user_id},
-                                 {"$set": {"info.email": new_email}})
-    await write_audit(
-        operator=operator, action=audit.ACTION_EMAIL_CHANGE, target_user_id=user_id,
-        old_value={"email": old_email}, new_value={"email": new_email},
-        reason=body.reason, ip=client_ip(request),
-    )
-    return {"ok": True, "old_email": old_email, "new_email": new_email}
-
-
 # =============================================================== gift
 
 @router.post("/{user_id}/gift")
@@ -340,7 +306,9 @@ async def gift(user_id: int, body: GiftRequestFull, request: Request, operator: 
     if body.days is not None:
         new_expire_dt = shift_expire(old_expire, body.days)
         new_expire_iso = to_iso_z(new_expire_dt)
+        # ByPass expiry always follows the subscription expiry
         updates["vpn.expireAt"] = new_expire_dt  # native datetime, the bot strftime's it
+        updates["vpn.bypass_expireAt"] = new_expire_dt
     if body.bypass_gb is not None:
         new_bytes = int(old_bytes + body.bypass_gb * GB)
         updates["vpn.bypass_trafficLimitBytes"] = new_bytes

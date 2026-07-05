@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------------------------------------------------------------- auth
@@ -79,12 +79,9 @@ class ReasonMixin(BaseModel):
 
 
 class BalanceChangeRequest(ReasonMixin):
-    """amount > 0 — начислить, amount < 0 — списать. Лимитов нет."""
+    """amount > 0 — начислить, amount < 0 — списать.
+    Баланс никогда не может уйти в минус — списание больше остатка отклоняется."""
     amount: float
-    allow_negative: bool = Field(
-        default=False,
-        description="Разрешить уход баланса в минус при списании",
-    )
 
     @field_validator("amount")
     @classmethod
@@ -117,21 +114,10 @@ class DeviceLimitRequest(ReasonMixin):
 
 
 class BypassUpdateRequest(ReasonMixin):
-    """Обновление ByPass: срок и/или лимит трафика. Хотя бы одно поле."""
-    days: int | None = Field(default=None, ge=-3650, le=3650)
-    expire_at: str | None = None
+    """Обновление лимита трафика ByPass. Срок ByPass всегда равен сроку подписки
+    и отдельно не меняется."""
     traffic_limit_gb: float | None = Field(default=None, ge=0, le=1_000_000)
     add_traffic_gb: float | None = Field(default=None, ge=-1_000_000, le=1_000_000)
-
-    @field_validator("expire_at")
-    @classmethod
-    def validate_iso(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        from .utils import parse_any_ts
-        if parse_any_ts(v) is None:
-            raise ValueError("Неверный формат даты, ожидается ISO 8601")
-        return v
 
 
 class DeviceResetRequest(ReasonMixin):
@@ -139,10 +125,6 @@ class DeviceResetRequest(ReasonMixin):
         default=None, max_length=256,
         description="Конкретное устройство; пусто = отвязать все",
     )
-
-
-class EmailChangeRequest(ReasonMixin):
-    email: EmailStr
 
 
 class GiftRequest(ReasonMixin):

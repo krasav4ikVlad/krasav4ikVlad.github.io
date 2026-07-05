@@ -26,9 +26,8 @@ PERMISSIONS: dict[str, str] = {
     "balance_change": "Изменение баланса",
     "subscription_expire_change": "Срок подписки",
     "device_limit_change": "Лимит устройств",
-    "bypass_update": "ByPass (срок и трафик)",
+    "bypass_update": "ByPass (трафик)",
     "device_reset": "Отвязка устройств",
-    "email_change": "Изменение email",
     "gift": "Подарки (дни / ГБ)",
 }
 

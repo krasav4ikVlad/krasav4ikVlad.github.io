@@ -92,9 +92,8 @@ const PERM_LABELS = {
   balance_change: 'Изменение баланса',
   subscription_expire_change: 'Срок подписки',
   device_limit_change: 'Лимит устройств',
-  bypass_update: 'ByPass (срок и трафик)',
+  bypass_update: 'ByPass (трафик)',
   device_reset: 'Отвязка устройств',
-  email_change: 'Изменение email',
   gift: 'Подарки (дни / ГБ)',
 };
 
@@ -341,7 +340,6 @@ async function viewUser(userId) {
         <div class="stat"><div class="stat-label">Баланс</div><div class="stat-value">${fmtNum(u.balance)} ₽</div></div>
         <div class="stat"><div class="stat-label">Подписка до</div><div class="stat-value">${fmtDate(vpn.expireAt)}</div></div>
         <div class="stat"><div class="stat-label">Лимит устройств</div><div class="stat-value">${esc(vpn.hwidDeviceLimit ?? '—')}</div></div>
-        <div class="stat"><div class="stat-label">ByPass до</div><div class="stat-value">${fmtDate(vpn.bypass_expireAt)}</div></div>
         <div class="stat"><div class="stat-label">ByPass трафик</div><div class="stat-value">${fmtBytes(vpn.bypass_trafficLimitBytes)}</div></div>
         <div class="stat"><div class="stat-label">Реф. баланс</div><div class="stat-value">${fmtNum(u.ref_withdrawable)} ₽</div></div>
         <div class="stat"><div class="stat-label">Email</div><div class="stat-value" style="font-size:14px">${esc(u.email || '—')}</div></div>
@@ -354,8 +352,7 @@ async function viewUser(userId) {
         ${can('device_limit_change') ? '<button class="btn" id="act-devlimit">Лимит устройств</button>' : ''}
         ${can('bypass_update') ? '<button class="btn" id="act-bypass">ByPass</button>' : ''}
         ${can('gift') ? '<button class="btn" id="act-gift">Подарить</button>' : ''}
-        ${can('email_change') ? '<button class="btn btn-ghost" id="act-email">Email</button>' : ''}
-        ${can('device_reset') ? '<button class="btn btn-danger" id="act-devreset">Отвязать устройства</button>' : ''}
+        ${can('device_reset') ? '<button class="btn btn-danger" id="act-devreset">Отвязать все устройства</button>' : ''}
       </div>
     </div>
 
@@ -375,7 +372,6 @@ async function viewUser(userId) {
   on('act-devlimit', () => modalDeviceLimit(userId, vpn, reload));
   on('act-bypass', () => modalBypass(userId, vpn, reload));
   on('act-gift', () => modalGift(userId, vpn, reload));
-  on('act-email', () => modalEmail(userId, u, reload));
   on('act-devreset', () => modalDeviceReset(userId, reload));
 
   // -------- tabs
@@ -580,16 +576,15 @@ function modalBalance(userId, u, onDone) {
         <select name="dir"><option value="+">Начислить</option><option value="-">Списать</option></select></div>
       <div class="field"><label>Сумма, ₽</label>
         <input name="amount" type="number" step="0.01" min="0.01" required placeholder="Например: 199"></div>
-      <label style="display:flex;gap:8px;align-items:center;color:var(--text)">
-        <input type="checkbox" name="allow_negative" style="width:auto"> Разрешить уход баланса в минус
-      </label>`,
+      <div class="muted" style="font-size:12.5px">Баланс не может уйти в минус — списание больше остатка будет отклонено.</div>`,
     buildRequest($m) {
       const dir = $m.querySelector('[name=dir]').value;
       const amount = parseFloat($m.querySelector('[name=amount]').value);
       if (!amount || amount <= 0) throw new Error('Введите сумму больше нуля');
       const signed = dir === '-' ? -amount : amount;
+      if (dir === '-' && amount > u.balance) throw new Error(`Списание ${amount} ₽ больше баланса ${u.balance} ₽ — в минус нельзя`);
       return {
-        body: { amount: signed, allow_negative: $m.querySelector('[name=allow_negative]').checked },
+        body: { amount: signed },
         danger: dir === '-',
         confirmHtml: `Баланс: <b>${esc(u.balance)} ₽</b><span class="arrow">→</span><b>${esc(Math.round((u.balance + signed) * 100) / 100)} ₽</b>
           <div class="muted">(${dir === '-' ? 'списание' : 'начисление'} ${amount} ₽)</div>`,
@@ -605,7 +600,8 @@ function modalExpire(userId, vpn, onDone) {
     onDone,
     supportsForceLocal: true,
     fieldsHtml: `
-      <div class="muted" style="margin-bottom:12px">Сейчас: <b>${fmtDate(vpn.expireAt)}</b></div>
+      <div class="muted" style="margin-bottom:12px">Сейчас: <b>${fmtDate(vpn.expireAt)}</b><br>
+        Срок ByPass всегда равен сроку подписки и изменится вместе с ней.</div>
       <div class="field"><label>Режим</label>
         <select name="mode">
           <option value="add">Продлить на N дней</option>
@@ -670,36 +666,33 @@ function modalDeviceLimit(userId, vpn, onDone) {
 
 function modalBypass(userId, vpn, onDone) {
   actionModal({
-    title: 'ByPass: срок и трафик',
+    title: 'ByPass: лимит трафика',
     url: `/api/users/${userId}/bypass`,
     onDone,
     supportsForceLocal: true,
     fieldsHtml: `
       <div class="muted" style="margin-bottom:12px">
-        Сейчас: до <b>${fmtDate(vpn.bypass_expireAt)}</b>, лимит <b>${fmtBytes(vpn.bypass_trafficLimitBytes)}</b></div>
-      <div class="field"><label>Сдвиг срока, дней (± , пусто = не менять)</label>
-        <input name="days" type="number" min="-3650" max="3650" placeholder="30 или -10"></div>
-      <div class="field"><label>Добавить трафика, ГБ (±, пусто = не менять)</label>
-        <input name="add_gb" type="number" step="0.1" placeholder="5"></div>
-      <div class="field"><label>ИЛИ задать лимит трафика точно, ГБ</label>
+        Сейчас: <b>${fmtBytes(vpn.bypass_trafficLimitBytes)}</b><br>
+        Срок ByPass равен сроку подписки и меняется через «Срок подписки».</div>
+      <div class="field"><label>Добавить трафика, ГБ (±)</label>
+        <input name="add_gb" type="number" step="0.1" placeholder="5 или -5"></div>
+      <div class="field"><label>ИЛИ задать лимит точно, ГБ</label>
         <input name="abs_gb" type="number" step="0.1" min="0" placeholder="608"></div>`,
     buildRequest($m) {
-      const days = $m.querySelector('[name=days]').value.trim();
       const addGb = $m.querySelector('[name=add_gb]').value.trim();
       const absGb = $m.querySelector('[name=abs_gb]').value.trim();
       if (addGb && absGb) throw new Error('Укажите либо прибавку, либо точный лимит — не оба');
-      if (!days && !addGb && !absGb) throw new Error('Нет изменений');
+      if (!addGb && !absGb) throw new Error('Нет изменений');
       const body = {};
       const parts = [];
-      if (days) { body.days = parseInt(days, 10); parts.push(`срок ${body.days > 0 ? '+' : ''}${body.days} дн.`); }
       if (addGb) { body.add_traffic_gb = parseFloat(addGb); parts.push(`трафик ${body.add_traffic_gb > 0 ? '+' : ''}${body.add_traffic_gb} ГБ`); }
       if (absGb) { body.traffic_limit_gb = parseFloat(absGb); parts.push(`лимит = ${body.traffic_limit_gb} ГБ`); }
-      const danger = (body.days || 0) < 0 || (body.add_traffic_gb || 0) < 0 ||
+      const danger = (body.add_traffic_gb || 0) < 0 ||
         (body.traffic_limit_gb != null && body.traffic_limit_gb * GB < (vpn.bypass_trafficLimitBytes || 0));
       return {
         body, danger,
         confirmHtml: `ByPass: <b>${esc(parts.join(', '))}</b>
-          <div class="muted">Было: до ${fmtDate(vpn.bypass_expireAt)}, ${fmtBytes(vpn.bypass_trafficLimitBytes)}</div>`,
+          <div class="muted">Было: ${fmtBytes(vpn.bypass_trafficLimitBytes)}</div>`,
       };
     },
   });
@@ -712,6 +705,7 @@ function modalGift(userId, vpn, onDone) {
     onDone,
     supportsForceLocal: true,
     fieldsHtml: `
+      <div class="muted" style="margin-bottom:12px">Дни продлевают и подписку, и ByPass (их срок общий).</div>
       <div class="field"><label>Дней подписки (пусто = не дарить)</label>
         <input name="days" type="number" min="1" max="3650" placeholder="7"></div>
       <div class="field"><label>ГБ ByPass (пусто = не дарить)</label>
@@ -725,27 +719,6 @@ function modalGift(userId, vpn, onDone) {
       if (days) { body.days = parseInt(days, 10); parts.push(`+${body.days} дн. подписки`); }
       if (gb) { body.bypass_gb = parseFloat(gb); parts.push(`+${body.bypass_gb} ГБ ByPass`); }
       return { body, danger: false, confirmHtml: `Подарок: <b>${esc(parts.join(' и '))}</b>` };
-    },
-  });
-}
-
-function modalEmail(userId, u, onDone) {
-  actionModal({
-    title: 'Изменить email',
-    url: `/api/users/${userId}/email`,
-    onDone,
-    fieldsHtml: `
-      <div class="muted" style="margin-bottom:12px">Сейчас: <b>${esc(u.email || '—')}</b></div>
-      <div class="field"><label>Новый email</label>
-        <input name="email" type="email" required placeholder="user@example.com"></div>`,
-    buildRequest($m) {
-      const email = $m.querySelector('[name=email]').value.trim();
-      if (!email) throw new Error('Введите email');
-      return {
-        body: { email },
-        danger: false,
-        confirmHtml: `Email: <b>${esc(u.email || '—')}</b><span class="arrow">→</span><b>${esc(email)}</b>`,
-      };
     },
   });
 }
