@@ -80,6 +80,47 @@ class TelegramClient:
             "disable_web_page_preview": True,
         })
 
+    async def _call_multipart(self, method: str, data: dict[str, Any],
+                              files: dict[str, tuple[str, bytes, str]]) -> Any:
+        if not self.token:
+            raise TelegramError("Telegram-бот не настроен (TG_BOT_TOKEN)")
+        url = f"https://api.telegram.org/bot{self.token}/{method}"
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(url, data=data, files=files)
+        except httpx.HTTPError as e:
+            raise TelegramError(f"Telegram недоступен: {e.__class__.__name__}")
+        try:
+            payload = resp.json()
+        except Exception:
+            raise TelegramError("Telegram вернул невалидный ответ")
+        if not payload.get("ok"):
+            raise TelegramError(f"Telegram: {payload.get('description', 'неизвестная ошибка')}")
+        return payload.get("result")
+
+    async def send_photo_to_user(self, user_id: int, photo: bytes, filename: str,
+                                 caption: str | None = None) -> dict:
+        data: dict[str, Any] = {"chat_id": str(user_id)}
+        if caption:
+            data["caption"] = caption
+            data["parse_mode"] = "HTML"
+        return await self._call_multipart(
+            "sendPhoto", data, {"photo": (filename, photo, "application/octet-stream")})
+
+    async def send_photo_to_thread(self, thread_id: int, photo: bytes, filename: str,
+                                   caption: str | None = None) -> dict:
+        if not self.support_chat_id:
+            raise TelegramError("Не задан SUPPORT_CHAT_ID")
+        data: dict[str, Any] = {
+            "chat_id": str(self.support_chat_id),
+            "message_thread_id": str(thread_id),
+        }
+        if caption:
+            data["caption"] = caption
+            data["parse_mode"] = "HTML"
+        return await self._call_multipart(
+            "sendPhoto", data, {"photo": (filename, photo, "application/octet-stream")})
+
     async def get_file(self, file_id: str) -> tuple[bytes, str]:
         """Download an attachment by Telegram file_id. Returns (content, file_path).
         Works for files up to 20 MB (Bot API limit)."""

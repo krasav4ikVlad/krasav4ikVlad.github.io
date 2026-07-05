@@ -14,7 +14,7 @@ docs/bot-integration.md). Old tickets have no backlog, only new messages.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
 
 from .. import audit
@@ -229,6 +229,74 @@ async def reply_ticket(user_id: int, body: TicketReplyRequest,
         old_value={"status": old_status}, new_value={"status": "open"},
         reason=None, ip=client_ip(request),
         extra={"text": text[:500]},
+    )
+    return {"ok": True, "status": "open", "message": jsonable(msg)}
+
+
+# ---------------------------------------------------------------- reply with photo
+
+MAX_PHOTO_BYTES = 10 * 1024 * 1024  # лимит Bot API для sendPhoto
+
+
+@router.post("/{user_id}/photo")
+async def reply_photo(user_id: int, request: Request, operator: CurrentOperator,
+                      file: UploadFile = File(...),
+                      caption: str = Form(default="", max_length=1000)):
+    """Отправить пользователю фото (+подпись). Как и текстовый ответ:
+    ЛС пользователю, зеркало в тред, статус -> open."""
+    ensure_permission(operator, "tickets")
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "Можно прикреплять только изображения")
+    photo = await file.read()
+    if len(photo) > MAX_PHOTO_BYTES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "Фото больше 10 МБ — Telegram не примет")
+    if not photo:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Пустой файл")
+    caption = caption.strip()
+
+    doc, support = await _find_ticket_user(user_id)
+    thread_id = support["thread_id"]
+    old_status = (support.get("status") or "pending").lower()
+    filename = file.filename or "photo.jpg"
+
+    tg = get_telegram()
+    try:
+        result = await tg.send_photo_to_user(user_id, photo, filename,
+                                             caption=_esc(caption) if caption else None)
+    except TelegramError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                            f"Фото НЕ отправлено пользователю: {e.message}")
+    sizes = (result or {}).get("photo") or []
+    file_id = sizes[-1].get("file_id") if sizes else None
+
+    op_name = _esc(operator.get("name") or operator["login"])
+    try:
+        await tg.send_photo_to_thread(
+            thread_id, photo, filename,
+            caption=f"💻 <b>Фото с сайта</b> — {op_name}" + (f":\n{_esc(caption)}" if caption else ""))
+    except TelegramError as e:
+        await _store_message(user_id=user_id, direction="system",
+                             text=f"⚠️ Не удалось продублировать фото в тред: {e.message}")
+
+    if old_status != "open":
+        await users_col().update_one(
+            {"user_data.user_id": user_id},
+            {"$set": {"info.support.status": "open"}},
+        )
+        await tg.set_thread_status_title(thread_id, user_id, "open")
+
+    msg = await _store_message(
+        user_id=user_id, direction="operator", text=caption,
+        operator_login=operator["login"],
+        attachment={"type": "photo", "file_id": file_id} if file_id else None,
+    )
+    await write_audit(
+        operator=operator, action=audit.ACTION_TICKET_REPLY, target_user_id=user_id,
+        old_value={"status": old_status}, new_value={"status": "open"},
+        reason=None, ip=client_ip(request),
+        extra={"photo": True, "caption": caption[:200]},
     )
     return {"ok": True, "status": "open", "message": jsonable(msg)}
 

@@ -219,6 +219,24 @@ function logout(redirect = true) {
   render();
 }
 
+function currentTheme() {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+
+function applyTheme(theme) {
+  if (theme === 'dark') document.documentElement.dataset.theme = 'dark';
+  else delete document.documentElement.dataset.theme;
+  localStorage.setItem('op_theme', theme);
+  const meta = document.querySelector('meta[name=theme-color]');
+  if (meta) meta.content = theme === 'dark' ? '#0f0f0e' : '#f2f1ec';
+  const btn = document.getElementById('theme-btn');
+  if (btn) btn.textContent = theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+}
+
+document.getElementById('theme-btn').onclick = () =>
+  applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+applyTheme(currentTheme());
+
 document.getElementById('logout-btn').onclick = () => logout();
 
 async function loadMe() {
@@ -243,7 +261,17 @@ function viewLogin() {
         <button class="btn" style="width:100%" type="submit">Войти</button>
         <div class="error-note hidden" id="login-err"></div>
       </form>
+      <div style="text-align:center; margin-top:14px">
+        <a href="#" id="login-theme" class="muted" style="font-size:13px"></a>
+      </div>
     </div></div>`;
+  const themeLink = document.getElementById('login-theme');
+  themeLink.textContent = currentTheme() === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+  themeLink.onclick = e => {
+    e.preventDefault();
+    applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+    themeLink.textContent = currentTheme() === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+  };
   document.getElementById('login-form').addEventListener('submit', async e => {
     e.preventDefault();
     const f = e.target;
@@ -924,9 +952,12 @@ async function viewTicket(userId) {
       ${can('tickets') ? `
       <form id="tk-reply" style="margin-top:14px">
         <div class="field"><label>Ответ пользователю (уйдёт в ЛС и продублируется в тред)</label>
-          <textarea name="text" rows="3" required minlength="1" maxlength="3500"
+          <textarea name="text" rows="3" maxlength="3500"
             placeholder="Текст ответа…"></textarea></div>
-        <div style="display:flex; justify-content:flex-end">
+        <input type="file" id="tk-photo" accept="image/*" class="hidden">
+        <div id="tk-photo-preview" class="hidden" style="margin-bottom:10px"></div>
+        <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap">
+          <button class="btn btn-ghost" type="button" id="tk-attach">Прикрепить фото</button>
           <button class="btn" type="submit">Отправить</button>
         </div>
       </form>` : '<div class="muted" style="margin-top:10px">У вас нет права отвечать в тикеты.</div>'}
@@ -966,23 +997,65 @@ async function viewTicket(userId) {
   };
 
   const form = document.getElementById('tk-reply');
-  if (form) form.addEventListener('submit', async e => {
-    e.preventDefault();
-    const text = form.text.value.trim();
-    if (!text) return;
-    const btn = form.querySelector('button[type=submit]');
-    btn.disabled = true;
-    try {
-      await api(`/api/tickets/${userId}/reply`, { method: 'POST', body: { text } });
-      form.text.value = '';
-      toast('Отправлено ✓');
-      await refresh();
-    } catch (err) {
-      toast(err.message, 'err');
-    } finally {
-      btn.disabled = false;
-    }
-  });
+  if (form) {
+    const photoInput = document.getElementById('tk-photo');
+    const preview = document.getElementById('tk-photo-preview');
+
+    const clearPhoto = () => {
+      photoInput.value = '';
+      preview.innerHTML = '';
+      preview.classList.add('hidden');
+    };
+    document.getElementById('tk-attach').onclick = () => photoInput.click();
+    photoInput.onchange = () => {
+      const f = photoInput.files[0];
+      if (!f) return clearPhoto();
+      if (!f.type.startsWith('image/')) { toast('Можно прикрепить только изображение', 'err'); return clearPhoto(); }
+      if (f.size > 10 * 1024 * 1024) { toast('Фото больше 10 МБ — Telegram не примет', 'err'); return clearPhoto(); }
+      preview.classList.remove('hidden');
+      preview.innerHTML = `<div class="photo-preview">
+        <img src="${URL.createObjectURL(f)}" alt="">
+        <div>
+          <div style="font-size:13px">${esc(f.name)}</div>
+          <button type="button" class="btn btn-ghost btn-sm" id="tk-photo-remove" style="margin-top:6px">Убрать</button>
+        </div>
+      </div>`;
+      preview.querySelector('#tk-photo-remove').onclick = clearPhoto;
+    };
+
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const text = form.text.value.trim();
+      const photo = photoInput.files[0];
+      if (!text && !photo) { toast('Введите текст или прикрепите фото', 'err'); return; }
+      const btn = form.querySelector('button[type=submit]');
+      btn.disabled = true;
+      try {
+        if (photo) {
+          const fd = new FormData();
+          fd.append('file', photo);
+          fd.append('caption', text);
+          const resp = await fetch(`/api/tickets/${userId}/photo`, {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + S.token },
+            body: fd,
+          });
+          const data = await resp.json().catch(() => null);
+          if (!resp.ok) throw new Error((data && data.detail) || `Ошибка ${resp.status}`);
+          clearPhoto();
+        } else {
+          await api(`/api/tickets/${userId}/reply`, { method: 'POST', body: { text } });
+        }
+        form.text.value = '';
+        toast('Отправлено ✓');
+        await refresh();
+      } catch (err) {
+        toast(err.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
 }
 
 const ATT_CACHE = {}; // file_id -> blob URL (чтобы автообновление не перекачивало файлы)
