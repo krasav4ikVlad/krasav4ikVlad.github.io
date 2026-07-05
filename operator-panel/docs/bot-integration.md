@@ -98,16 +98,27 @@ async def log_support_message(uid: int, direction: str, text: str,
         pass  # лог не должен ломать доставку
 ```
 
-**handlers/start.py** — логируем входящие сообщения пользователя. В
-`handle_user_message` после КАЖДОГО успешного `_copy_user_message_to_thread_with_retry`
-(их три вызова: два в ветке создания треда и один в основной) добавить:
+**handlers/start.py** — логируем входящие сообщения пользователя ОДНИМ вызовом
+в самом начале `handle_user_message` (в хендлере несколько веток с ранними
+`return`, поэтому одна точка в начале надёжнее, чем раскладывать по веткам):
 
 ```python
 from utils.utils import log_support_message, _message_text_for_log   # к существующим импортам
 
-# сразу после успешной пересылки (ok == True), перед return:
-await log_support_message(uid, 'user', _message_text_for_log(message))
+
+@router.message(F.chat.type == 'private', ~CommandStart())
+async def handle_user_message(message: types.Message):
+    if not await ensure_registered(message):
+        return
+
+    uid = message.from_user.id
+    await log_support_message(uid, 'user', _message_text_for_log(message))   # <-- единственное место
+
+    user_doc = await users.find_one({'user_data.user_id': uid}) or {}
+    # ... дальше без изменений
 ```
+
+Больше нигде в этом хендлере логировать не нужно — иначе будут дубли.
 
 **handlers/admin.py** — логируем ответы операторов из треда. В
 `relay_operator_message_to_user`, в ветке успеха после `_set_reaction(message, '👍')`:
