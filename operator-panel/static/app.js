@@ -956,11 +956,11 @@ async function viewTicket(userId) {
             placeholder="Текст ответа…"></textarea></div>
         <input type="file" id="tk-photo" accept="image/*" class="hidden">
         <div id="tk-photo-preview" class="hidden" style="margin-bottom:10px"></div>
-        <div id="tk-ai-box" class="hidden ai-box"></div>
+        <div id="tk-ai-status" class="muted hidden" style="font-size:12.5px; margin-bottom:10px"></div>
         <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap">
           <div style="display:flex; gap:8px; flex-wrap:wrap">
             <button class="btn btn-ghost" type="button" id="tk-attach">Прикрепить фото</button>
-            <button class="btn btn-ghost" type="button" id="tk-ai">Ответ ИИ</button>
+            <button class="btn btn-ghost" type="button" id="tk-ai">Ещё вариант ИИ</button>
           </div>
           <button class="btn" type="submit">Отправить</button>
         </div>
@@ -1012,38 +1012,63 @@ async function viewTicket(userId) {
     };
     document.getElementById('tk-attach').onclick = () => photoInput.click();
 
-    const aiBox = document.getElementById('tk-ai-box');
+    // ---- ИИ-черновик: автогенерация при открытии, результат кладётся в поле ввода ----
+    const aiStatus = document.getElementById('tk-ai-status');
     const aiBtn = document.getElementById('tk-ai');
-    const loadAiDraft = async () => {
+    let lastAiDraft = null;
+
+    const setAiStatus = (html) => {
+      if (html) { aiStatus.innerHTML = html; aiStatus.classList.remove('hidden'); }
+      else aiStatus.classList.add('hidden');
+    };
+
+    const generateAiDraft = async (auto = false) => {
+      if (S.aiDisabled) {
+        if (!auto) toast('ИИ-помощник не настроен (ANTHROPIC_API_KEY)', 'err');
+        return;
+      }
       aiBtn.disabled = true;
-      aiBox.classList.remove('hidden');
-      aiBox.innerHTML = `<div class="muted" style="font-size:13px"><span class="spinner"></span> ИИ изучает переписку и инструкции…</div>`;
+      setAiStatus('<span class="spinner"></span> ИИ готовит черновик ответа…');
       try {
         const data = await api(`/api/tickets/${userId}/suggest`, { method: 'POST' });
-        aiBox.innerHTML = `
-          <div class="microlabel" style="margin-bottom:8px">Черновик ИИ — проверьте перед отправкой</div>
-          <div class="ai-draft" id="tk-ai-text"></div>
-          <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap">
-            <button class="btn btn-sm" type="button" id="tk-ai-use">Вставить в ответ</button>
-            <button class="btn btn-ghost btn-sm" type="button" id="tk-ai-retry">Ещё вариант</button>
-            <button class="btn btn-ghost btn-sm" type="button" id="tk-ai-close">Скрыть</button>
-          </div>`;
-        aiBox.querySelector('#tk-ai-text').textContent = data.suggestion;
-        aiBox.querySelector('#tk-ai-use').onclick = () => {
-          form.text.value = data.suggestion;
-          form.text.focus();
-        };
-        aiBox.querySelector('#tk-ai-retry').onclick = loadAiDraft;
-        aiBox.querySelector('#tk-ai-close').onclick = () => aiBox.classList.add('hidden');
+        const typed = form.text.value.trim();
+        if (auto && typed && typed !== lastAiDraft) {
+          // оператор уже что-то пишет — не затираем, просто предлагаем
+          setAiStatus('Черновик ИИ готов — нажмите «Ещё вариант ИИ», чтобы вставить его вместо вашего текста');
+          lastAiDraft = data.suggestion;
+          return;
+        }
+        form.text.value = data.suggestion;
+        lastAiDraft = data.suggestion;
+        setAiStatus('Черновик ИИ вставлен в поле — проверьте и поправьте текст перед отправкой');
       } catch (err) {
-        aiBox.innerHTML = `<div class="error-note">${esc(err.message)}</div>
-          <button class="btn btn-ghost btn-sm" type="button" id="tk-ai-close" style="margin-top:8px">Скрыть</button>`;
-        aiBox.querySelector('#tk-ai-close').onclick = () => aiBox.classList.add('hidden');
+        if (err.status === 503) {
+          // ключ не настроен: прячем ИИ до конца сессии, не мешаем работать
+          S.aiDisabled = true;
+          aiBtn.classList.add('hidden');
+          setAiStatus(auto ? '' : null);
+          if (!auto) toast(err.message, 'err');
+        } else if (auto) {
+          setAiStatus('Не удалось получить черновик ИИ — можно попробовать кнопкой «Ещё вариант ИИ»');
+        } else {
+          setAiStatus('');
+          toast(err.message, 'err');
+        }
       } finally {
         aiBtn.disabled = false;
       }
     };
-    aiBtn.onclick = loadAiDraft;
+
+    aiBtn.onclick = () => {
+      const typed = form.text.value.trim();
+      if (typed && typed !== lastAiDraft
+          && !confirm('Заменить текст в поле новым черновиком ИИ?')) return;
+      generateAiDraft(false);
+    };
+    if (S.aiDisabled) aiBtn.classList.add('hidden');
+    // автогенерация при открытии тикета (кроме закрытых)
+    if (t.status !== 'closed' && !S.aiDisabled) generateAiDraft(true);
+
     photoInput.onchange = () => {
       const f = photoInput.files[0];
       if (!f) return clearPhoto();
@@ -1084,6 +1109,8 @@ async function viewTicket(userId) {
           await api(`/api/tickets/${userId}/reply`, { method: 'POST', body: { text } });
         }
         form.text.value = '';
+        lastAiDraft = null;
+        setAiStatus('');
         toast('Отправлено ✓');
         await refresh();
       } catch (err) {
