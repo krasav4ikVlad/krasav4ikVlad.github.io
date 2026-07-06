@@ -85,9 +85,11 @@ def _fmt_user_context(doc: dict) -> str:
 
 
 async def _load_faq() -> str:
-    """FAQ-инструкции бота — та же коллекция support_quick_replies."""
+    """FAQ-инструкции бота — общая коллекция быстрых ответов."""
     try:
-        cursor = get_db()["support_quick_replies"].find(
+        from .database import quick_replies_col
+        col = await quick_replies_col()
+        cursor = col.find(
             {"active": True}, {"_id": 0, "title": 1, "text": 1}).sort("order", 1)
         parts = []
         async for item in cursor:

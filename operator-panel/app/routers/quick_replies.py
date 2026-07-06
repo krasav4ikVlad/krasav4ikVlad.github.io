@@ -1,10 +1,13 @@
 """Общие быстрые ответы поддержки.
 
-Та же коллекция support_quick_replies, из которой бот строит меню быстрых
-ответов и берёт тексты инструкций: {key, title, text, order, active}.
-Всё, что операторы добавляют/правят здесь, сразу видно и в боте, и в
-ИИ-помощнике (он использует эти тексты как FAQ), и наоборот — тексты бота
-доступны на сайте одним кликом.
+Та же коллекция, из которой бот строит меню быстрых ответов и берёт тексты
+инструкций: {key, title, text, order, active}. Всё, что операторы
+добавляют/правят здесь, сразу видно и в боте, и в ИИ-помощнике (он использует
+эти тексты как FAQ), и наоборот — тексты бота доступны на сайте одним кликом.
+
+Где лежит коллекция, настраивается в .env (QUICK_REPLIES_MONGO_URL /
+QUICK_REPLIES_DB / QUICK_REPLIES_COLLECTION); имя подбирается с точностью
+до пробелов — см. database.quick_replies_col.
 
 Управлять могут все операторы с правом «Тикеты» (быстрые ответы — часть
 работы с тикетами); каждое изменение пишется в аудит-лог.
@@ -20,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from .. import audit
 from ..audit import write_audit
-from ..database import get_db
+from ..database import quick_replies_col
 from ..security import CurrentOperator, client_ip, ensure_permission
 
 router = APIRouter(prefix="/api/quick-replies", tags=["quick-replies"])
@@ -28,8 +31,6 @@ router = APIRouter(prefix="/api/quick-replies", tags=["quick-replies"])
 KEY_RE = re.compile(r"^[a-z0-9_]{2,48}$")
 
 
-def _col():
-    return get_db()["support_quick_replies"]
 
 
 def _pub(doc: dict) -> dict:
@@ -66,7 +67,8 @@ class QuickReplyUpdate(BaseModel):
 async def list_quick_replies(operator: CurrentOperator, all: bool = False):
     """Список быстрых ответов. all=true — включая выключенные (для управления)."""
     query = {} if all else {"active": True}
-    items = [_pub(d) async for d in _col().find(query).sort("order", 1)]
+    col = await quick_replies_col()
+    items = [_pub(d) async for d in col.find(query).sort("order", 1)]
     return {"items": items}
 
 
@@ -80,10 +82,11 @@ async def create_quick_reply(body: QuickReplyCreate, request: Request,
 
     # key нужен боту для callback-кнопок — генерируем короткий и уникальный
     key = f"qr_{secrets.token_hex(4)}"
-    while await _col().find_one({"key": key}, {"_id": 1}):
+    while await (await quick_replies_col()).find_one({"key": key}, {"_id": 1}):
         key = f"qr_{secrets.token_hex(4)}"
 
-    last = await _col().find({}, {"order": 1}).sort("order", -1).limit(1).to_list(1)
+    col = await quick_replies_col()
+    last = await col.find({}, {"order": 1}).sort("order", -1).limit(1).to_list(1)
     order = (last[0].get("order", 0) if last else 0) + 1
 
     from ..utils import utcnow
@@ -92,7 +95,7 @@ async def create_quick_reply(body: QuickReplyCreate, request: Request,
         "order": order, "active": True,
         "created_by": operator["login"], "created_at": utcnow(),
     }
-    res = await _col().insert_one(doc)
+    res = await (await quick_replies_col()).insert_one(doc)
     await write_audit(
         operator=operator, action=audit.ACTION_QUICK_REPLY_CREATE, target_user_id=None,
         old_value=None, new_value={"key": key, "title": title},
@@ -106,7 +109,7 @@ async def update_quick_reply(qr_id: str, body: QuickReplyUpdate, request: Reques
                              operator: CurrentOperator):
     ensure_permission(operator, "tickets")
     oid = _oid(qr_id)
-    doc = await _col().find_one({"_id": oid})
+    doc = await (await quick_replies_col()).find_one({"_id": oid})
     if doc is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Быстрый ответ не найден")
 
@@ -125,7 +128,7 @@ async def update_quick_reply(qr_id: str, body: QuickReplyUpdate, request: Reques
     from ..utils import utcnow
     updates["updated_by"] = operator["login"]
     updates["updated_at"] = utcnow()
-    await _col().update_one({"_id": oid}, {"$set": updates})
+    await (await quick_replies_col()).update_one({"_id": oid}, {"$set": updates})
 
     await write_audit(
         operator=operator, action=audit.ACTION_QUICK_REPLY_UPDATE, target_user_id=None,
@@ -135,7 +138,7 @@ async def update_quick_reply(qr_id: str, body: QuickReplyUpdate, request: Reques
                    for k, v in updates.items() if k not in ("updated_by", "updated_at")},
         reason=None, ip=client_ip(request),
     )
-    fresh = await _col().find_one({"_id": oid})
+    fresh = await (await quick_replies_col()).find_one({"_id": oid})
     return _pub(fresh)
 
 
@@ -143,10 +146,10 @@ async def update_quick_reply(qr_id: str, body: QuickReplyUpdate, request: Reques
 async def delete_quick_reply(qr_id: str, request: Request, operator: CurrentOperator):
     ensure_permission(operator, "tickets")
     oid = _oid(qr_id)
-    doc = await _col().find_one({"_id": oid})
+    doc = await (await quick_replies_col()).find_one({"_id": oid})
     if doc is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Быстрый ответ не найден")
-    await _col().delete_one({"_id": oid})
+    await (await quick_replies_col()).delete_one({"_id": oid})
     await write_audit(
         operator=operator, action=audit.ACTION_QUICK_REPLY_DELETE, target_user_id=None,
         old_value={"key": doc.get("key"), "title": doc.get("title"),

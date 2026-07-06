@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     audit_collection: str = "operator_logs"
     support_messages_collection: str = "support_messages"
 
+    # --- Быстрые ответы (общая с ботом коллекция) ---
+    # По умолчанию — та же база; если бот держит их в другом месте, задайте свои.
+    # Имя коллекции подбирается умно: если точного имени нет, берётся вариант,
+    # отличающийся только пробелами (в боте она исторически с хвостовым пробелом).
+    quick_replies_mongo_url: str = ""      # пусто = MONGO_URL
+    quick_replies_db: str = ""             # пусто = MONGO_DB
+    quick_replies_collection: str = "support_quick_replies"
+
     # --- Telegram (бот техподдержки — для ответов в тикеты с сайта) ---
     tg_bot_token: str = ""      # токен САППОРТ-бота (тот же, что в боте поддержки)
     support_chat_id: int = 0    # id чата поддержки с топиками (-100...)

@@ -1099,10 +1099,7 @@ async function viewTicket(userId) {
     };
 
     const generateAiDraft = async (auto = false) => {
-      if (S.aiDisabled) {
-        if (!auto) toast('ИИ-помощник не настроен (ANTHROPIC_API_KEY)', 'err');
-        return;
-      }
+      if (auto && S.aiDisabled) return; // авто не дёргаем, но ручной клик пробует снова
       aiBtn.disabled = true;
       setAiStatus('<span class="spinner"></span> ИИ готовит черновик ответа…');
       try {
@@ -1119,13 +1116,14 @@ async function viewTicket(userId) {
         setAiStatus('Черновик ИИ вставлен в поле — проверьте и поправьте текст перед отправкой');
       } catch (err) {
         if (err.status === 503) {
-          // ключ не настроен: прячем ИИ до конца сессии, не мешаем работать
-          S.aiDisabled = true;
-          aiBtn.classList.add('hidden');
-          setAiStatus(auto ? '' : null);
+          // не настроено на сервере: кнопку НЕ прячем — показываем причину,
+          // авто-генерацию до конца сессии выключаем, ручной клик пробует снова
+          S.aiDisabled = err.message || 'ИИ-помощник не настроен на сервере';
+          setAiStatus('ИИ-помощник недоступен: ' + esc(S.aiDisabled));
           if (!auto) toast(err.message, 'err');
         } else if (auto) {
-          setAiStatus('Не удалось получить черновик ИИ — можно попробовать кнопкой «Ещё вариант ИИ»');
+          setAiStatus('Не удалось получить черновик ИИ: ' + esc(err.message || '')
+            + ' — можно попробовать кнопкой «Ещё вариант ИИ»');
         } else {
           setAiStatus('');
           toast(err.message, 'err');
@@ -1139,6 +1137,7 @@ async function viewTicket(userId) {
       const typed = form.text.value.trim();
       if (typed && typed !== lastAiDraft
           && !confirm('Заменить текст в поле новым черновиком ИИ?')) return;
+      S.aiDisabled = null; // вдруг на сервере уже починили — пробуем
       generateAiDraft(false);
     };
 
@@ -1153,9 +1152,10 @@ async function viewTicket(userId) {
       form.text.focus();
       return true;
     });
-    if (S.aiDisabled) aiBtn.classList.add('hidden');
-    // автогенерация при открытии тикета (кроме закрытых)
-    if (t.status !== 'closed' && !S.aiDisabled) generateAiDraft(true);
+    // автогенерация при открытии тикета (кроме закрытых);
+    // если сервер уже отвечал «не настроено» — не дёргаем, но подсказываем причину
+    if (S.aiDisabled) setAiStatus('ИИ-помощник недоступен: ' + esc(S.aiDisabled));
+    else if (t.status !== 'closed') generateAiDraft(true);
 
     photoInput.onchange = () => {
       const f = photoInput.files[0];

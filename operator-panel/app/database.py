@@ -29,6 +29,57 @@ def get_db() -> AsyncIOMotorDatabase:
     return get_client()[get_settings().mongo_db]
 
 
+# ---------------------------------------------------------------- quick replies
+
+_qr_client: AsyncIOMotorClient | None = None
+_qr_colname: str | None = None
+
+
+def _qr_db() -> AsyncIOMotorDatabase:
+    """База быстрых ответов: по умолчанию основная, но бот может держать их
+    в другом Mongo/базе — тогда QUICK_REPLIES_MONGO_URL / QUICK_REPLIES_DB."""
+    global _qr_client
+    settings = get_settings()
+    url = settings.quick_replies_mongo_url or settings.mongo_url
+    if url == settings.mongo_url:
+        client = get_client()
+    else:
+        if _qr_client is None:
+            _qr_client = AsyncIOMotorClient(
+                url, serverSelectionTimeoutMS=5000,
+                uuidRepresentation="standard", compressors="zlib")
+        client = _qr_client
+    return client[settings.quick_replies_db or settings.mongo_db]
+
+
+async def quick_replies_col():
+    """Коллекция быстрых ответов с умным выбором имени: в боте коллекция
+    исторически называется 'support_quick_replies ' (с хвостовым пробелом),
+    поэтому если точного имени нет или оно пустое — берём вариант, совпадающий
+    с точностью до пробелов и содержащий больше документов. Выбор кэшируется."""
+    global _qr_colname
+    db = _qr_db()
+    settings = get_settings()
+    want = settings.quick_replies_collection
+    if _qr_colname is None:
+        chosen = want
+        try:
+            names = await db.list_collection_names()
+            candidates = [n for n in names if n == want or n.strip() == want.strip()]
+            best_count = -1
+            for name in sorted(candidates, key=lambda n: n != want):  # точное имя первым
+                count = await db[name].count_documents({})
+                if count > best_count:
+                    chosen, best_count = name, count
+        except Exception as e:
+            log.warning("quick replies collection discovery failed: %s", e)
+        if chosen != want:
+            log.info("quick replies: using collection %r (exact %r is missing/empty)",
+                     chosen, want)
+        _qr_colname = chosen
+    return db[_qr_colname]
+
+
 async def _safe_create_index(collection, keys, **opts) -> None:
     """create_index that tolerates an equivalent index already existing under a
     different name / options (the bot may have created its own indexes on `users`).
