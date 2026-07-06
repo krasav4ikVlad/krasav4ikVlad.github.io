@@ -14,6 +14,8 @@ docs/bot-integration.md). Old tickets have no backlog, only new messages.
 """
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
 
@@ -182,6 +184,20 @@ async def ticket_file(file_id: str, _op: CurrentOperator):
 
 # ---------------------------------------------------------------- ticket view
 
+async def _ticket_signature(user_id: int) -> str:
+    """Дешёвый «отпечаток» тикета: число сообщений + время последнего + статус.
+    Изменился отпечаток — значит, есть что показать оператору."""
+    col = _messages_col()
+    count = await col.count_documents({"user_id": user_id})
+    last = await col.find({"user_id": user_id}, {"timestamp": 1}) \
+        .sort("timestamp", -1).limit(1).to_list(1)
+    last_ts = jsonable(last[0].get("timestamp")) if last else ""
+    doc = await users_col().find_one(
+        {"user_data.user_id": user_id}, {"info.support.status": 1})
+    st = ((((doc or {}).get("info") or {}).get("support")) or {}).get("status") or "pending"
+    return f"{count}|{last_ts}|{st}"
+
+
 @router.get("/{user_id}")
 async def ticket_detail(user_id: int, _op: CurrentOperator,
                         limit: int = Query(default=200, ge=1, le=1000)):
@@ -192,7 +208,35 @@ async def ticket_detail(user_id: int, _op: CurrentOperator,
         .sort("timestamp", -1).limit(limit)
     ]
     messages.reverse()
-    return {"ticket": _ticket_brief(doc), "messages": messages}
+    return {"ticket": _ticket_brief(doc), "messages": messages,
+            "sig": await _ticket_signature(user_id)}
+
+
+LONGPOLL_MAX_WAIT = 25.0   # меньше типовых proxy_read_timeout (nginx: 60с)
+LONGPOLL_STEP = 1.0
+
+
+@router.get("/{user_id}/updates")
+async def ticket_updates(user_id: int, _op: CurrentOperator,
+                         sig: str = Query(default="", max_length=200),
+                         wait: float = Query(default=LONGPOLL_MAX_WAIT, ge=0, le=LONGPOLL_MAX_WAIT)):
+    """Long-poll: держим запрос открытым, пока в тикете не появится новое
+    сообщение или не сменится статус (в т.ч. записанные ботом из Telegram) —
+    чат на сайте обновляется мгновенно, без периодической перезагрузки."""
+    await _find_ticket_user(user_id)  # 404, если тикета нет
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + wait
+    while True:
+        current = await _ticket_signature(user_id)
+        if current != sig or loop.time() >= deadline:
+            break
+        await asyncio.sleep(min(LONGPOLL_STEP, max(0.0, deadline - loop.time())))
+    if current == sig:
+        return {"changed": False, "sig": current}
+    # detail сам пересчитает sig — он свежее, чем current (сообщение могло
+    # прийти между проверкой отпечатка и выборкой диалога)
+    detail = await ticket_detail(user_id, _op, limit=200)
+    return {"changed": True, **detail}
 
 
 # ---------------------------------------------------------------- reply

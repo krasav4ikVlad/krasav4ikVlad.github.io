@@ -276,6 +276,7 @@ tr:hover td { background: rgba(20,20,20,.02); }
 .msg-system { align-self: center; background: none; color: var(--dim); font-size: 12px; padding: 2px 8px; text-align: center; }
 .msg .msg-meta { font-size: 10.5px; margin-top: 5px; color: var(--dim); }
 .msg-operator .msg-meta { color: var(--on-accent-dim); }
+.msg-pending { opacity: .55; }
 
 /* ================= ticket split view (чат по центру, тикеты справа) ================= */
 .ticket-main { min-width: 0; }

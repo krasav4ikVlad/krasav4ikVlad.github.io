@@ -997,16 +997,46 @@ async function viewTicket(userId) {
   };
   loadSideTickets(userId);
 
+  let pollSig = data.sig || '';
+
   const refresh = async () => {
     try {
       const d = await api('/api/tickets/' + userId);
+      pollSig = d.sig || pollSig;
       renderChat(d.messages);
       document.getElementById('tk-status').innerHTML = ticketBadge(d.ticket.status);
     } catch (e) { /* тихо: таймер может пережить уход со страницы */ }
     loadSideTickets(userId);
   };
   document.getElementById('tk-refresh').onclick = refresh;
-  S.ticketTimer = setInterval(refresh, 5000);
+  // список справа — раз в 5 секунд, чат — мгновенно через long-poll ниже
+  S.ticketTimer = setInterval(() => loadSideTickets(userId), 5000);
+
+  // Мгновенные обновления чата: держим запрос открытым, сервер отвечает
+  // сразу, как только приходит новое сообщение (в т.ч. из Telegram).
+  const pollCtl = new AbortController();
+  S.chatPoll = pollCtl;
+  (async () => {
+    while (!pollCtl.signal.aborted) {
+      try {
+        const d = await api(
+          `/api/tickets/${userId}/updates?sig=${encodeURIComponent(pollSig)}&wait=25`,
+          { signal: pollCtl.signal });
+        if (pollCtl.signal.aborted) return;
+        pollSig = d.sig || '';
+        if (d.changed) {
+          renderChat(d.messages);
+          const st = document.getElementById('tk-status');
+          if (st) st.innerHTML = ticketBadge(d.ticket.status);
+          loadSideTickets(userId);
+        }
+      } catch (e) {
+        if (pollCtl.signal.aborted || e.status === 401) return;
+        // сервер недоступен или 5xx — подождём, чтобы не заспамить
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+  })();
 
   const closeBtn = document.getElementById('tk-close');
   if (closeBtn) closeBtn.onclick = () => {
@@ -1121,6 +1151,15 @@ async function viewTicket(userId) {
       if (!text && !photo) { toast('Введите текст или прикрепите фото', 'err'); return; }
       const btn = form.querySelector('button[type=submit]');
       btn.disabled = true;
+      // мгновенно показываем своё сообщение в чате, не дожидаясь сервера
+      const $chat = document.getElementById('tk-chat');
+      const pendingEl = document.createElement('div');
+      pendingEl.className = 'msg msg-operator msg-pending';
+      pendingEl.innerHTML =
+        (text ? `<div class="msg-text">${esc(text)}</div>` : '') +
+        (photo ? '<div class="msg-text muted">📷 фото</div>' : '') +
+        '<div class="msg-meta">отправляется…</div>';
+      if ($chat) { $chat.appendChild(pendingEl); $chat.scrollTop = $chat.scrollHeight; }
       try {
         if (photo) {
           const fd = new FormData();
@@ -1145,6 +1184,7 @@ async function viewTicket(userId) {
       } catch (err) {
         toast(err.message, 'err');
       } finally {
+        pendingEl.remove(); // после refresh сообщение уже в истории; при ошибке — убираем
         btn.disabled = false;
       }
     });
@@ -1586,6 +1626,7 @@ function setNav(active) {
 async function render() {
   const hash = location.hash || '#/search';
   if (S.ticketTimer) { clearInterval(S.ticketTimer); S.ticketTimer = null; }
+  if (S.chatPoll) { S.chatPoll.abort(); S.chatPoll = null; }
 
   if (!S.token) {
     if (!hash.startsWith('#/login')) S.nextHash = hash;
