@@ -51,15 +51,27 @@ def _get_client() -> "anthropic.AsyncAnthropic":
     if not settings.anthropic_api_key:
         raise AIError("ИИ-помощник не настроен (ANTHROPIC_API_KEY в .env)", 503)
     if _client is None:
+        import httpx
+
+        # Таймаут ЖЁСТКО меньше nginx proxy_read_timeout (60с): иначе при
+        # недоступном api.anthropic.com nginx рвёт соединение первым и оператор
+        # видит голую «Ошибка 502» без причины (у SDK дефолт — 10 минут!)
+        timeout = httpx.Timeout(settings.ai_timeout_sec, connect=8.0)
         kwargs: dict = {
             "api_key": settings.anthropic_api_key,
-            "timeout": settings.ai_timeout_sec,
+            "timeout": timeout,
             "max_retries": 1,
         }
         if settings.ai_proxy_url:
-            import httpx
-            kwargs["http_client"] = httpx.AsyncClient(
-                proxy=settings.ai_proxy_url, timeout=settings.ai_timeout_sec)
+            try:
+                # DefaultAsyncHttpxClient сохраняет дефолтные лимиты SDK
+                http_cls = getattr(anthropic, "DefaultAsyncHttpxClient", None) or httpx.AsyncClient
+                kwargs["http_client"] = http_cls(proxy=settings.ai_proxy_url, timeout=timeout)
+            except ImportError as e:
+                # socks5-прокси требует пакет socksio (httpx[socks])
+                raise AIError(
+                    f"Прокси {settings.ai_proxy_url.split('://')[0]}:// не поддержан на сервере "
+                    f"({e}) — выполните venv/bin/pip install 'httpx[socks]' и перезапустите", 503)
         _client = anthropic.AsyncAnthropic(**kwargs)
     return _client
 

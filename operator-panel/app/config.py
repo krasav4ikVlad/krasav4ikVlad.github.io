@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     # Прокси для доступа к api.anthropic.com, если сервер в регионе без прямого
     # доступа (например, РФ): http://user:pass@host:port или socks5://host:port
     ai_proxy_url: str = ""
-    ai_timeout_sec: float = 60.0
+    # Должен быть меньше proxy_read_timeout вашего nginx (обычно 60с),
+    # иначе при недоступном API оператор увидит голую 502 от nginx
+    ai_timeout_sec: float = 25.0
 
     # --- Remnawave ---
     remnawave_base_url: str = ""          # e.g. https://panel.example.com
