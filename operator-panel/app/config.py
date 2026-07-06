@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     ai_effort: str = "low"                 # low|medium|high — скорость/качество черновика
     ai_max_tokens: int = 1024
     ai_history_messages: int = 30          # сколько последних сообщений тикета отдавать модели
+    # Прокси для доступа к api.anthropic.com, если сервер в регионе без прямого
+    # доступа (например, РФ): http://user:pass@host:port или socks5://host:port
+    ai_proxy_url: str = ""
+    ai_timeout_sec: float = 60.0
 
     # --- Remnawave ---
     remnawave_base_url: str = ""          # e.g. https://panel.example.com

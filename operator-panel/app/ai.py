@@ -51,7 +51,16 @@ def _get_client() -> "anthropic.AsyncAnthropic":
     if not settings.anthropic_api_key:
         raise AIError("ИИ-помощник не настроен (ANTHROPIC_API_KEY в .env)", 503)
     if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        kwargs: dict = {
+            "api_key": settings.anthropic_api_key,
+            "timeout": settings.ai_timeout_sec,
+            "max_retries": 1,
+        }
+        if settings.ai_proxy_url:
+            import httpx
+            kwargs["http_client"] = httpx.AsyncClient(
+                proxy=settings.ai_proxy_url, timeout=settings.ai_timeout_sec)
+        _client = anthropic.AsyncAnthropic(**kwargs)
     return _client
 
 
@@ -214,9 +223,18 @@ async def suggest_reply(user_id: int) -> str:
             detail = (e.body or {}).get("error", {}).get("message", "")[:200]
         except Exception:
             pass
-        raise AIError(f"Ошибка ИИ-сервиса ({e.status_code})" + (f": {detail}" if detail else ""))
+        hint = ""
+        if e.status_code == 403:
+            hint = (" — похоже, api.anthropic.com недоступен из региона сервера; "
+                    "укажите AI_PROXY_URL в .env (http/socks5 прокси)")
+        elif e.status_code == 404:
+            hint = " — проверьте AI_MODEL в .env"
+        raise AIError(f"Ошибка ИИ-сервиса ({e.status_code})"
+                      + (f": {detail}" if detail else "") + hint)
     except anthropic.APIConnectionError as e:
-        raise AIError(f"Нет соединения с ИИ-сервисом: {str(e)[:150]}")
+        raise AIError(
+            f"Нет соединения с ИИ-сервисом: {str(e)[:150]} — если сервер в регионе "
+            "без прямого доступа к api.anthropic.com, укажите AI_PROXY_URL в .env")
 
     if response.stop_reason == "refusal":
         raise AIError("ИИ отказался отвечать на этот запрос")
