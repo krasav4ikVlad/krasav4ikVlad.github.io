@@ -926,8 +926,11 @@ async function viewTicket(userId) {
     return;
   }
   const t = data.ticket;
+  if (!S.tk) S.tk = { status: 'open', page: 1, sort: 'pending_at', order: 'desc' };
   $view.innerHTML = `
     <div style="margin-bottom:12px"><a href="#/tickets" class="muted" style="text-decoration:none">← К тикетам</a></div>
+    <div class="ticket-layout">
+    <div class="ticket-main">
     <div class="card">
       <div class="user-header">
         <div>
@@ -965,9 +968,34 @@ async function viewTicket(userId) {
           <button class="btn" type="submit">Отправить</button>
         </div>
       </form>` : '<div class="muted" style="margin-top:10px">У вас нет права отвечать в тикеты.</div>'}
+    </div>
+    </div>
+    <aside class="ticket-side">
+      <div class="card">
+        <div class="side-head">
+          <h2 style="margin-bottom:0">Тикеты</h2>
+          <select id="side-filter" style="width:auto; padding:5px 10px; font-size:13px">
+            <option value="" ${S.tk.status === '' ? 'selected' : ''}>Все</option>
+            <option value="pending" ${S.tk.status === 'pending' ? 'selected' : ''}>🟡 Ожидают</option>
+            <option value="open" ${S.tk.status === 'open' ? 'selected' : ''}>🟢 У оператора</option>
+            <option value="closed" ${S.tk.status === 'closed' ? 'selected' : ''}>🔴 Закрытые</option>
+          </select>
+        </div>
+        <div id="side-list">${spinnerHtml()}</div>
+      </div>
+    </aside>
     </div>`;
 
   renderChat(data.messages);
+
+  document.getElementById('side-filter').onchange = e => {
+    S.tk.status = e.target.value;
+    S.tk.page = 1; // чтобы список тикетов открылся с той же выборки
+    const list = document.getElementById('side-list');
+    if (list) { list.dataset.key = ''; list.innerHTML = spinnerHtml(); }
+    loadSideTickets(userId);
+  };
+  loadSideTickets(userId);
 
   const refresh = async () => {
     try {
@@ -975,6 +1003,7 @@ async function viewTicket(userId) {
       renderChat(d.messages);
       document.getElementById('tk-status').innerHTML = ticketBadge(d.ticket.status);
     } catch (e) { /* тихо: таймер может пережить уход со страницы */ }
+    loadSideTickets(userId);
   };
   document.getElementById('tk-refresh').onclick = refresh;
   S.ticketTimer = setInterval(refresh, 5000);
@@ -1120,6 +1149,53 @@ async function viewTicket(userId) {
       }
     });
   }
+}
+
+// Боковой список тикетов на широких экранах (справа от чата).
+// На телефонах блок скрыт стилями, поэтому данные зря не качаем.
+async function loadSideTickets(activeUserId) {
+  const $list = document.getElementById('side-list');
+  if (!$list) return;
+  if (!window.matchMedia('(min-width: 1100px)').matches) return;
+  const qs = new URLSearchParams({ page: 1, page_size: 30, sort: 'pending_at', order: 'desc' });
+  if (S.tk && S.tk.status) qs.set('status', S.tk.status);
+  let data;
+  try {
+    data = await api('/api/tickets?' + qs);
+  } catch (e) {
+    return; // тихо: следующая попытка через 5 секунд
+  }
+  const key = qs.toString() + '|' + activeUserId + '|' +
+    JSON.stringify(data.items.map(m => [m.user_id, m.status, m.last_message && m.last_message.text]));
+  if ($list.dataset.key === key) return; // ничего нового — не перерисовываем
+  $list.dataset.key = key;
+
+  const shortDate = v => {
+    const dt = parseTs(v);
+    return dt ? dt.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+  };
+  const dot = st => `<span class="side-dot side-dot-${esc(st)}"></span>`;
+
+  $list.innerHTML = data.items.length ? data.items.map(m => `
+    <div class="side-row ${m.user_id === activeUserId ? 'active' : ''}" data-uid="${esc(m.user_id)}">
+      <div class="side-row-top">
+        ${dot(m.status)}
+        <span class="side-name">${esc(m.first_name || '—')}${m.username ? ' <span class="muted">@' + esc(m.username) + '</span>' : ''}</span>
+        <span class="side-date muted">${shortDate(m.pending_at)}</span>
+      </div>
+      <div class="side-last muted">${m.last_message ? esc(m.last_message.text || 'вложение') : '—'}</div>
+    </div>`).join('') +
+    (data.total > data.items.length
+      ? `<a href="#/tickets" class="muted" style="display:block; text-align:center; font-size:12.5px; padding:10px 0 2px">Показаны первые ${data.items.length} из ${data.total} — все тикеты →</a>`
+      : '')
+    : '<div class="center" style="padding:14px 0">Тикетов нет</div>';
+
+  $list.querySelectorAll('.side-row').forEach(row => {
+    row.onclick = () => {
+      const uid = parseInt(row.dataset.uid, 10);
+      if (uid !== activeUserId) location.hash = '#/ticket/' + uid;
+    };
+  });
 }
 
 const ATT_CACHE = {}; // file_id -> blob URL (чтобы автообновление не перекачивало файлы)
