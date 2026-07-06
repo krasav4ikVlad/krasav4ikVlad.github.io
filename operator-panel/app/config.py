@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     login_max_attempts: int = 10          # per login+IP within window
     login_attempt_window_sec: int = 900
 
+    # --- ИИ-помощник (черновики ответов в тикетах) ---
+    anthropic_api_key: str = ""            # ключ из console.anthropic.com; пусто = функция выключена
+    ai_model: str = "claude-opus-4-8"
+    ai_effort: str = "low"                 # low|medium|high — скорость/качество черновика
+    ai_max_tokens: int = 1024
+    ai_history_messages: int = 30          # сколько последних сообщений тикета отдавать модели
+
     # --- Remnawave ---
     remnawave_base_url: str = ""          # e.g. https://panel.example.com
     remnawave_token: str = ""             # API bearer token

@@ -67,6 +67,8 @@ async def ensure_indexes() -> None:
     await _safe_create_index(users, [("info.support.status", 1), ("info.support.pending_at", -1)])
     messages = db[settings.support_messages_collection]
     await _safe_create_index(messages, [("user_id", 1), ("timestamp", -1)])
+    # текстовый индекс — поиск похожих случаев для ИИ-помощника
+    await _safe_create_index(messages, [("text", "text")])
 
     log.info("MongoDB indexes ensured")
 

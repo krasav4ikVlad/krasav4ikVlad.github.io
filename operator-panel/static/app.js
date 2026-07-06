@@ -956,8 +956,12 @@ async function viewTicket(userId) {
             placeholder="Текст ответа…"></textarea></div>
         <input type="file" id="tk-photo" accept="image/*" class="hidden">
         <div id="tk-photo-preview" class="hidden" style="margin-bottom:10px"></div>
+        <div id="tk-ai-box" class="hidden ai-box"></div>
         <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap">
-          <button class="btn btn-ghost" type="button" id="tk-attach">Прикрепить фото</button>
+          <div style="display:flex; gap:8px; flex-wrap:wrap">
+            <button class="btn btn-ghost" type="button" id="tk-attach">Прикрепить фото</button>
+            <button class="btn btn-ghost" type="button" id="tk-ai">Ответ ИИ</button>
+          </div>
           <button class="btn" type="submit">Отправить</button>
         </div>
       </form>` : '<div class="muted" style="margin-top:10px">У вас нет права отвечать в тикеты.</div>'}
@@ -1007,6 +1011,39 @@ async function viewTicket(userId) {
       preview.classList.add('hidden');
     };
     document.getElementById('tk-attach').onclick = () => photoInput.click();
+
+    const aiBox = document.getElementById('tk-ai-box');
+    const aiBtn = document.getElementById('tk-ai');
+    const loadAiDraft = async () => {
+      aiBtn.disabled = true;
+      aiBox.classList.remove('hidden');
+      aiBox.innerHTML = `<div class="muted" style="font-size:13px"><span class="spinner"></span> ИИ изучает переписку и инструкции…</div>`;
+      try {
+        const data = await api(`/api/tickets/${userId}/suggest`, { method: 'POST' });
+        aiBox.innerHTML = `
+          <div class="microlabel" style="margin-bottom:8px">Черновик ИИ — проверьте перед отправкой</div>
+          <div class="ai-draft" id="tk-ai-text"></div>
+          <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap">
+            <button class="btn btn-sm" type="button" id="tk-ai-use">Вставить в ответ</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="tk-ai-retry">Ещё вариант</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="tk-ai-close">Скрыть</button>
+          </div>`;
+        aiBox.querySelector('#tk-ai-text').textContent = data.suggestion;
+        aiBox.querySelector('#tk-ai-use').onclick = () => {
+          form.text.value = data.suggestion;
+          form.text.focus();
+        };
+        aiBox.querySelector('#tk-ai-retry').onclick = loadAiDraft;
+        aiBox.querySelector('#tk-ai-close').onclick = () => aiBox.classList.add('hidden');
+      } catch (err) {
+        aiBox.innerHTML = `<div class="error-note">${esc(err.message)}</div>
+          <button class="btn btn-ghost btn-sm" type="button" id="tk-ai-close" style="margin-top:8px">Скрыть</button>`;
+        aiBox.querySelector('#tk-ai-close').onclick = () => aiBox.classList.add('hidden');
+      } finally {
+        aiBtn.disabled = false;
+      }
+    };
+    aiBtn.onclick = loadAiDraft;
     photoInput.onchange = () => {
       const f = photoInput.files[0];
       if (!f) return clearPhoto();

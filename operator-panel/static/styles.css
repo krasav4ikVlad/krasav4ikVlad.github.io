@@ -294,6 +294,12 @@ tr:hover td { background: rgba(20,20,20,.02); }
 }
 .lightbox-close:hover { background: rgba(255,255,255,.22); }
 
+.ai-box {
+  background: var(--card-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 14px; margin-bottom: 12px;
+}
+.ai-draft { white-space: pre-wrap; font-size: 13.5px; line-height: 1.55; }
+
 .photo-preview {
   display: flex; gap: 12px; align-items: flex-start;
   background: var(--card-2); border: 1px solid var(--border);

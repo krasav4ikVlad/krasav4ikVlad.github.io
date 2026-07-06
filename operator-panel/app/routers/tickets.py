@@ -244,6 +244,22 @@ async def reply_ticket(user_id: int, body: TicketReplyRequest,
     return {"ok": True, "status": "open", "message": jsonable(msg)}
 
 
+# ---------------------------------------------------------------- AI draft
+
+@router.post("/{user_id}/suggest")
+async def suggest_ai_reply(user_id: int, operator: CurrentOperator):
+    """Черновик ответа от ИИ. Ничего никуда не отправляет — оператор
+    просматривает, правит и шлёт через обычный reply (который аудируется)."""
+    ensure_permission(operator, "tickets")
+    await _find_ticket_user(user_id)  # 404, если тикета нет
+    from ..ai import AIError, suggest_reply
+    try:
+        suggestion = await suggest_reply(user_id)
+    except AIError as e:
+        raise HTTPException(e.status_code, e.message)
+    return {"suggestion": suggestion}
+
+
 # ---------------------------------------------------------------- reply with photo
 
 MAX_PHOTO_BYTES = 10 * 1024 * 1024  # лимит Bot API для sendPhoto
