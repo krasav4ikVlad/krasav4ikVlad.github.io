@@ -282,24 +282,34 @@ tr:hover td { background: rgba(20,20,20,.02); }
 .ticket-main { min-width: 0; }
 .ticket-side { display: none; }
 @media (min-width: 1100px) {
+  /* страница тикета не длиннее экрана: чат тянется ровно до низа */
+  main:has(.ticket-layout) { padding-bottom: 18px; }
   .ticket-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 330px;
     gap: 14px;
-    align-items: start;
+    align-items: stretch;
+    /* точную высоту до низа экрана выставляет JS (sizeTicketLayout) */
   }
-  .ticket-side {
-    display: block;
-    position: sticky;
-    top: 104px; /* под липким топбаром */
+  .ticket-main { display: flex; flex-direction: column; min-height: 0; }
+  .ticket-main > .card:first-child { flex: 0 0 auto; }
+  .ticket-main > .card:last-child {
+    flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column;
   }
-  .ticket-side .card { padding: 16px; }
+  .chat { flex: 1 1 auto; max-height: none; min-height: 120px; }
+  .chat-hint { display: none; } /* на широком экране каждая строка — место для чата */
+  .ticket-side { display: block; min-height: 0; }
+  .ticket-side .card {
+    height: 100%; min-height: 0;
+    display: flex; flex-direction: column;
+    padding: 16px;
+  }
   .ticket-side #side-list {
-    max-height: calc(100vh - 220px);
+    flex: 1 1 auto; min-height: 0;
     overflow-y: auto;
     margin: 0 -6px;
   }
-  .chat { max-height: calc(100vh - 430px); min-height: 260px; }
 }
 .side-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
 .side-row {
@@ -327,6 +337,21 @@ tr:hover td { background: rgba(20,20,20,.02); }
   margin-top: 3px; padding-left: 15px; font-size: 12px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* ================= quick replies ================= */
+.qr-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 4px; border-bottom: 1px solid var(--border);
+}
+.qr-item:last-child { border-bottom: none; }
+.qr-main { flex: 1; min-width: 0; cursor: pointer; }
+.qr-main:hover .qr-title { text-decoration: underline; }
+.qr-title { font-weight: 600; font-size: 13.5px; }
+.qr-preview {
+  font-size: 12px; margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.qr-btns { display: flex; gap: 6px; flex: 0 0 auto; }
 
 /* ================= lightbox ================= */
 .lightbox-overlay {

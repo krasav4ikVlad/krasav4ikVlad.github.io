@@ -187,6 +187,27 @@ await log_support_message(uid, 'operator', _message_text_for_log(message),
 await log_support_message(uid, 'system', 'Тикет закрыт (TG)')
 ```
 
+**handlers/admin.py — быстрые ответы.** Когда оператор жмёт кнопку быстрого
+ответа (`qr_menu` → выбор пункта), бот шлёт пользователю текст из
+`support_quick_replies` и пишет в тред «Пользователю отправлено: …» — но в
+`support_messages` это не попадает, поэтому на сайте такого ответа не видно.
+В обработчике колбэка быстрого ответа, СРАЗУ после успешной отправки текста
+пользователю (`bot.send_message(uid, body...)`), добавить:
+
+```python
+op_login = (call.from_user.username or call.from_user.full_name or 'operator')
+await log_support_message(uid, 'operator', body, operator_login=op_login)
+```
+
+где `body` — тот же текст инструкции, который ушёл пользователю. То же самое
+в обработчике FAQ-меню пользователя (если бот сам отвечает на кнопки вроде
+«Как продлить подписку?» в ЛС) — там `operator_login='бот (FAQ)'`.
+
+Коллекция `support_quick_replies` теперь общая с панелью: операторы могут
+добавлять/менять/выключать быстрые ответы на сайте (кнопка «Быстрые ответы»
+в тикете), панель создаёт записи в той же схеме `{key, title, text, order,
+active}` — они сразу появляются в меню бота, ничего дублировать не нужно.
+
 ## 3. Настройка панели
 
 В `.env` панели добавить и перезапустить (`pm2 restart operator-panel`):

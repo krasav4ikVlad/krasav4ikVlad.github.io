@@ -948,7 +948,7 @@ async function viewTicket(userId) {
     </div>
     <div class="card">
       <h2>Переписка</h2>
-      <div class="muted" style="font-size:12px; margin-bottom:10px">
+      <div class="muted chat-hint" style="font-size:12px; margin-bottom:10px">
         Здесь видны сообщения, прошедшие через сайт и бота с момента подключения интеграции.
         Полная история старых тикетов — в Telegram-треде.</div>
       <div class="chat" id="tk-chat"></div>
@@ -963,6 +963,7 @@ async function viewTicket(userId) {
         <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap">
           <div style="display:flex; gap:8px; flex-wrap:wrap">
             <button class="btn btn-ghost" type="button" id="tk-attach">Прикрепить фото</button>
+            <button class="btn btn-ghost" type="button" id="tk-quick">Быстрые ответы</button>
             <button class="btn btn-ghost" type="button" id="tk-ai">Ещё вариант ИИ</button>
           </div>
           <button class="btn" type="submit">Отправить</button>
@@ -985,6 +986,22 @@ async function viewTicket(userId) {
       </div>
     </aside>
     </div>`;
+
+  // на широких экранах чат занимает всё до низа окна и не создаёт скролл страницы
+  window.scrollTo(0, 0);
+  const layoutEl = $view.querySelector('.ticket-layout');
+  const sizeLayout = () => {
+    if (!layoutEl) return;
+    if (window.matchMedia('(min-width: 1100px)').matches) {
+      const h = window.innerHeight - layoutEl.getBoundingClientRect().top - 18;
+      layoutEl.style.height = Math.max(420, h) + 'px';
+    } else {
+      layoutEl.style.height = '';
+    }
+  };
+  sizeLayout();
+  S.onResize = sizeLayout;
+  window.addEventListener('resize', sizeLayout);
 
   renderChat(data.messages);
 
@@ -1124,6 +1141,18 @@ async function viewTicket(userId) {
           && !confirm('Заменить текст в поле новым черновиком ИИ?')) return;
       generateAiDraft(false);
     };
+
+    // ---- быстрые ответы: общие с ботом, вставляются в поле ----
+    document.getElementById('tk-quick').onclick = () => openQuickReplies(text => {
+      const typed = form.text.value.trim();
+      if (typed && typed !== lastAiDraft
+          && !confirm('Заменить текст в поле выбранным быстрым ответом?')) return false;
+      form.text.value = text;
+      lastAiDraft = text; // чтобы следующая вставка/ИИ не спрашивали про этот текст
+      setAiStatus('');
+      form.text.focus();
+      return true;
+    });
     if (S.aiDisabled) aiBtn.classList.add('hidden');
     // автогенерация при открытии тикета (кроме закрытых)
     if (t.status !== 'closed' && !S.aiDisabled) generateAiDraft(true);
@@ -1235,6 +1264,110 @@ async function loadSideTickets(activeUserId) {
       const uid = parseInt(row.dataset.uid, 10);
       if (uid !== activeUserId) location.hash = '#/ticket/' + uid;
     };
+  });
+}
+
+// ================================================================ quick replies
+// Общая с ботом коллекция support_quick_replies: добавленное здесь появляется
+// и в меню бота, и в FAQ ИИ-помощника. insert(text) -> true, если вставлено.
+
+function openQuickReplies(insert) {
+  const $m = openModal(`
+    <h2>Быстрые ответы</h2>
+    <div class="muted" style="font-size:12px; margin-bottom:10px">
+      Общие с ботом: изменения тут сразу видны в меню бота и наоборот.
+      Клик по названию вставляет текст в поле ответа.</div>
+    <input id="qr-search" placeholder="Поиск по названию или тексту…" style="margin-bottom:10px">
+    <div id="qr-list" style="max-height:48vh; overflow-y:auto">${spinnerHtml()}</div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="qr-add">+ Добавить</button>
+      <button class="btn" id="qr-close">Закрыть</button>
+    </div>`);
+  const $list = $m.querySelector('#qr-list');
+  let items = [];
+
+  const renderList = () => {
+    const q = $m.querySelector('#qr-search').value.trim().toLowerCase();
+    const filtered = items.filter(i => !q
+      || i.title.toLowerCase().includes(q) || i.text.toLowerCase().includes(q));
+    $list.innerHTML = filtered.length ? filtered.map(i => `
+      <div class="qr-item">
+        <div class="qr-main" data-use="${esc(i.id)}">
+          <div class="qr-title">${esc(i.title)}
+            ${i.active ? '' : ' <span class="badge badge-gray">выключен</span>'}</div>
+          <div class="qr-preview muted">${esc(i.text.slice(0, 110))}${i.text.length > 110 ? '…' : ''}</div>
+        </div>
+        <div class="qr-btns">
+          <button class="btn btn-ghost btn-sm" data-edit="${esc(i.id)}">Изменить</button>
+          <button class="btn btn-ghost btn-sm" data-del="${esc(i.id)}">Удалить</button>
+        </div>
+      </div>`).join('')
+      : '<div class="center" style="padding:14px 0">Пока пусто — добавьте первый быстрый ответ</div>';
+
+    $list.querySelectorAll('[data-use]').forEach(el => el.onclick = () => {
+      const item = items.find(i => i.id === el.dataset.use);
+      if (item && insert(item.text) !== false) closeModal();
+    });
+    $list.querySelectorAll('[data-edit]').forEach(el => el.onclick = () =>
+      qrEditModal(items.find(i => i.id === el.dataset.edit), insert));
+    $list.querySelectorAll('[data-del]').forEach(el => el.onclick = async () => {
+      const item = items.find(i => i.id === el.dataset.del);
+      if (!item) return;
+      if (!confirm(`Удалить быстрый ответ «${item.title}»? Он пропадёт и из меню бота.`)) return;
+      try {
+        await api('/api/quick-replies/' + item.id, { method: 'DELETE' });
+        toast('Удалено ✓');
+        load();
+      } catch (err) { toast(err.message, 'err'); }
+    });
+  };
+
+  const load = async () => {
+    try {
+      items = (await api('/api/quick-replies?all=true')).items;
+      renderList();
+    } catch (err) {
+      $list.innerHTML = `<div class="error-note">${esc(err.message)}</div>`;
+    }
+  };
+  $m.querySelector('#qr-search').oninput = renderList;
+  $m.querySelector('#qr-add').onclick = () => qrEditModal(null, insert);
+  $m.querySelector('#qr-close').onclick = closeModal;
+  load();
+}
+
+function qrEditModal(item, insert) {
+  const $m = openModal(`
+    <h2>${item ? 'Изменить быстрый ответ' : 'Новый быстрый ответ'}</h2>
+    <form id="qr-form">
+      <div class="field"><label>Название (это текст кнопки в боте и на сайте)</label>
+        <input name="title" required maxlength="64" value="${item ? esc(item.title) : ''}"></div>
+      <div class="field"><label>Текст ответа пользователю</label>
+        <textarea name="text" rows="8" required maxlength="3500">${item ? esc(item.text) : ''}</textarea></div>
+      ${item ? `<label style="display:flex; gap:8px; align-items:center; color:var(--text); margin-bottom:12px">
+        <input type="checkbox" name="active" style="width:auto" ${item.active ? 'checked' : ''}>
+        Активен (виден в боте и в списке вставки)
+      </label>` : ''}
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="qr-back">Назад</button>
+        <button type="submit" class="btn">Сохранить</button>
+      </div>
+    </form>`);
+  $m.querySelector('#qr-back').onclick = () => openQuickReplies(insert);
+  $m.querySelector('#qr-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target;
+    const body = { title: f.title.value.trim(), text: f.text.value.trim() };
+    try {
+      if (item) {
+        body.active = f.active.checked;
+        await api('/api/quick-replies/' + item.id, { method: 'PATCH', body });
+      } else {
+        await api('/api/quick-replies', { method: 'POST', body });
+      }
+      toast('Сохранено ✓');
+      openQuickReplies(insert);
+    } catch (err) { toast(err.message, 'err'); }
   });
 }
 
@@ -1421,6 +1554,9 @@ const ACTION_LABELS = {
   password_change: 'Смена своего пароля',
   ticket_reply: 'Ответ в тикете',
   ticket_close: 'Закрытие тикета',
+  quick_reply_create: 'Быстрый ответ: создан',
+  quick_reply_update: 'Быстрый ответ: изменён',
+  quick_reply_delete: 'Быстрый ответ: удалён',
 };
 function actionLabel(a) { return ACTION_LABELS[a] || a; }
 
@@ -1627,6 +1763,7 @@ async function render() {
   const hash = location.hash || '#/search';
   if (S.ticketTimer) { clearInterval(S.ticketTimer); S.ticketTimer = null; }
   if (S.chatPoll) { S.chatPoll.abort(); S.chatPoll = null; }
+  if (S.onResize) { window.removeEventListener('resize', S.onResize); S.onResize = null; }
 
   if (!S.token) {
     if (!hash.startsWith('#/login')) S.nextHash = hash;

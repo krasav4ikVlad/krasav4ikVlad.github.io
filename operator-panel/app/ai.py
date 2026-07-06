@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import logging
 
-import anthropic
+try:
+    import anthropic
+except ImportError:  # пакет не установлен — скажем об этом словами, а не 500-кой
+    anthropic = None  # type: ignore[assignment]
 
 from .config import get_settings
 from .database import get_db
@@ -38,8 +41,12 @@ class AIError(Exception):
         self.status_code = status_code
 
 
-def _get_client() -> anthropic.AsyncAnthropic:
+def _get_client() -> "anthropic.AsyncAnthropic":
     global _client
+    if anthropic is None:
+        raise AIError(
+            "На сервере не установлен пакет anthropic — выполните "
+            "venv/bin/pip install -r requirements.txt и перезапустите панель", 503)
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise AIError("ИИ-помощник не настроен (ANTHROPIC_API_KEY в .env)", 503)
@@ -178,22 +185,36 @@ async def suggest_reply(user_id: int) -> str:
     user_parts.append(f"## Переписка тикета:\n{_dialog_to_text(dialog)}")
     user_parts.append("Напиши черновик следующего ответа оператора пользователю.")
 
-    try:
-        response = await client.messages.create(
+    async def _call(extra: dict):
+        return await client.messages.create(
             model=settings.ai_model,
             max_tokens=settings.ai_max_tokens,
-            output_config={"effort": settings.ai_effort},
             system=system_blocks,
             messages=[{"role": "user", "content": "\n\n".join(user_parts)}],
+            **extra,
         )
+
+    try:
+        try:
+            response = await _call({"output_config": {"effort": settings.ai_effort}})
+        except TypeError:
+            # SDK старее 0.92 не знает output_config — работаем без него
+            log.warning("anthropic SDK без output_config — обновите пакет "
+                        "(pip install -r requirements.txt); работаю без effort")
+            response = await _call({})
     except anthropic.AuthenticationError:
         raise AIError("Неверный ANTHROPIC_API_KEY", 503)
     except anthropic.RateLimitError:
         raise AIError("ИИ перегружен (rate limit) — попробуйте через минуту")
     except anthropic.APIStatusError as e:
-        raise AIError(f"Ошибка ИИ-сервиса ({e.status_code})")
-    except anthropic.APIConnectionError:
-        raise AIError("Нет соединения с ИИ-сервисом")
+        detail = ""
+        try:
+            detail = (e.body or {}).get("error", {}).get("message", "")[:200]
+        except Exception:
+            pass
+        raise AIError(f"Ошибка ИИ-сервиса ({e.status_code})" + (f": {detail}" if detail else ""))
+    except anthropic.APIConnectionError as e:
+        raise AIError(f"Нет соединения с ИИ-сервисом: {str(e)[:150]}")
 
     if response.stop_reason == "refusal":
         raise AIError("ИИ отказался отвечать на этот запрос")

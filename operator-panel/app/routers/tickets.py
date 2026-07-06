@@ -301,6 +301,11 @@ async def suggest_ai_reply(user_id: int, operator: CurrentOperator):
         suggestion = await suggest_reply(user_id)
     except AIError as e:
         raise HTTPException(e.status_code, e.message)
+    except Exception as e:  # что угодно неожиданное — читаемо оператору, трейс в лог
+        import logging
+        logging.getLogger(__name__).exception("AI suggest failed for user %s", user_id)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                            f"ИИ-помощник: внутренняя ошибка ({type(e).__name__}: {str(e)[:200]})")
     return {"suggestion": suggestion}
 
 
