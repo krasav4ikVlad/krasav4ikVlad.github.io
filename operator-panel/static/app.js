@@ -1816,27 +1816,77 @@ const DAY_LIST = [
   ['fri', 'Пятница'], ['sat', 'Суббота'], ['sun', 'Воскресенье'],
 ];
 
-// длительность интервала "HH:MM-HH:MM" в часах; конец <= начала = через полночь
+// разбор значения дня: "09:00-18:00" или "10:00-14:00~8" (плавающий)
+function parseDay(iv) {
+  const fm = /^(\d{2}:\d{2})-(\d{2}:\d{2})~(\d{1,2}(?:\.\d)?)$/.exec(iv || '');
+  if (fm) return { a: fm[1], b: fm[2], float: true, dur: parseFloat(fm[3]) };
+  const m = /^(\d{2}:\d{2})-(\d{2}:\d{2})$/.exec(iv || '');
+  if (m) return { a: m[1], b: m[2], float: false, dur: null };
+  return { a: '', b: '', float: false, dur: null };
+}
+
+// часы дня; для фиксированного конец <= начала = через полночь
 function intervalHours(iv) {
-  const m = /^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/.exec(iv || '');
-  if (!m) return 0;
-  const a = +m[1] * 60 + +m[2], b = +m[3] * 60 + +m[4];
+  const d = parseDay(iv);
+  if (d.float) return d.dur || 0;
+  if (!d.a || !d.b) return 0;
+  const toMin = t => +t.slice(0, 2) * 60 + +t.slice(3);
+  const a = toMin(d.a), b = toMin(d.b);
   return ((b > a ? b - a : 1440 - a + b)) / 60;
 }
 
 function scheduleSummary(schedule) {
   if (!schedule) return '';
   const short = { mon: 'Пн', tue: 'Вт', wed: 'Ср', thu: 'Чт', fri: 'Пт', sat: 'Сб', sun: 'Вс' };
-  return DAY_LIST.map(([k]) => `${short[k]} ${schedule[k] ? schedule[k].replace('-', '–') : 'вых.'}`).join(' · ');
+  return DAY_LIST.map(([k]) => {
+    const v = schedule[k];
+    if (!v) return `${short[k]} вых.`;
+    const d = parseDay(v);
+    return d.float
+      ? `${short[k]} ${d.a}–${d.b} +${d.dur}ч по 1-му ответу`
+      : `${short[k]} ${d.a}–${d.b}`;
+  }).join(' · ');
+}
+
+const DAY_SHORT = { mon: 'Пн', tue: 'Вт', wed: 'Ср', thu: 'Чт', fri: 'Пт', sat: 'Сб', sun: 'Вс' };
+
+function schedRowHtml(k, label, iv) {
+  const d = parseDay(iv);
+  return `<tr>
+    <td class="sched-day" title="${label}">${DAY_SHORT[k]}</td>
+    <td><input type="time" name="sch_${k}_a" value="${esc(d.a)}"></td>
+    <td class="sched-dash">—</td>
+    <td><input type="time" name="sch_${k}_b" value="${esc(d.b)}"></td>
+    <td><label class="sched-float" title="Интервал слева — окно ПЕРВОГО ответа; смена = указанные часы с момента первого ответа">
+      <input type="checkbox" name="sch_${k}_f" ${d.float ? 'checked' : ''}> 1-й ответ</label></td>
+    <td><input type="number" name="sch_${k}_d" class="sched-dur ${d.float ? '' : 'hidden'}"
+      min="0.5" max="24" step="0.5" value="${d.dur ?? ''}" placeholder="8" title="Часов в смене"></td>
+    <td class="sched-hrs muted" data-day="${k}"></td>
+    <td class="sched-btns">
+      <button type="button" class="btn btn-ghost btn-sm" data-copy="${k}" title="Скопировать время этого дня">Коп.</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-paste="${k}" title="Вставить скопированное время" disabled>Вст.</button>
+    </td>
+  </tr>`;
 }
 
 function bindScheduleTable($m) {
+  let clip = null; // скопированный день {a, b, float, dur}
+
+  const dayHours = (k) => {
+    const a = $m.querySelector(`[name=sch_${k}_a]`).value;
+    const b = $m.querySelector(`[name=sch_${k}_b]`).value;
+    const f = $m.querySelector(`[name=sch_${k}_f]`).checked;
+    const d = parseFloat($m.querySelector(`[name=sch_${k}_d]`).value);
+    if (f) return (a && b && d) ? d : 0;
+    return a && b ? intervalHours(`${a}-${b}`) : 0;
+  };
+
   const recalc = () => {
     let total = 0;
     DAY_LIST.forEach(([k]) => {
-      const a = $m.querySelector(`[name=sch_${k}_a]`).value;
-      const b = $m.querySelector(`[name=sch_${k}_b]`).value;
-      const h = a && b ? intervalHours(`${a}-${b}`) : 0;
+      const f = $m.querySelector(`[name=sch_${k}_f]`).checked;
+      $m.querySelector(`[name=sch_${k}_d]`).classList.toggle('hidden', !f);
+      const h = dayHours(k);
       total += h;
       const cell = $m.querySelector(`.sched-hrs[data-day=${k}]`);
       if (cell) cell.textContent = h ? h.toFixed(1).replace(/\.0$/, '') + ' ч' : 'вых.';
@@ -1844,18 +1894,58 @@ function bindScheduleTable($m) {
     const el = $m.querySelector('#sched-total');
     if (el) el.textContent = total ? total.toFixed(1).replace(/\.0$/, '') + ' ч/нед' : 'график не задан';
   };
-  $m.querySelectorAll('.sched-table input').forEach(i => i.addEventListener('input', recalc));
+  $m.querySelectorAll('.sched-table input').forEach(i => {
+    i.addEventListener('input', recalc);
+    i.addEventListener('change', recalc);
+  });
+
+  const setDay = (k, v) => {
+    $m.querySelector(`[name=sch_${k}_a]`).value = v.a;
+    $m.querySelector(`[name=sch_${k}_b]`).value = v.b;
+    $m.querySelector(`[name=sch_${k}_f]`).checked = v.float;
+    $m.querySelector(`[name=sch_${k}_d]`).value = v.dur ?? '';
+  };
+  $m.querySelectorAll('[data-copy]').forEach(btn => btn.onclick = () => {
+    const k = btn.dataset.copy;
+    clip = {
+      a: $m.querySelector(`[name=sch_${k}_a]`).value,
+      b: $m.querySelector(`[name=sch_${k}_b]`).value,
+      float: $m.querySelector(`[name=sch_${k}_f]`).checked,
+      dur: $m.querySelector(`[name=sch_${k}_d]`).value,
+    };
+    $m.querySelectorAll('[data-paste], #sched-paste-all').forEach(b => b.disabled = false);
+    toast('Время скопировано — жмите «Вст.» у нужных дней');
+  });
+  $m.querySelectorAll('[data-paste]').forEach(btn => btn.onclick = () => {
+    if (clip) { setDay(btn.dataset.paste, clip); recalc(); }
+  });
+  const pasteAll = $m.querySelector('#sched-paste-all');
+  if (pasteAll) pasteAll.onclick = () => {
+    if (!clip) return;
+    DAY_LIST.forEach(([k]) => setDay(k, clip));
+    recalc();
+  };
+
   recalc();
 }
 
-// собирает график из формы; бросает Error, если заполнена только одна граница
+// собирает график из формы; бросает Error при неполном дне
 function readScheduleTable($m) {
   const out = {};
   for (const [k, label] of DAY_LIST) {
     const a = $m.querySelector(`[name=sch_${k}_a]`).value;
     const b = $m.querySelector(`[name=sch_${k}_b]`).value;
+    const f = $m.querySelector(`[name=sch_${k}_f]`).checked;
+    const d = $m.querySelector(`[name=sch_${k}_d]`).value;
+    if (!a && !b && !d) { out[k] = ''; continue; }
     if (!!a !== !!b) throw new Error(`${label}: заполните обе границы интервала или очистите день`);
-    out[k] = a && b ? `${a}-${b}` : '';
+    if (f) {
+      if (!a || !b) throw new Error(`${label}: задайте окно первого ответа`);
+      if (!d || parseFloat(d) <= 0) throw new Error(`${label}: укажите часы смены для дня «по 1-му ответу»`);
+      out[k] = `${a}-${b}~${parseFloat(d)}`;
+    } else {
+      out[k] = a && b ? `${a}-${b}` : '';
+    }
   }
   return out;
 }
@@ -1941,18 +2031,16 @@ function modalOperatorEdit(op) {
       <div class="field">
         <label>График работы (пусто = выходной; конец 00:00 = до конца суток; конец меньше начала = смена через полночь)</label>
         <table class="sched-table">
-          ${DAY_LIST.map(([k, label]) => {
-            const iv = (op.schedule || {})[k] || '';
-            const [a, b] = iv ? iv.split('-') : ['', ''];
-            return `<tr><td class="sched-day">${label}</td>
-              <td><input type="time" name="sch_${k}_a" value="${esc(a)}"></td>
-              <td class="sched-dash">—</td>
-              <td><input type="time" name="sch_${k}_b" value="${esc(b)}"></td>
-              <td class="sched-hrs muted" data-day="${k}"></td></tr>`;
-          }).join('')}
+          ${DAY_LIST.map(([k, label]) => schedRowHtml(k, label, (op.schedule || {})[k] || '')).join('')}
         </table>
-        <div class="muted" style="font-size:12.5px; margin-top:6px">
-          Итого: <b id="sched-total">—</b> — норма баллов и коэффициент считаются из этих часов.</div>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:6px">
+          <div class="muted" style="font-size:12.5px">
+            Итого: <b id="sched-total">—</b> — из этих часов считаются норма и коэффициент.</div>
+          <button type="button" class="btn btn-ghost btn-sm" id="sched-paste-all" disabled>Вставить во все дни</button>
+        </div>
+        <div class="muted" style="font-size:12px; margin-top:4px">
+          «1-й ответ»: интервал — это окно, в котором оператор должен дать первый ответ
+          (например 10:00–14:00), рабочая смена = указанные часы с момента первого ответа.</div>
       </div>
       <label style="display:flex;gap:8px;align-items:center;color:var(--text)">
         <input type="checkbox" name="active" style="width:auto" ${op.active ? 'checked' : ''}> Учётка активна
@@ -1967,6 +2055,7 @@ function modalOperatorEdit(op) {
           Будет сгенерирован новый временный пароль, оператор сменит его при входе.</div>
       </div>
     </form>`);
+  $m.classList.add('modal-wide'); // таблица графика не влезает в обычную ширину
   bindRolePermToggle($m);
   bindScheduleTable($m);
   $m.querySelector('#op-reset-pwd').onclick = async () => {

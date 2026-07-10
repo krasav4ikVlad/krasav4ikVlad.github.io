@@ -27,23 +27,40 @@ DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 DAY_RU = {"mon": "Пн", "tue": "Вт", "wed": "Ср", "thu": "Чт",
           "fri": "Пт", "sat": "Сб", "sun": "Вс"}
 INTERVAL_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)-([01]?\d|2[0-3]):([0-5]\d)$")
+# «плавающий» день: интервал первого ответа + длительность смены,
+# напр. "10:00-14:00~8" = начать можно в любой момент с 10 до 14,
+# рабочий день = 8 часов с первого ответа
+FLOAT_RE = re.compile(
+    r"^([01]?\d|2[0-3]):([0-5]\d)-([01]?\d|2[0-3]):([0-5]\d)~(\d{1,2}(?:\.\d)?)$")
 
 
 def validate_schedule(schedule: dict) -> tuple[dict, float]:
     """Проверяет недельный график и возвращает (нормализованный график, часов/нед).
-    Формат дня: "09:00-18:00", пусто = выходной; конец 00:00 = до конца суток;
-    конец меньше начала = смена через полночь (18:00-02:00 = 8 часов)."""
+    Формат дня: "09:00-18:00" (фиксированный) или "10:00-14:00~8" (плавающий:
+    окно первого ответа + часы смены). Пусто = выходной; конец 00:00 = до конца
+    суток; конец меньше начала = смена через полночь (18:00-02:00 = 8 часов)."""
     clean: dict[str, str] = {}
-    total_min = 0
+    total_min = 0.0
     for day in DAY_KEYS:
         v = (schedule.get(day) or "").strip()
         if not v:
             clean[day] = ""
             continue
+        fm = FLOAT_RE.match(v)
+        if fm:
+            hours = float(fm.group(5))
+            if not 0 < hours <= 24:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                    f"{DAY_RU[day]}: длительность смены 0.5–24 часа")
+            total_min += hours * 60
+            clean[day] = v
+            continue
         m = INTERVAL_RE.match(v)
         if not m:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                                f"{DAY_RU[day]}: интервал в формате ЧЧ:ММ-ЧЧ:ММ (например 09:00-18:00)")
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"{DAY_RU[day]}: интервал в формате ЧЧ:ММ-ЧЧ:ММ (например 09:00-18:00) "
+                f"или ЧЧ:ММ-ЧЧ:ММ~часы для плавающего дня")
         start = int(m.group(1)) * 60 + int(m.group(2))
         end = int(m.group(3)) * 60 + int(m.group(4))
         dur = (end - start) if end > start else (1440 - start + end)  # 00:00/через полночь

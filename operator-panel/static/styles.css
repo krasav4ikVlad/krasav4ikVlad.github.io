@@ -344,11 +344,20 @@ tr.st-me td:first-child { border-left: 3px solid var(--blue); }
 
 /* недельный график в карточке оператора */
 .sched-table { width: auto; margin-top: 4px; }
-.sched-table td { border-bottom: none; padding: 3px 4px; vertical-align: middle; }
-.sched-table input[type=time] { width: 110px; padding: 6px 8px; font-size: 13px; }
-.sched-day { min-width: 110px; font-size: 13px; }
+.sched-table td { border-bottom: none; padding: 3px 3px; vertical-align: middle; }
+.sched-table input[type=time] { width: 96px; padding: 6px 6px; font-size: 13px; }
+.sched-day { min-width: 96px; font-size: 13px; }
 .sched-dash { color: var(--dim); }
-.sched-hrs { font-size: 12px; min-width: 46px; }
+.sched-hrs { font-size: 12px; min-width: 40px; }
+.sched-float { display: flex; gap: 4px; align-items: center; margin: 0; font-size: 11.5px;
+  color: var(--dim); white-space: nowrap; cursor: pointer; }
+.sched-float input { width: auto; accent-color: var(--dark); }
+.sched-dur { width: 58px; padding: 6px 6px; font-size: 13px; }
+.sched-btns { white-space: nowrap; }
+.sched-btns .btn-sm { padding: 4px 8px; min-height: 26px; font-size: 11.5px; }
+/* модалка оператора шире обычной — из-за таблицы графика
+   (.modal.modal-wide — чтобы перебить max-width из правила .modal ниже) */
+.modal.modal-wide { max-width: 660px; }
 
 /* ================= quick replies ================= */
 .qr-item {
