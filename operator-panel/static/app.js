@@ -1475,6 +1475,135 @@ function renderChat(messages) {
   $chat.scrollTop = $chat.scrollHeight;
 }
 
+// ================================================================ operator activity / stats
+
+function fmtDur(sec) {
+  if (sec == null) return '—';
+  if (sec < 60) return Math.round(sec) + ' сек';
+  if (sec < 3600) return Math.round(sec / 60) + ' мин';
+  return Math.floor(sec / 3600) + ' ч ' + Math.round((sec % 3600) / 60) + ' мин';
+}
+
+function isoDate(d) { return d.toISOString().slice(0, 10); }
+
+function viewStats() {
+  const today = new Date();
+  if (!S.st) {
+    S.st = { from: isoDate(new Date(today - 6 * 86400000)), to: isoDate(today), preset: '7d' };
+  }
+  const st = S.st;
+  $view.innerHTML = `
+    <h1>Активность операторов</h1>
+    <div class="card">
+      <div class="filter-bar" style="align-items:center">
+        <button class="btn btn-ghost btn-sm" data-preset="today">Сегодня</button>
+        <button class="btn btn-ghost btn-sm" data-preset="7d">7 дней</button>
+        <button class="btn btn-ghost btn-sm" data-preset="30d">30 дней</button>
+        <button class="btn btn-ghost btn-sm" data-preset="month">Этот месяц</button>
+        <input type="date" name="st-from" value="${esc(st.from)}" style="flex:0 1 150px">
+        <input type="date" name="st-to" value="${esc(st.to)}" style="flex:0 1 150px">
+        <button class="btn btn-sm" id="st-apply">Показать</button>
+        ${S.me.role === 'owner' ? '<button class="btn btn-ghost btn-sm" id="st-csv">Скачать CSV</button>' : ''}
+      </div>
+      <div id="st-summary" class="stats-grid" style="margin:14px 0 0"></div>
+    </div>
+    <div class="card">
+      <h2>Рейтинг за период</h2>
+      <div id="st-table">${spinnerHtml()}</div>
+      <div class="muted" id="st-formula" style="font-size:12.5px; margin-top:12px"></div>
+    </div>`;
+
+  const load = async () => {
+    const $t = document.getElementById('st-table');
+    $t.innerHTML = spinnerHtml();
+    let data;
+    try {
+      data = await api(`/api/stats/operators?date_from=${st.from}&date_to=${st.to}`);
+    } catch (err) {
+      $t.innerHTML = `<div class="error-note">${esc(err.message)}</div>`;
+      return;
+    }
+    S.stData = data;
+    const rows = data.rows;
+    const tot = k => rows.reduce((s, r) => s + (r[k] || 0), 0);
+    const allWaits = rows.filter(r => r.avg_wait_sec != null);
+    const avgAll = allWaits.length
+      ? allWaits.reduce((s, r) => s + r.avg_wait_sec * r.measured, 0) /
+        Math.max(1, allWaits.reduce((s, r) => s + r.measured, 0))
+      : null;
+    document.getElementById('st-summary').innerHTML = `
+      <div class="stat"><div class="stat-label">Ответов</div><div class="stat-value">${tot('replies')}</div></div>
+      <div class="stat"><div class="stat-label">Тикетов закрыто</div><div class="stat-value">${tot('closes')}</div></div>
+      <div class="stat"><div class="stat-label">Средняя скорость ответа</div><div class="stat-value">${fmtDur(avgAll)}</div></div>
+      <div class="stat"><div class="stat-label">Оценок получено</div><div class="stat-value">${tot('rating_count')}</div></div>`;
+
+    $t.innerHTML = rows.length ? `<div class="table-wrap"><table>
+      <tr><th>#</th><th>Оператор</th><th>Баллы</th><th>Ответы</th><th>Тикетов</th><th>Закрыто</th>
+        <th>Скорость (медиана)</th><th>Быстрых ≤${data.points.fast_threshold_min} мин</th><th>Оценка</th></tr>
+      ${rows.map((r, i) => `
+        <tr class="${r.login === S.me.login ? 'st-me' : ''}">
+          <td>${i === 0 ? '🏆' : i + 1}</td>
+          <td>${esc(r.name)} <span class="muted mono" style="font-size:11px">${esc(r.login)}</span></td>
+          <td><b>${fmtNum(r.score)}</b></td>
+          <td>${r.replies}</td>
+          <td>${r.tickets}</td>
+          <td>${r.closes}</td>
+          <td>${fmtDur(r.median_wait_sec)}${r.avg_wait_sec != null ? ` <span class="muted">(ср. ${fmtDur(r.avg_wait_sec)})</span>` : ''}</td>
+          <td>${r.measured ? `${r.fast} из ${r.measured} (${Math.round(r.fast / r.measured * 100)}%)` : '—'}</td>
+          <td>${r.rating_avg != null ? `★ ${r.rating_avg} <span class="muted">(${r.rating_count})</span>` : '—'}</td>
+        </tr>`).join('')}
+    </table></div>`
+      : '<div class="center">За выбранный период активности нет</div>';
+
+    const p = data.points;
+    document.getElementById('st-formula').innerHTML =
+      `Баллы: ответ +${p.reply} · закрытие тикета +${p.close} · быстрый первый ответ (≤${p.fast_threshold_min} мин) ещё +${p.fast} · ` +
+      `оценка пользователя ±${p.rating_step}×(звёзды−3), т.е. 5★ = +${p.rating_step * 2}, 1★ = −${p.rating_step * 2}. ` +
+      `Учитываются ответы с сайта и из Telegram (если бот пишет их в общую историю). ` +
+      `Для премий: назначьте цену балла — например, при 5 ₽/балл оператор с 400 баллами получает 2000 ₽.`;
+  };
+
+  const setPreset = (preset) => {
+    const now = new Date();
+    if (preset === 'today') st.from = st.to = isoDate(now);
+    else if (preset === '7d') { st.from = isoDate(new Date(now - 6 * 86400000)); st.to = isoDate(now); }
+    else if (preset === '30d') { st.from = isoDate(new Date(now - 29 * 86400000)); st.to = isoDate(now); }
+    else if (preset === 'month') {
+      st.from = isoDate(new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1)));
+      st.to = isoDate(now);
+    }
+    document.querySelector('[name=st-from]').value = st.from;
+    document.querySelector('[name=st-to]').value = st.to;
+    load();
+  };
+  document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => setPreset(b.dataset.preset));
+  document.getElementById('st-apply').onclick = () => {
+    st.from = document.querySelector('[name=st-from]').value;
+    st.to = document.querySelector('[name=st-to]').value;
+    if (!st.from || !st.to) { toast('Выберите обе даты', 'err'); return; }
+    load();
+  };
+  const csvBtn = document.getElementById('st-csv');
+  if (csvBtn) csvBtn.onclick = () => {
+    const d = S.stData;
+    if (!d || !d.rows.length) { toast('Нет данных для выгрузки', 'err'); return; }
+    const head = ['Логин', 'Имя', 'Баллы', 'Ответы', 'Тикетов', 'Закрыто',
+      'Медиана ответа, сек', 'Среднее, сек', 'Быстрых', 'Замерено', 'Оценка', 'Кол-во оценок'];
+    const lines = [head.join(';')].concat(d.rows.map(r => [
+      r.login, r.name, r.score, r.replies, r.tickets, r.closes,
+      r.median_wait_sec ?? '', r.avg_wait_sec ?? '', r.fast, r.measured,
+      r.rating_avg ?? '', r.rating_count,
+    ].map(v => String(v).replace(/;/g, ',')).join(';')));
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `operators_${d.date_from}_${d.date_to}.csv`;
+    a.click();
+  };
+
+  load();
+}
+
 // ================================================================ audit view (owner)
 
 async function viewAudit(page = 1) {
@@ -1784,6 +1913,7 @@ async function render() {
   const ticketMatch = hash.match(/^#\/ticket\/(\d+)$/);
   if (ticketMatch) { setNav('tickets'); viewTicket(parseInt(ticketMatch[1], 10)); return; }
   if (hash.startsWith('#/tickets')) { setNav('tickets'); viewTickets(); return; }
+  if (hash.startsWith('#/stats')) { setNav('stats'); viewStats(); return; }
   if (hash.startsWith('#/audit')) { setNav('audit'); viewAudit(); return; }
   if (hash.startsWith('#/operators')) { setNav('operators'); viewOperators(); return; }
   if (hash.startsWith('#/login')) {

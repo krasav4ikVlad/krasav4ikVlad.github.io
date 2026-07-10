@@ -338,6 +338,10 @@ tr:hover td { background: rgba(20,20,20,.02); }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* ================= operator activity ================= */
+tr.st-me td { background: rgba(37,99,235,.06); }
+tr.st-me td:first-child { border-left: 3px solid var(--blue); }
+
 /* ================= quick replies ================= */
 .qr-item {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;

@@ -180,11 +180,24 @@ await log_support_message(uid, 'operator', _message_text_for_log(message),
                           attachment=_attachment_for_log(message))
 ```
 
-Опционально — в обработчиках закрытия тикета (`on_admin_close_ticket_btn`,
-`on_support_close`, `auto_close_pending_tickets`) добавить системную запись:
+**Для статистики активности операторов (страница «Активность» на сайте)** —
+в обработчиках закрытия тикета (`on_admin_close_ticket_btn`, `on_support_close`)
+добавить системную запись С ЛОГИНОМ закрывшего — тогда закрытия из TG попадут
+в рейтинг оператора (авто-закрытия — без логина):
 
 ```python
-await log_support_message(uid, 'system', 'Тикет закрыт (TG)')
+op_login = (call.from_user.username or call.from_user.full_name or 'operator')
+await log_support_message(uid, 'system', 'Тикет закрыт (TG)', operator_login=op_login)
+# в auto_close_pending_tickets — просто без operator_login:
+await log_support_message(uid, 'system', 'Тикет закрыт (TG, авто)')
+```
+
+И в обработчике оценки `on_rate_click` (после отправки «⭐ Оценка пользователя»
+в тред) — одна строка, чтобы оценки попадали в рейтинг (панель ищет в тексте
+слово «Оценка» и цифру 1–5, приписывает оператору, который последним вёл тикет):
+
+```python
+await log_support_message(user_id, 'system', f'Оценка: {score}')
 ```
 
 **handlers/admin.py — быстрые ответы.** Когда оператор жмёт кнопку быстрого
