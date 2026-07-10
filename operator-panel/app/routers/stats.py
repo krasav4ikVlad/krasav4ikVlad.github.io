@@ -15,16 +15,25 @@
   ответ +2 · закрытие +10 · быстрый ответ (≤10 мин) ещё +3
   оценка: +2×(N−3) → 5★=+4, 4★=+2, 3★=0, 2★=−2, 1★=−4
 
-Зарплата по коэффициенту (настройки владельца — «Настройки расчёта»):
-  норма_в_час = средний темп команды за период (авто, по умолчанию)
-                либо число, заданное владельцем (manual)
-  норма баллов = норма_в_час × часы_оператора_за_период
-  коэффициент  = баллы / норма, ограничен [коэфф_мин; коэфф_макс]
-  к выплате    = оклад(₽/мес) × коэффициент × дней_периода / 30.44
-В авто-режиме средний оператор получает ровно ×1.00 — норма
-самонастраивается под реальный поток тикетов.
-Часы и оклад задаются владельцем в карточке оператора;
-оклад и «к выплате» видит ТОЛЬКО владелец.
+Зарплата по коэффициенту (настройки владельца — «Настройки расчёта»).
+Режимы нормы:
+  auto (по нагрузке, рекомендуется) — норма привязана к ВХОДЯЩЕМУ потоку,
+    а не к тому, сколько команда соизволила сделать (workload-based quota,
+    стандарт контакт-центров). Доступные баллы периода:
+      potential = обращения×(2+3) + тикеты×10
+    (обращение = первое неотвеченное сообщение пользователя; тикет =
+    уникальный пользователь с обращениями). Персональная норма = potential ×
+    (часы оператора / часы всей команды). Все молчат — поток не исчезает,
+    коэффициенты падают у всех; нет нагрузки (potential=0) — коэффициент 1.0,
+    простой не по вине операторов не наказывается. Работает и для 2 операторов.
+  team_avg — средний темп команды (баллы команды / часы команды);
+  manual — число баллов/час задаёт владелец.
+Далее одинаково: норма_баллов = ставка × часы_оператора_за_период,
+коэффициент = баллы/норма в пределах [мин; макс],
+к выплате = оклад × коэффициент × дней/30.44.
+Операторы с графиком, но без единого ответа за период, попадают в таблицу
+с нулевыми баллами — простой виден, а не прячется.
+Часы и оклад задаются в карточке оператора; деньги видит ТОЛЬКО владелец.
 
 Рабочее окно поддержки (например 09:00–24:00 МСК): ожидание ответа
 считается только внутри окна — ночь, когда никто не дежурит, не портит
@@ -49,7 +58,7 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 # ---------------------------------------------------------------- настройки расчёта
 
 DEFAULT_ACT = {
-    "norm_mode": "auto",           # auto = средний темп команды; manual = число ниже
+    "norm_mode": "auto",           # auto = по нагрузке; team_avg = темп команды; manual
     "norm_points_per_hour": 10.0,  # используется только при norm_mode=manual
     "coeff_min": 0.0,
     "coeff_max": 1.5,
@@ -75,7 +84,7 @@ async def _load_act_settings() -> dict:
 
 
 class ActivitySettings(BaseModel):
-    norm_mode: str = Field(default="manual", pattern="^(auto|manual)$")
+    norm_mode: str = Field(default="manual", pattern="^(auto|team_avg|manual)$")
     norm_points_per_hour: float = Field(ge=0, le=10_000)
     coeff_min: float = Field(ge=0, le=10)
     coeff_max: float = Field(ge=0, le=10)
@@ -266,6 +275,8 @@ async def operator_stats(
     current_uid = None
     pending_since: datetime | None = None  # первое неотвеченное сообщение пользователя
     last_op_login: str | None = None       # кому приписывать оценку
+    demand_waits = 0                       # сколько раз требовался ответ (нагрузка)
+    demand_tickets: set = set()            # тикеты, в которых писали пользователи
 
     async for m in cursor:
         uid = m.get("user_id")
@@ -276,8 +287,10 @@ async def operator_stats(
         login = m.get("operator_login")
 
         if direction == "user":
+            demand_tickets.add(uid)
             if pending_since is None and ts is not None:
                 pending_since = ts
+                demand_waits += 1
         elif direction == "operator" and login:
             login = canon(login)
             b = bucket(login)
@@ -339,6 +352,14 @@ async def operator_stats(
                 total_min += max(0.0, (end_dt - ds).total_seconds() / 60)
         return total_min / 60 if total_min else None
 
+    # операторы с часами в периоде, но без единого действия — в таблицу
+    # с нулями: простой должен быть виден, а не прятаться
+    for lg, o in op_info.items():
+        if lg in per_op or not o.get("active", True) or o.get("role") == "owner":
+            continue
+        if hours_in_period(lg):
+            bucket(lg)
+
     # фаза 1: метрики и часы каждого оператора
     rows = []
     for login, b in per_op.items():
@@ -370,20 +391,28 @@ async def operator_stats(
             "schedule": info.get("schedule"),
         })
 
-    # фаза 2: норма в час — авто (средний темп команды) или ручная
-    if act.get("norm_mode", "auto") == "auto":
-        tot_score = sum(r["score"] for r in rows if r["hours_period"])
-        tot_hours = sum(r["hours_period"] for r in rows if r["hours_period"])
-        rate = (tot_score / tot_hours) if tot_hours and tot_score > 0 else None
-    else:
+    # фаза 2: ставка нормы (баллов/час)
+    mode = act.get("norm_mode", "auto")
+    # «доступные» баллы периода — сколько лежало во входящем потоке
+    potential = (demand_waits * (POINTS_REPLY + POINTS_FAST)
+                 + len(demand_tickets) * POINTS_CLOSE)
+    tot_hours = sum(r["hours_period"] for r in rows if r["hours_period"])
+    if mode == "manual":
         rate = act["norm_points_per_hour"] or None
+    elif mode == "team_avg":
+        tot_score = sum(r["score"] for r in rows if r["hours_period"])
+        rate = (tot_score / tot_hours) if tot_hours and tot_score > 0 else None
+    else:  # auto: по нагрузке — норма не зависит от стараний команды
+        rate = (potential / tot_hours) if tot_hours and potential > 0 else None
 
+    clamp = lambda v: round(max(act["coeff_min"], min(act["coeff_max"], v)), 2)
     for r in rows:
         norm_points = coeff = None
         if rate and r["hours_period"]:
             norm_points = rate * r["hours_period"]
-            coeff = round(max(act["coeff_min"],
-                              min(act["coeff_max"], r["score"] / norm_points)), 2)
+            coeff = clamp(r["score"] / norm_points)
+        elif mode == "auto" and r["hours_period"] and potential == 0:
+            coeff = clamp(1.0)  # нагрузки не было — простой не по вине оператора
         r["norm_points"] = round(norm_points) if norm_points else None
         r["coeff"] = coeff
         # оклад и сумма к выплате — ТОЛЬКО владельцу
@@ -401,5 +430,7 @@ async def operator_stats(
                    "fast_threshold_min": FAST_ANSWER_SEC // 60},
         "settings": act,
         "norm_used": round(rate, 2) if rate else None,
+        "demand": {"waits": demand_waits, "tickets": len(demand_tickets),
+                   "potential_points": potential},
         "rows": rows,
     }
