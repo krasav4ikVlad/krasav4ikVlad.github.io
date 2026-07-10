@@ -140,6 +140,35 @@ def _parse_date(v: str, field: str) -> datetime:
                             f"Неверная дата {field} (нужен формат YYYY-MM-DD)")
 
 
+DAY_ORDER = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+SCHED_FIXED_RE = re.compile(r"^(\d{2}):(\d{2})-(\d{2}):(\d{2})$")
+SCHED_FLOAT_RE = re.compile(r"^(\d{2}):(\d{2})-(\d{2}):(\d{2})~(\d{1,2}(?:\.\d)?)$")
+
+
+def _sched_cfg(schedule: dict | None) -> dict[int, tuple[int, int, float | None]] | None:
+    """schedule -> {weekday: (start_min, end_min, grace_min|None)}.
+    grace=None — фиксированный день; None вместо словаря — графика нет."""
+    if not isinstance(schedule, dict):
+        return None
+    out: dict[int, tuple[int, int, float | None]] = {}
+    for i, day in enumerate(DAY_ORDER):
+        v = (schedule.get(day) or "").strip()
+        if not v:
+            continue
+        fm = SCHED_FLOAT_RE.match(v)
+        if fm:
+            start = int(fm.group(1)) * 60 + int(fm.group(2))
+            end = int(fm.group(3)) * 60 + int(fm.group(4)) or 1440
+            out[i] = (start, end, float(fm.group(5)) * 60)
+            continue
+        m = SCHED_FIXED_RE.match(v)
+        if m:
+            start = int(m.group(1)) * 60 + int(m.group(2))
+            end = int(m.group(3)) * 60 + int(m.group(4))
+            out[i] = (start, end, None)
+    return out
+
+
 def _as_utc(ts) -> datetime | None:
     if not isinstance(ts, datetime):
         return None
@@ -181,7 +210,40 @@ async def operator_stats(
     def canon(raw_login: str) -> str:
         return alias.get((raw_login or "").strip().lstrip("@").lower(), raw_login)
 
+    sched_cfgs = {lg: _sched_cfg(o.get("schedule")) for lg, o in op_info.items()}
+    tzinfo = timezone(timedelta(hours=tz_off))
+
     col = get_db()[settings.support_messages_collection]
+
+    # Пасс 1: первый ответ каждого оператора в каждый день — от него
+    # отсчитывается рабочий день «по 1-му ответу»
+    day_first: dict[tuple[str, object], datetime] = {}
+    async for m in col.find(
+            {"timestamp": {"$gte": start, "$lt": end}, "direction": "operator",
+             "operator_login": {"$ne": None}},
+            {"operator_login": 1, "timestamp": 1}):
+        ts = _as_utc(m.get("timestamp"))
+        if ts is None:
+            continue
+        key = (canon(m.get("operator_login")), ts.astimezone(tzinfo).date())
+        if key not in day_first or ts < day_first[key]:
+            day_first[key] = ts
+
+    def day_start(login: str, local_date) -> datetime | None:
+        """Начало рабочего дня оператора «по 1-му ответу»: его первый ответ
+        в этот день, но не раньше начала интервала и не позже начала+окно.
+        None — если день не «плавающий» (фиксированный/выходной/нет графика)."""
+        cfgs = sched_cfgs.get(login)
+        cfg = cfgs.get(local_date.weekday()) if cfgs else None
+        if not cfg or cfg[2] is None:
+            return None
+        start_dt = datetime(local_date.year, local_date.month, local_date.day,
+                            tzinfo=tzinfo) + timedelta(minutes=cfg[0])
+        latest = start_dt + timedelta(minutes=cfg[2])  # не позднее начала+окно
+        first = day_first.get((login, local_date))
+        if first is None:
+            return latest
+        return min(max(first, start_dt), latest)
     cursor = col.find(
         {"timestamp": {"$gte": start, "$lt": end}},
         {"user_id": 1, "direction": 1, "operator_login": 1, "timestamp": 1, "text": 1},
@@ -219,8 +281,14 @@ async def operator_stats(
             if pending_since is not None and ts is not None:
                 raw = (ts - pending_since).total_seconds()
                 if 0 <= raw <= 7 * 86400:  # брошенные на неделю тикеты не замеряем
-                    # ночь/нерабочее время не считается ожиданием
-                    wait = _working_seconds(pending_since, ts, ws_min, we_min, tz_off)
+                    eff_pending = pending_since
+                    # день «по 1-му ответу»: до персонального старта дня
+                    # ожидание не считается — рейтинг не портится
+                    ds = day_start(login, ts.astimezone(tzinfo).date())
+                    if ds is not None and ds > eff_pending:
+                        eff_pending = ds
+                    # ночь/нерабочее время поддержки тоже не считается
+                    wait = _working_seconds(eff_pending, ts, ws_min, we_min, tz_off)
                     if wait <= MAX_MEASURED_WAIT_SEC:
                         b["waits"].append(wait)
                         if wait <= FAST_ANSWER_SEC:
@@ -241,6 +309,29 @@ async def operator_stats(
     is_owner = op.get("role") == "owner"
     my_login = op.get("login")
     days = (end - start).days
+    period_dates = [(start + timedelta(days=i)).date() for i in range(days)]
+
+    def hours_in_period(login: str) -> float | None:
+        """Часы оператора за период. С графиком — по календарю: фиксированные
+        дни целиком, «плавающие» — от фактического старта (первый ответ, но не
+        позже начала+окно) до конца дня. Без графика — часы/нед × дней/7."""
+        cfgs = sched_cfgs.get(login)
+        if cfgs is None:
+            hw = (op_info.get(login) or {}).get("hours_per_week")
+            return hw * days / 7 if hw else None
+        total_min = 0.0
+        for d in period_dates:
+            cfg = cfgs.get(d.weekday())
+            if not cfg:
+                continue
+            s_min, e_min, grace = cfg
+            if grace is None:
+                total_min += (e_min - s_min) if e_min > s_min else (1440 - s_min + e_min)
+            else:
+                ds = day_start(login, d)
+                end_dt = datetime(d.year, d.month, d.day, tzinfo=tzinfo) + timedelta(minutes=e_min)
+                total_min += max(0.0, (end_dt - ds).total_seconds() / 60)
+        return total_min / 60 if total_min else None
 
     rows = []
     for login, b in per_op.items():
@@ -256,11 +347,12 @@ async def operator_stats(
         info = op_info.get(login, {})
         hours_week = info.get("hours_per_week")
         salary_base = info.get("salary_base")
-        # коэффициент: баллы против персональной нормы (норма_в_час × его часы за период)
+        # коэффициент: баллы против персональной нормы за период;
+        # часы считаются по графику (плавающие дни — от фактического старта)
         coeff = None
         norm_points = None
-        if hours_week and act["norm_points_per_hour"] > 0:
-            hours_period = hours_week * days / 7
+        hours_period = hours_in_period(login)
+        if hours_period and act["norm_points_per_hour"] > 0:
             norm_points = act["norm_points_per_hour"] * hours_period
             if norm_points > 0:
                 coeff = max(act["coeff_min"], min(act["coeff_max"], score / norm_points))
@@ -280,6 +372,7 @@ async def operator_stats(
             "rating_count": len(ratings),
             "score": score,
             "hours_per_week": hours_week,
+            "hours_period": round(hours_period, 1) if hours_period else None,
             "schedule": info.get("schedule"),
             "norm_points": round(norm_points) if norm_points else None,
             "coeff": coeff,

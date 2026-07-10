@@ -1825,13 +1825,14 @@ function parseDay(iv) {
   return { a: '', b: '', float: false, dur: null };
 }
 
-// часы дня; для фиксированного конец <= начала = через полночь
+// часы дня; для фиксированного конец <= начала = через полночь;
+// для плавающего — гарантированный минимум: длина дня − окно 1-го ответа
 function intervalHours(iv) {
   const d = parseDay(iv);
-  if (d.float) return d.dur || 0;
   if (!d.a || !d.b) return 0;
   const toMin = t => +t.slice(0, 2) * 60 + +t.slice(3);
-  const a = toMin(d.a), b = toMin(d.b);
+  const a = toMin(d.a), b = toMin(d.b) || 1440;
+  if (d.float) return Math.max(0, (b - a) / 60 - (d.dur || 0));
   return ((b > a ? b - a : 1440 - a + b)) / 60;
 }
 
@@ -1843,7 +1844,7 @@ function scheduleSummary(schedule) {
     if (!v) return `${short[k]} вых.`;
     const d = parseDay(v);
     return d.float
-      ? `${short[k]} ${d.a}–${d.b} +${d.dur}ч по 1-му ответу`
+      ? `${short[k]} ${d.a}–${d.b}, старт по 1-му ответу в первые ${d.dur} ч`
       : `${short[k]} ${d.a}–${d.b}`;
   }).join(' · ');
 }
@@ -1857,10 +1858,10 @@ function schedRowHtml(k, label, iv) {
     <td><input type="time" name="sch_${k}_a" value="${esc(d.a)}"></td>
     <td class="sched-dash">—</td>
     <td><input type="time" name="sch_${k}_b" value="${esc(d.b)}"></td>
-    <td><label class="sched-float" title="Интервал слева — окно ПЕРВОГО ответа; смена = указанные часы с момента первого ответа">
+    <td><label class="sched-float" title="Рабочий день начнётся с первого ответа оператора, но не позже, чем через указанное число часов от начала интервала. До старта ожидание не портит рейтинг">
       <input type="checkbox" name="sch_${k}_f" ${d.float ? 'checked' : ''}> 1-й ответ</label></td>
     <td><input type="number" name="sch_${k}_d" class="sched-dur ${d.float ? '' : 'hidden'}"
-      min="0.5" max="24" step="0.5" value="${d.dur ?? ''}" placeholder="8" title="Часов в смене"></td>
+      min="0.5" max="12" step="0.5" value="${d.dur ?? ''}" placeholder="1" title="Окно первого ответа, часов"></td>
     <td class="sched-hrs muted" data-day="${k}"></td>
     <td class="sched-btns">
       <button type="button" class="btn btn-ghost btn-sm" data-copy="${k}" title="Скопировать время этого дня">Коп.</button>
@@ -1877,8 +1878,9 @@ function bindScheduleTable($m) {
     const b = $m.querySelector(`[name=sch_${k}_b]`).value;
     const f = $m.querySelector(`[name=sch_${k}_f]`).checked;
     const d = parseFloat($m.querySelector(`[name=sch_${k}_d]`).value);
-    if (f) return (a && b && d) ? d : 0;
-    return a && b ? intervalHours(`${a}-${b}`) : 0;
+    if (!a || !b) return 0;
+    if (f) return d ? intervalHours(`${a}-${b}~${d}`) : 0;
+    return intervalHours(`${a}-${b}`);
   };
 
   const recalc = () => {
@@ -1940,8 +1942,8 @@ function readScheduleTable($m) {
     if (!a && !b && !d) { out[k] = ''; continue; }
     if (!!a !== !!b) throw new Error(`${label}: заполните обе границы интервала или очистите день`);
     if (f) {
-      if (!a || !b) throw new Error(`${label}: задайте окно первого ответа`);
-      if (!d || parseFloat(d) <= 0) throw new Error(`${label}: укажите часы смены для дня «по 1-му ответу»`);
+      if (!a || !b) throw new Error(`${label}: задайте рабочий интервал дня`);
+      if (!d || parseFloat(d) <= 0) throw new Error(`${label}: укажите окно первого ответа (в часах) для дня «по 1-му ответу»`);
       out[k] = `${a}-${b}~${parseFloat(d)}`;
     } else {
       out[k] = a && b ? `${a}-${b}` : '';
@@ -2039,8 +2041,10 @@ function modalOperatorEdit(op) {
           <button type="button" class="btn btn-ghost btn-sm" id="sched-paste-all" disabled>Вставить во все дни</button>
         </div>
         <div class="muted" style="font-size:12px; margin-top:4px">
-          «1-й ответ»: интервал — это окно, в котором оператор должен дать первый ответ
-          (например 10:00–14:00), рабочая смена = указанные часы с момента первого ответа.</div>
+          «1-й ответ»: рабочий день начинается с первого ответа оператора, но не позже,
+          чем через указанные часы от начала интервала (интервал 09:00–16:00 и окно 1 ч —
+          старт где-то с 9 до 10). До старта ожидание клиентов не портит его рейтинг;
+          в «Итого» идёт гарантированный минимум часов.</div>
       </div>
       <label style="display:flex;gap:8px;align-items:center;color:var(--text)">
         <input type="checkbox" name="active" style="width:auto" ${op.active ? 'checked' : ''}> Учётка активна
