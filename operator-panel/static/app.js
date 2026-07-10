@@ -1606,8 +1606,8 @@ function viewStats() {
   };
   const setBtn = document.getElementById('st-settings');
   if (setBtn) setBtn.onclick = async () => {
-    let cfg;
-    try { cfg = await api('/api/stats/settings'); }
+    let cfg, ac;
+    try { [cfg, ac] = await Promise.all([api('/api/stats/settings'), api('/api/stats/autoclose')]); }
     catch (err) { toast(err.message, 'err'); return; }
     const $m = openModal(`
       <h2>Настройки расчёта зарплаты</h2>
@@ -1649,6 +1649,19 @@ function viewStats() {
           Время вне окна не считается ожиданием ответа (ночь никого не штрафует).
           Одинаковые «с» и «до» = круглосуточно. Окно может переходить через полночь (18:00–02:00).
           Оклад и часы в неделю задаются в карточке каждого оператора (страница «Операторы»).</div>
+        <h3 style="margin:16px 0 8px; font-size:15px">Автозакрытие тикетов</h3>
+        <div class="row" style="align-items:center">
+          <div class="field" style="flex:0 0 auto"><label style="display:flex; gap:8px; align-items:center; font-weight:400">
+            <input type="checkbox" name="ac_on" ${ac.enabled ? 'checked' : ''} style="width:auto"> Включено</label></div>
+          <div class="field"><label>Закрывать через, часов</label>
+            <input name="ac_hours" type="number" step="1" min="1" max="720" value="${esc(ac.hours)}"></div>
+        </div>
+        <div class="muted" style="font-size:12px; margin-bottom:12px">
+          Если после ответа оператора пользователь молчит дольше указанного времени, тикет
+          закрывается сам: пользователю в Telegram приходят кнопки оценки и кнопка
+          «Вопрос не решён» (она открывает тикет заново). Неотвеченные тикеты автозакрытие
+          не трогает — они остаются в очереди. Баллы за автозакрытия никому не начисляются:
+          закрыть тикет вручную и получить +10 по-прежнему выгоднее.</div>
         <div class="modal-actions">
           <button type="button" class="btn btn-ghost" onclick="closeModal()">Отмена</button>
           <button type="submit" class="btn">Сохранить</button>
@@ -1671,6 +1684,10 @@ function viewStats() {
           work_start: f.wstart.value.trim(),
           work_end: f.wend.value.trim(),
           tz_offset_hours: parseInt(f.tz.value, 10) || 0,
+        }});
+        await api('/api/stats/autoclose', { method: 'PUT', body: {
+          enabled: f.ac_on.checked,
+          hours: parseFloat(f.ac_hours.value) || 24,
         }});
         closeModal();
         toast('Сохранено ✓');

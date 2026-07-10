@@ -234,3 +234,74 @@ SUPPORT_CHAT_ID=-100xxxxxxxxxx
 `info.support.status`, заголовки тредов `🟡/🟢/🔴 Тикет #uid`, кнопки оценки
 `rate:1..5` (их обрабатывает бот). Ответ с сайта уходит пользователю в ЛС и
 дублируется в тред с пометкой «💻 Ответ с сайта — {имя}».
+
+## 4. Автозакрытие тикетов и кнопка «Вопрос не решён»
+
+Панель сама закрывает тикеты, где пользователь замолчал после ответа
+оператора (срок настраивается: «Активность» → «Настройки расчёта» →
+«Автозакрытие тикетов»). Пользователю уходит сообщение с кнопками оценки
+`rate:1..5` и кнопкой «Вопрос не решён» (`callback_data = support:reopen`).
+
+Оценки бот уже обрабатывает. Для кнопки «Вопрос не решён» в **`handlers/start.py`**
+(рядом с `on_rate_click`) нужен новый обработчик:
+
+```python
+@router.callback_query(F.data == 'support:reopen')
+async def on_ticket_not_solved(call: types.CallbackQuery):
+    uid = call.from_user.id
+    user_doc = await users.find_one({'user_data.user_id': uid}, {'info.support': 1})
+    support = ((user_doc or {}).get('info') or {}).get('support') or {}
+    thread_id = support.get('thread_id')
+    status = (support.get('status') or '').lower()
+
+    if status in ('pending', 'open'):
+        await call.answer('Тикет уже открыт — просто напишите сообщение.', show_alert=True)
+        return
+    if not thread_id:
+        await call.answer('Напишите ваш вопрос в этот чат — мы ответим.', show_alert=True)
+        return
+
+    # именно open (не pending): pending бот сам автозакрывает через 5 минут,
+    # если не выбран пункт меню — здесь меню не нужно
+    await users.update_one(
+        {'user_data.user_id': uid},
+        {'$set': {'info.support.status': 'open'}},
+    )
+    await _set_thread_title_status(thread_id, uid, 'open')
+    await log_support_message(uid, 'system', 'Тикет открыт заново (вопрос не решён)')
+
+    try:
+        await bot.send_message(
+            chat_id=SUPPORT_CHAT_ID,
+            message_thread_id=thread_id,
+            text='🟢 <b>Пользователь сообщил, что вопрос НЕ решён</b> — тикет открыт заново.',
+            parse_mode='HTML',
+        )
+    except Exception:
+        pass
+
+    try:
+        if call.message:
+            await call.message.edit_text(
+                text='🟢 <b>Тикет снова открыт.</b>\n\n'
+                     'Опишите, что осталось нерешённым — оператор ответит.',
+                parse_mode='HTML',
+                reply_markup=None,
+            )
+    except Exception:
+        pass
+
+    await call.answer('Тикет снова открыт')
+```
+
+Все нужные импорты (`users`, `bot`, `SUPPORT_CHAT_ID`, `_set_thread_title_status`,
+`log_support_message`, `F`, `types`) в `start.py` уже есть.
+
+Правила автозакрытия на стороне панели:
+
+* закрываются только тикеты в статусе `open`, где **последнее** сообщение
+  диалога — от оператора и старше N часов;
+* неотвеченные тикеты (последним писал пользователь) не трогаются — они
+  остаются очередью и учитываются в норме «Активности»;
+* системная запись «Тикет закрыт (авто)…» пишется без `operator_login`,
+  баллы за автозакрытие никому не начисляются.

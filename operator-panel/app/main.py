@@ -5,6 +5,8 @@ Run:  uvicorn app.main:app --host 127.0.0.1 --port 8100
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,6 +17,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from .autoclose import autoclose_loop
 from .config import get_settings
 from .database import close_client, ensure_indexes
 from .routers import actions, audit_log, auth, operators, quick_replies, stats, tickets, users
@@ -37,7 +40,11 @@ async def lifespan(_app: FastAPI):
     if not (settings.remnawave_base_url and settings.remnawave_token):
         log.warning("Remnawave API is NOT configured — subscription changes will require force_local")
     log.info("Operator panel started (db=%s)", settings.mongo_db)
+    autoclose_task = asyncio.create_task(autoclose_loop())
     yield
+    autoclose_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await autoclose_task
     await close_client()
 
 

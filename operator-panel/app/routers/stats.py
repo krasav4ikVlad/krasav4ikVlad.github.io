@@ -50,6 +50,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from ..autoclose import load_autoclose_settings
 from ..config import get_settings
 from ..database import get_db
 from ..security import CurrentOperator, OwnerOperator
@@ -110,6 +111,23 @@ async def put_activity_settings(body: ActivitySettings, _owner: OwnerOperator):
     await get_db()["panel_settings"].update_one(
         {"_id": "activity"}, {"$set": body.model_dump()}, upsert=True)
     return await _load_act_settings()
+
+
+class AutocloseSettings(BaseModel):
+    enabled: bool
+    hours: float = Field(ge=1, le=720)  # от часа до 30 дней
+
+
+@router.get("/autoclose")
+async def get_autoclose_settings(_op: CurrentOperator):
+    return await load_autoclose_settings()
+
+
+@router.put("/autoclose")
+async def put_autoclose_settings(body: AutocloseSettings, _owner: OwnerOperator):
+    await get_db()["panel_settings"].update_one(
+        {"_id": "autoclose"}, {"$set": body.model_dump()}, upsert=True)
+    return await load_autoclose_settings()
 
 
 def _working_seconds(a: datetime, b: datetime, start_min: int, end_min: int,
