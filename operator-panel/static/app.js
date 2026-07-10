@@ -1569,7 +1569,11 @@ function viewStats() {
       `Баллы: ответ +${p.reply} · закрытие тикета +${p.close} · быстрый первый ответ (≤${p.fast_threshold_min} мин) ещё +${p.fast} · ` +
       `оценка пользователя ±${p.rating_step}×(звёзды−3), т.е. 5★ = +${p.rating_step * 2}, 1★ = −${p.rating_step * 2}.<br>` +
       `Коэффициент = баллы ÷ норма, в пределах ×${a.coeff_min}–×${a.coeff_max}. ` +
-      `Норма = ${a.norm_points_per_hour} баллов/час × часы оператора за период. ` +
+      (a.norm_mode !== 'manual'
+        ? `Норма считается автоматически: средний темп команды за период` +
+          (data.norm_used ? ` — сейчас ${data.norm_used} баллов/час` : ' (пока нет данных)') +
+          `, × часы оператора. Средний оператор = ×1.00. `
+        : `Норма = ${a.norm_points_per_hour} баллов/час × часы оператора за период. `) +
       `К выплате = оклад × коэффициент (пропорционально периоду).<br>` +
       `Рабочее окно поддержки: ${workWin} — время вне окна не считается ожиданием ответа. ` +
       `Учитываются ответы с сайта и из Telegram (если бот пишет их в общую историю).`;
@@ -1603,7 +1607,16 @@ function viewStats() {
     const $m = openModal(`
       <h2>Настройки расчёта зарплаты</h2>
       <form id="act-set">
-        <div class="field"><label>Норма баллов за час работы</label>
+        <div class="field"><label>Норма баллов в час</label>
+          <select name="nmode">
+            <option value="auto" ${cfg.norm_mode !== 'manual' ? 'selected' : ''}>Автоматически — средний темп команды за период</option>
+            <option value="manual" ${cfg.norm_mode === 'manual' ? 'selected' : ''}>Вручную</option>
+          </select>
+          <div class="muted" style="font-size:12px; margin-top:4px">
+            Авто: норма = все баллы команды за период ÷ все её рабочие часы.
+            Средний оператор получает ровно ×1.00, кто быстрее и полезнее среднего — больше.
+            Ничего подбирать не нужно — норма сама следует за потоком тикетов.</div></div>
+        <div class="field" id="norm-manual"><label>Норма баллов за час (для ручного режима)</label>
           <input name="norm" type="number" step="0.5" min="0" value="${esc(cfg.norm_points_per_hour)}">
           <div class="muted" style="font-size:12px; margin-top:4px">
             Норма оператора за период = это число × его часы. Пример: 10 баллов/час ≈ 4 ответа или 1 закрытие в час.</div></div>
@@ -1630,11 +1643,17 @@ function viewStats() {
           <button type="submit" class="btn">Сохранить</button>
         </div>
       </form>`);
+    const nmodeSel = $m.querySelector('[name=nmode]');
+    const toggleNorm = () => $m.querySelector('#norm-manual')
+      .classList.toggle('hidden', nmodeSel.value !== 'manual');
+    nmodeSel.addEventListener('change', toggleNorm);
+    toggleNorm();
     $m.querySelector('#act-set').addEventListener('submit', async e => {
       e.preventDefault();
       const f = e.target;
       try {
         await api('/api/stats/settings', { method: 'PUT', body: {
+          norm_mode: f.nmode.value,
           norm_points_per_hour: parseFloat(f.norm.value) || 0,
           coeff_min: parseFloat(f.cmin.value) || 0,
           coeff_max: parseFloat(f.cmax.value) || 0,

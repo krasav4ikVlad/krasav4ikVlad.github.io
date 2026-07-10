@@ -16,17 +16,21 @@
   оценка: +2×(N−3) → 5★=+4, 4★=+2, 3★=0, 2★=−2, 1★=−4
 
 Зарплата по коэффициенту (настройки владельца — «Настройки расчёта»):
-  норма баллов = норма_баллов_в_час × часы_оператора_за_период
+  норма_в_час = средний темп команды за период (авто, по умолчанию)
+                либо число, заданное владельцем (manual)
+  норма баллов = норма_в_час × часы_оператора_за_период
   коэффициент  = баллы / норма, ограничен [коэфф_мин; коэфф_макс]
   к выплате    = оклад(₽/мес) × коэффициент × дней_периода / 30.44
-Часы в неделю и оклад задаются владельцем в карточке оператора.
+В авто-режиме средний оператор получает ровно ×1.00 — норма
+самонастраивается под реальный поток тикетов.
+Часы и оклад задаются владельцем в карточке оператора;
+оклад и «к выплате» видит ТОЛЬКО владелец.
 
 Рабочее окно поддержки (например 09:00–24:00 МСК): ожидание ответа
 считается только внутри окна — ночь, когда никто не дежурит, не портит
 скорость ответа (вопрос в 23:30, ответ в 09:05 = 5 минут, а не 9,5 часов).
 
-Смотреть рейтинг могут все операторы (это и есть мотивация),
-оклад и «к выплате» видит владелец и сам оператор — только свои.
+Смотреть рейтинг могут все операторы (это и есть мотивация).
 """
 from __future__ import annotations
 
@@ -45,7 +49,8 @@ router = APIRouter(prefix="/api/stats", tags=["stats"])
 # ---------------------------------------------------------------- настройки расчёта
 
 DEFAULT_ACT = {
-    "norm_points_per_hour": 10.0,  # сколько баллов в час считается нормой
+    "norm_mode": "auto",           # auto = средний темп команды; manual = число ниже
+    "norm_points_per_hour": 10.0,  # используется только при norm_mode=manual
     "coeff_min": 0.0,
     "coeff_max": 1.5,
     "work_start": "09:00",         # окно работы поддержки (локальное время)
@@ -70,6 +75,7 @@ async def _load_act_settings() -> dict:
 
 
 class ActivitySettings(BaseModel):
+    norm_mode: str = Field(default="manual", pattern="^(auto|manual)$")
     norm_points_per_hour: float = Field(ge=0, le=10_000)
     coeff_min: float = Field(ge=0, le=10)
     coeff_max: float = Field(ge=0, le=10)
@@ -333,6 +339,7 @@ async def operator_stats(
                 total_min += max(0.0, (end_dt - ds).total_seconds() / 60)
         return total_min / 60 if total_min else None
 
+    # фаза 1: метрики и часы каждого оператора
     rows = []
     for login, b in per_op.items():
         waits = sorted(b["waits"])
@@ -343,22 +350,9 @@ async def operator_stats(
                  + b["closes"] * POINTS_CLOSE
                  + b["fast"] * POINTS_FAST
                  + sum((r - 3) * POINTS_PER_RATING_STEP for r in ratings))
-
         info = op_info.get(login, {})
-        hours_week = info.get("hours_per_week")
-        salary_base = info.get("salary_base")
-        # коэффициент: баллы против персональной нормы за период;
-        # часы считаются по графику (плавающие дни — от фактического старта)
-        coeff = None
-        norm_points = None
         hours_period = hours_in_period(login)
-        if hours_period and act["norm_points_per_hour"] > 0:
-            norm_points = act["norm_points_per_hour"] * hours_period
-            if norm_points > 0:
-                coeff = max(act["coeff_min"], min(act["coeff_max"], score / norm_points))
-                coeff = round(coeff, 2)
-
-        row = {
+        rows.append({
             "login": login,
             "name": info.get("name") or login,
             "replies": b["replies"],
@@ -371,18 +365,33 @@ async def operator_stats(
             "rating_avg": round(sum(ratings) / len(ratings), 2) if ratings else None,
             "rating_count": len(ratings),
             "score": score,
-            "hours_per_week": hours_week,
+            "hours_per_week": info.get("hours_per_week"),
             "hours_period": round(hours_period, 1) if hours_period else None,
             "schedule": info.get("schedule"),
-            "norm_points": round(norm_points) if norm_points else None,
-            "coeff": coeff,
-        }
-        # оклад и сумма к выплате — только владельцу и самому оператору
-        if is_owner or login == my_login:
-            row["salary_base"] = salary_base
-            row["payout"] = (round(salary_base * coeff * days / 30.44)
-                             if salary_base and coeff is not None else None)
-        rows.append(row)
+        })
+
+    # фаза 2: норма в час — авто (средний темп команды) или ручная
+    if act.get("norm_mode", "auto") == "auto":
+        tot_score = sum(r["score"] for r in rows if r["hours_period"])
+        tot_hours = sum(r["hours_period"] for r in rows if r["hours_period"])
+        rate = (tot_score / tot_hours) if tot_hours and tot_score > 0 else None
+    else:
+        rate = act["norm_points_per_hour"] or None
+
+    for r in rows:
+        norm_points = coeff = None
+        if rate and r["hours_period"]:
+            norm_points = rate * r["hours_period"]
+            coeff = round(max(act["coeff_min"],
+                              min(act["coeff_max"], r["score"] / norm_points)), 2)
+        r["norm_points"] = round(norm_points) if norm_points else None
+        r["coeff"] = coeff
+        # оклад и сумма к выплате — ТОЛЬКО владельцу
+        if is_owner:
+            salary_base = (op_info.get(r["login"]) or {}).get("salary_base")
+            r["salary_base"] = salary_base
+            r["payout"] = (round(salary_base * coeff * days / 30.44)
+                           if salary_base and coeff is not None else None)
     rows.sort(key=lambda r: r["score"], reverse=True)
 
     return {
@@ -391,5 +400,6 @@ async def operator_stats(
                    "rating_step": POINTS_PER_RATING_STEP,
                    "fast_threshold_min": FAST_ANSWER_SEC // 60},
         "settings": act,
+        "norm_used": round(rate, 2) if rate else None,
         "rows": rows,
     }
