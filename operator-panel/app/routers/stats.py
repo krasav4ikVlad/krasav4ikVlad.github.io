@@ -17,15 +17,15 @@
 
 Зарплата по коэффициенту (настройки владельца — «Настройки расчёта»).
 Режимы нормы:
-  auto (по нагрузке, рекомендуется) — норма привязана к ВХОДЯЩЕМУ потоку,
-    а не к тому, сколько команда соизволила сделать (workload-based quota,
-    стандарт контакт-центров). Доступные баллы периода:
-      potential = обращения×(2+3) + тикеты×10
-    (обращение = первое неотвеченное сообщение пользователя; тикет =
-    уникальный пользователь с обращениями). Персональная норма = potential ×
-    (часы оператора / часы всей команды). Все молчат — поток не исчезает,
-    коэффициенты падают у всех; нет нагрузки (potential=0) — коэффициент 1.0,
-    простой не по вине операторов не наказывается. Работает и для 2 операторов.
+  auto (по нагрузке, рекомендуется) — норма привязана к реальной работе
+    периода (workload-based quota, стандарт контакт-центров):
+      potential = отвеченные_обращения×(2+3) + закрытия×10 + очередь×15
+    Отвеченное обращение — цепочка сообщений пользователя, получившая ответ
+    оператора; очередь — тикеты, оставшиеся без ответа И висящие в статусе
+    pending/open (сообщения, обработанные ботом или не требовавшие ответа,
+    в нагрузку не попадают). Персональная норма = potential × (часы оператора
+    / часы команды). Игнорируете тикеты — очередь растёт и тянет норму вверх
+    с полным весом (15), коэффициенты падают; нет нагрузки — коэффициент 1.0.
   team_avg — средний темп команды (баллы команды / часы команды);
   manual — число баллов/час задаёт владелец.
 Далее одинаково: норма_баллов = ставка × часы_оператора_за_период,
@@ -275,22 +275,22 @@ async def operator_stats(
     current_uid = None
     pending_since: datetime | None = None  # первое неотвеченное сообщение пользователя
     last_op_login: str | None = None       # кому приписывать оценку
-    demand_waits = 0                       # сколько раз требовался ответ (нагрузка)
-    demand_tickets: set = set()            # тикеты, в которых писали пользователи
+    answered_waits = 0                     # обращения, на которые операторы ответили
+    backlog_uids: set = set()              # тикеты, оставшиеся без ответа (кандидаты в очередь)
 
     async for m in cursor:
         uid = m.get("user_id")
         if uid != current_uid:
+            if pending_since is not None and current_uid is not None:
+                backlog_uids.add(current_uid)  # диалог закончился без ответа
             current_uid, pending_since, last_op_login = uid, None, None
         ts = _as_utc(m.get("timestamp"))
         direction = m.get("direction")
         login = m.get("operator_login")
 
         if direction == "user":
-            demand_tickets.add(uid)
             if pending_since is None and ts is not None:
                 pending_since = ts
-                demand_waits += 1
         elif direction == "operator" and login:
             login = canon(login)
             b = bucket(login)
@@ -298,6 +298,7 @@ async def operator_stats(
             b["tickets"].add(uid)
             last_op_login = login
             if pending_since is not None and ts is not None:
+                answered_waits += 1
                 raw = (ts - pending_since).total_seconds()
                 if 0 <= raw <= 7 * 86400:  # брошенные на неделю тикеты не замеряем
                     eff_pending = pending_since
@@ -324,6 +325,21 @@ async def operator_stats(
                 rating = RATING_RE.search(text)
                 if rating and last_op_login:
                     bucket(last_op_login)["ratings"].append(int(rating.group(1)))
+    if pending_since is not None and current_uid is not None:
+        backlog_uids.add(current_uid)  # хвост последнего диалога
+
+    # очередь: из неотвеченных берём только РЕАЛЬНО висящие тикеты
+    # (support.status pending/open) — сообщения, которые бот обработал сам
+    # или которые не требовали ответа, в нагрузку не попадают
+    backlog = 0
+    if backlog_uids:
+        users_col = get_db()[settings.users_collection]
+        async for u in users_col.find(
+                {"user_data.user_id": {"$in": list(backlog_uids)}},
+                {"info.support.status": 1}):
+            st = ((((u.get("info") or {}).get("support")) or {}).get("status") or "").lower()
+            if st in ("pending", "open"):
+                backlog += 1
 
     is_owner = op.get("role") == "owner"
     my_login = op.get("login")
@@ -393,9 +409,12 @@ async def operator_stats(
 
     # фаза 2: ставка нормы (баллов/час)
     mode = act.get("norm_mode", "auto")
-    # «доступные» баллы периода — сколько лежало во входящем потоке
-    potential = (demand_waits * (POINTS_REPLY + POINTS_FAST)
-                 + len(demand_tickets) * POINTS_CLOSE)
+    closes_total = sum(b["closes"] for b in per_op.values())
+    # «доступные» баллы = реальная работа периода: отвеченные обращения,
+    # фактические закрытия и висящая очередь (за неё — полный вес: ответ+закрытие)
+    potential = (answered_waits * (POINTS_REPLY + POINTS_FAST)
+                 + closes_total * POINTS_CLOSE
+                 + backlog * (POINTS_REPLY + POINTS_FAST + POINTS_CLOSE))
     tot_hours = sum(r["hours_period"] for r in rows if r["hours_period"])
     if mode == "manual":
         rate = act["norm_points_per_hour"] or None
@@ -430,7 +449,7 @@ async def operator_stats(
                    "fast_threshold_min": FAST_ANSWER_SEC // 60},
         "settings": act,
         "norm_used": round(rate, 2) if rate else None,
-        "demand": {"waits": demand_waits, "tickets": len(demand_tickets),
-                   "potential_points": potential},
+        "demand": {"answered": answered_waits, "closes": closes_total,
+                   "backlog": backlog, "potential_points": potential},
         "rows": rows,
     }
