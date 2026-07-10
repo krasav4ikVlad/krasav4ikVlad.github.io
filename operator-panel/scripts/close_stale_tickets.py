@@ -5,9 +5,11 @@
 info.support.pending_at; если нет и его — тикет считается древним).
 
 Пользователям НИЧЕГО не отправляется (ни личных сообщений, ни запроса
-оценки) — это тихая уборка. В историю тикета пишется системная запись
-«Тикет закрыт (неактивность)» без operator_login: баллы за такие закрытия
-никому не начисляются, а страница «Активность» перестаёт считать их очередью.
+оценки) — это тихая уборка. Тикетам, у которых есть история сообщений,
+пишется системная запись «Тикет закрыт (неактивность)» без operator_login:
+баллы за такие закрытия никому не начисляются. Древним тикетам без истории
+запись не пишется, чтобы не раздувать support_messages. Если пользователь
+напишет снова — бот как обычно откроет тикет заново.
 
 Запуск на сервере из каталога панели:
     cd /opt/operator-panel
@@ -95,6 +97,10 @@ async def collect_stale(days: float) -> list[dict]:
         ]):
             last_map[d["_id"]] = _as_utc(d["last"])
     for s in stale:
+        # has_history: у тикета есть сообщения в общей истории — только таким
+        # пишем системную запись о закрытии (древним тикетам без истории она
+        # не нужна, а сотни тысяч записей замедлили бы страницу «Активность»)
+        s["has_history"] = s["uid"] in last_map
         s["last_ts"] = last_map.get(s["uid"]) or s["last_ts"]
     return stale
 
@@ -126,31 +132,47 @@ async def run(days: float, apply: bool, rename_threads: bool) -> int:
 
     tg = None
     if rename_threads:
+        est_h = len(stale) * 0.5 / 3600
+        if est_h >= 1:
+            print(f"\nВНИМАНИЕ: --rename-threads на {len(stale)} тикетах займёт "
+                  f"~{est_h:.0f} ч (лимиты Telegram). Обычно его стоит пропустить: "
+                  "заголовки тредов поправятся сами при следующей активности.")
         from app.telegram import get_telegram
         tg = get_telegram()
 
+    # закрываем пачками: два запроса к Mongo на 1000 тикетов вместо двух на каждый
     closed = renamed = 0
-    for s in stale:
-        res = await users.update_one(
-            # защита от гонки: если пользователь только что написал и бот
-            # перевёл тикет в pending заново — статус мог измениться
-            {"user_data.user_id": s["uid"],
+    chunk_size = 1000
+    for i in range(0, len(stale), chunk_size):
+        chunk = stale[i:i + chunk_size]
+        res = await users.update_many(
+            # защита от гонки: закрываем только тех, кто всё ещё pending/open
+            {"user_data.user_id": {"$in": [s["uid"] for s in chunk]},
              "info.support.status": {"$in": ["pending", "open"]}},
             {"$set": {"info.support.status": "closed"}},
         )
-        if getattr(res, "modified_count", 0) == 0:
-            continue
-        closed += 1
-        await msgs.insert_one({
+        n = getattr(res, "modified_count", None)
+        closed += len(chunk) if n is None else n
+        now = utcnow()
+        records = [{
             "user_id": s["uid"], "direction": "system",
             "text": "Тикет закрыт (неактивность)",
             "attachment": None, "operator_login": None,
-            "source": "site", "timestamp": utcnow(),
-        })
-        if tg is not None and s.get("thread_id"):
+            "source": "site", "timestamp": now,
+        } for s in chunk if s.get("has_history")]
+        if records:
+            await msgs.insert_many(records)
+        print(f"  закрыто: {min(i + chunk_size, len(stale))} из {len(stale)}…", flush=True)
+
+    if tg is not None:
+        for s in stale:
+            if not s.get("thread_id"):
+                continue
             try:
                 await tg.set_thread_status_title(s["thread_id"], s["uid"], "closed")
                 renamed += 1
+                if renamed % 100 == 0:
+                    print(f"  тредов переименовано: {renamed}…", flush=True)
             except Exception:
                 pass  # тред мог быть удалён — не критично
             await asyncio.sleep(0.5)  # лимиты Telegram
