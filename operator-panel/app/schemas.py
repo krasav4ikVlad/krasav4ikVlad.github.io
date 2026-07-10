@@ -51,6 +51,9 @@ class OperatorUpdate(BaseModel):
     # для расчёта зарплаты по активности (страница «Активность»)
     salary_base: int | None = Field(default=None, ge=0, le=10_000_000)   # оклад, ₽/мес
     hours_per_week: float | None = Field(default=None, ge=0, le=168)     # график, ч/нед
+    # недельный график: {"mon": "09:00-18:00", "tue": "", ...}; пусто = выходной,
+    # конец меньше начала = смена через полночь; часы/нед считаются автоматически
+    schedule: dict[str, str] | None = None
 
     _perm_keys = field_validator("permissions")(_validate_permission_keys)
 
@@ -72,6 +75,7 @@ class OperatorPublic(BaseModel):
     last_login_at: str | None = None
     salary_base: int | None = None
     hours_per_week: float | None = None
+    schedule: dict[str, str] | None = None
 
 
 # ---------------------------------------------------------------- user actions

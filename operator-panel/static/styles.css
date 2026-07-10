@@ -342,6 +342,14 @@ tr:hover td { background: rgba(20,20,20,.02); }
 tr.st-me td { background: rgba(37,99,235,.06); }
 tr.st-me td:first-child { border-left: 3px solid var(--blue); }
 
+/* недельный график в карточке оператора */
+.sched-table { width: auto; margin-top: 4px; }
+.sched-table td { border-bottom: none; padding: 3px 4px; vertical-align: middle; }
+.sched-table input[type=time] { width: 110px; padding: 6px 8px; font-size: 13px; }
+.sched-day { min-width: 110px; font-size: 13px; }
+.sched-dash { color: var(--dim); }
+.sched-hrs { font-size: 12px; min-width: 46px; }
+
 /* ================= quick replies ================= */
 .qr-item {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;

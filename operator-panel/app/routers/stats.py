@@ -223,7 +223,7 @@ async def operator_stats(
     # данные операторов: имя + оклад + график
     op_info: dict[str, dict] = {}
     async for o in get_db()[settings.operators_collection].find(
-            {}, {"login": 1, "name": 1, "salary_base": 1, "hours_per_week": 1}):
+            {}, {"login": 1, "name": 1, "salary_base": 1, "hours_per_week": 1, "schedule": 1}):
         op_info[o["login"]] = o
 
     is_owner = op.get("role") == "owner"
@@ -268,6 +268,7 @@ async def operator_stats(
             "rating_count": len(ratings),
             "score": score,
             "hours_per_week": hours_week,
+            "schedule": info.get("schedule"),
             "norm_points": round(norm_points) if norm_points else None,
             "coeff": coeff,
         }

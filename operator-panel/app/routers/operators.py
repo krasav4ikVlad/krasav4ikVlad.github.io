@@ -2,6 +2,8 @@
 history in the audit log must stay attributable)."""
 from __future__ import annotations
 
+import re
+
 from bson import ObjectId
 from bson.errors import InvalidId
 from fastapi import APIRouter, HTTPException, Request, status
@@ -18,6 +20,40 @@ from ..utils import utcnow
 from .auth import operator_public
 
 router = APIRouter(prefix="/api/operators", tags=["operators"])
+
+# ---------------------------------------------------------------- недельный график
+
+DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+DAY_RU = {"mon": "Пн", "tue": "Вт", "wed": "Ср", "thu": "Чт",
+          "fri": "Пт", "sat": "Сб", "sun": "Вс"}
+INTERVAL_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)-([01]?\d|2[0-3]):([0-5]\d)$")
+
+
+def validate_schedule(schedule: dict) -> tuple[dict, float]:
+    """Проверяет недельный график и возвращает (нормализованный график, часов/нед).
+    Формат дня: "09:00-18:00", пусто = выходной; конец 00:00 = до конца суток;
+    конец меньше начала = смена через полночь (18:00-02:00 = 8 часов)."""
+    clean: dict[str, str] = {}
+    total_min = 0
+    for day in DAY_KEYS:
+        v = (schedule.get(day) or "").strip()
+        if not v:
+            clean[day] = ""
+            continue
+        m = INTERVAL_RE.match(v)
+        if not m:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                f"{DAY_RU[day]}: интервал в формате ЧЧ:ММ-ЧЧ:ММ (например 09:00-18:00)")
+        start = int(m.group(1)) * 60 + int(m.group(2))
+        end = int(m.group(3)) * 60 + int(m.group(4))
+        dur = (end - start) if end > start else (1440 - start + end)  # 00:00/через полночь
+        total_min += dur
+        clean[day] = v
+    unknown = set(schedule) - set(DAY_KEYS)
+    if unknown:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            f"Неизвестные дни в графике: {', '.join(sorted(unknown))}")
+    return clean, round(total_min / 60, 1)
 
 
 def _col():
@@ -132,6 +168,12 @@ async def update_operator(operator_id: str, body: OperatorUpdate,
     if body.hours_per_week is not None:
         updates["hours_per_week"] = body.hours_per_week
         changed_public["hours_per_week"] = body.hours_per_week
+    if body.schedule is not None:
+        clean, hours = validate_schedule(body.schedule)
+        updates["schedule"] = clean
+        updates["hours_per_week"] = hours  # часы всегда следуют из графика
+        changed_public["schedule"] = clean
+        changed_public["hours_per_week"] = hours
     if not updates:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Нет изменений")
 

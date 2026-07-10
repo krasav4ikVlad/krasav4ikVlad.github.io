@@ -1557,7 +1557,7 @@ function viewStats() {
           <td>${fmtDur(r.median_wait_sec)}${r.avg_wait_sec != null ? ` <span class="muted">(ср. ${fmtDur(r.avg_wait_sec)})</span>` : ''}</td>
           <td>${r.measured ? `${r.fast} из ${r.measured} (${Math.round(r.fast / r.measured * 100)}%)` : '—'}</td>
           <td>${r.rating_avg != null ? `★ ${r.rating_avg} <span class="muted">(${r.rating_count})</span>` : '—'}</td>
-          <td>${r.hours_per_week != null ? esc(r.hours_per_week) + ' ч/нед' : '—'}</td>
+          <td${r.schedule ? ` title="${esc(scheduleSummary(r.schedule))}"` : ''}>${r.hours_per_week != null ? esc(r.hours_per_week) + ' ч/нед' : '—'}${r.schedule ? ' <span class="muted" style="cursor:help">ⓘ</span>' : ''}</td>
         </tr>`).join('')}
     </table></div>`
       : '<div class="center">За выбранный период активности нет</div>';
@@ -1811,6 +1811,55 @@ async function loadOperatorList() {
   }
 }
 
+const DAY_LIST = [
+  ['mon', 'Понедельник'], ['tue', 'Вторник'], ['wed', 'Среда'], ['thu', 'Четверг'],
+  ['fri', 'Пятница'], ['sat', 'Суббота'], ['sun', 'Воскресенье'],
+];
+
+// длительность интервала "HH:MM-HH:MM" в часах; конец <= начала = через полночь
+function intervalHours(iv) {
+  const m = /^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/.exec(iv || '');
+  if (!m) return 0;
+  const a = +m[1] * 60 + +m[2], b = +m[3] * 60 + +m[4];
+  return ((b > a ? b - a : 1440 - a + b)) / 60;
+}
+
+function scheduleSummary(schedule) {
+  if (!schedule) return '';
+  const short = { mon: 'Пн', tue: 'Вт', wed: 'Ср', thu: 'Чт', fri: 'Пт', sat: 'Сб', sun: 'Вс' };
+  return DAY_LIST.map(([k]) => `${short[k]} ${schedule[k] ? schedule[k].replace('-', '–') : 'вых.'}`).join(' · ');
+}
+
+function bindScheduleTable($m) {
+  const recalc = () => {
+    let total = 0;
+    DAY_LIST.forEach(([k]) => {
+      const a = $m.querySelector(`[name=sch_${k}_a]`).value;
+      const b = $m.querySelector(`[name=sch_${k}_b]`).value;
+      const h = a && b ? intervalHours(`${a}-${b}`) : 0;
+      total += h;
+      const cell = $m.querySelector(`.sched-hrs[data-day=${k}]`);
+      if (cell) cell.textContent = h ? h.toFixed(1).replace(/\.0$/, '') + ' ч' : 'вых.';
+    });
+    const el = $m.querySelector('#sched-total');
+    if (el) el.textContent = total ? total.toFixed(1).replace(/\.0$/, '') + ' ч/нед' : 'график не задан';
+  };
+  $m.querySelectorAll('.sched-table input').forEach(i => i.addEventListener('input', recalc));
+  recalc();
+}
+
+// собирает график из формы; бросает Error, если заполнена только одна граница
+function readScheduleTable($m) {
+  const out = {};
+  for (const [k, label] of DAY_LIST) {
+    const a = $m.querySelector(`[name=sch_${k}_a]`).value;
+    const b = $m.querySelector(`[name=sch_${k}_b]`).value;
+    if (!!a !== !!b) throw new Error(`${label}: заполните обе границы интервала или очистите день`);
+    out[k] = a && b ? `${a}-${b}` : '';
+  }
+  return out;
+}
+
 function permCheckboxesHtml(perms) {
   return `<div class="field" id="perm-block">
     <label>Права оператора</label>
@@ -1880,11 +1929,23 @@ function modalOperatorEdit(op) {
           <option value="owner" ${op.role === 'owner' ? 'selected' : ''}>owner</option>
         </select></div>
       ${permCheckboxesHtml(op.permissions)}
-      <div class="row">
-        <div class="field"><label>Оклад, ₽/мес (для «Активности»)</label>
-          <input name="salary" type="number" min="0" step="500" value="${op.salary_base ?? ''}" placeholder="30000"></div>
-        <div class="field"><label>График, часов в неделю</label>
-          <input name="hours" type="number" min="0" max="168" step="1" value="${op.hours_per_week ?? ''}" placeholder="40"></div>
+      <div class="field"><label>Оклад, ₽/мес (для «Активности»)</label>
+        <input name="salary" type="number" min="0" step="500" value="${op.salary_base ?? ''}" placeholder="30000"></div>
+      <div class="field">
+        <label>График работы (пусто = выходной; конец 00:00 = до конца суток; конец меньше начала = смена через полночь)</label>
+        <table class="sched-table">
+          ${DAY_LIST.map(([k, label]) => {
+            const iv = (op.schedule || {})[k] || '';
+            const [a, b] = iv ? iv.split('-') : ['', ''];
+            return `<tr><td class="sched-day">${label}</td>
+              <td><input type="time" name="sch_${k}_a" value="${esc(a)}"></td>
+              <td class="sched-dash">—</td>
+              <td><input type="time" name="sch_${k}_b" value="${esc(b)}"></td>
+              <td class="sched-hrs muted" data-day="${k}"></td></tr>`;
+          }).join('')}
+        </table>
+        <div class="muted" style="font-size:12.5px; margin-top:6px">
+          Итого: <b id="sched-total">—</b> — норма баллов и коэффициент считаются из этих часов.</div>
       </div>
       <label style="display:flex;gap:8px;align-items:center;color:var(--text)">
         <input type="checkbox" name="active" style="width:auto" ${op.active ? 'checked' : ''}> Учётка активна
@@ -1900,6 +1961,7 @@ function modalOperatorEdit(op) {
       </div>
     </form>`);
   bindRolePermToggle($m);
+  bindScheduleTable($m);
   $m.querySelector('#op-reset-pwd').onclick = async () => {
     if (!confirm(`Сбросить пароль для «${op.login}»? Текущий пароль перестанет действовать.`)) return;
     try {
@@ -1916,7 +1978,12 @@ function modalOperatorEdit(op) {
     const body = { name: f.name.value.trim(), role: f.role.value, active: f.active.checked };
     if (f.role.value === 'operator') body.permissions = readPermCheckboxes($m);
     if (f.salary.value !== '') body.salary_base = parseInt(f.salary.value, 10);
-    if (f.hours.value !== '') body.hours_per_week = parseFloat(f.hours.value);
+    try {
+      body.schedule = readScheduleTable($m);
+    } catch (err) {
+      toast(err.message, 'err');
+      return;
+    }
     try {
       await api('/api/operators/' + op.id, { method: 'PATCH', body });
       closeModal();
