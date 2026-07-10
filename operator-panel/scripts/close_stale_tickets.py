@@ -51,28 +51,51 @@ async def collect_stale(days: float) -> list[dict]:
     msgs = db[settings.support_messages_collection]
     cutoff = utcnow() - timedelta(days=days)
 
+    # 1) кто писал/получал сообщения за период — ОДНИМ запросом
+    #    (раньше был запрос на каждый тикет — на тысячах тикетов с удалённой
+    #    Mongo это выглядело как зависание)
+    print("Ищу пользователей с недавней активностью…", flush=True)
+    active = set(await msgs.distinct("user_id", {"timestamp": {"$gte": cutoff}}))
+    print(f"  активных за последние {days:g} дн.: {len(active)}", flush=True)
+
     stale: list[dict] = []
+    scanned = 0
     cursor = users.find(
         {"info.support.status": {"$in": ["pending", "open"]},
          "info.support.thread_id": {"$exists": True}},
         {"user_data.user_id": 1, "user_data.username": 1, "info.support": 1},
     )
     async for u in cursor:
+        scanned += 1
+        if scanned % 2000 == 0:
+            print(f"  просмотрено тикетов: {scanned}…", flush=True)
         uid = (u.get("user_data") or {}).get("user_id")
         support = ((u.get("info") or {}).get("support")) or {}
-        if uid is None:
+        if uid is None or uid in active:
             continue
-        last = await msgs.find({"user_id": uid}, {"timestamp": 1}) \
-            .sort("timestamp", -1).limit(1).to_list(1)
-        last_ts = _as_utc(last[0].get("timestamp")) if last else _as_utc(support.get("pending_at"))
-        if last_ts is None or last_ts < cutoff:
-            stale.append({
-                "uid": uid,
-                "username": (u.get("user_data") or {}).get("username"),
-                "status": (support.get("status") or "").lower(),
-                "thread_id": support.get("thread_id"),
-                "last_ts": last_ts,
-            })
+        pending_at = _as_utc(support.get("pending_at"))
+        if pending_at is not None and pending_at >= cutoff:
+            continue  # свежий тикет, у которого просто нет сообщений в истории
+        stale.append({
+            "uid": uid,
+            "username": (u.get("user_data") or {}).get("username"),
+            "status": (support.get("status") or "").lower(),
+            "thread_id": support.get("thread_id"),
+            "last_ts": pending_at,  # уточним из истории ниже
+        })
+    print(f"  открытых/ожидающих тикетов всего: {scanned}", flush=True)
+
+    # 2) даты последней активности — только для кандидатов, пачками
+    uids = [s["uid"] for s in stale]
+    last_map: dict = {}
+    for i in range(0, len(uids), 5000):
+        async for d in msgs.aggregate([
+            {"$match": {"user_id": {"$in": uids[i:i + 5000]}}},
+            {"$group": {"_id": "$user_id", "last": {"$max": "$timestamp"}}},
+        ]):
+            last_map[d["_id"]] = _as_utc(d["last"])
+    for s in stale:
+        s["last_ts"] = last_map.get(s["uid"]) or s["last_ts"]
     return stale
 
 
