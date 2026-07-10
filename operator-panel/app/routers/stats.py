@@ -21,9 +21,10 @@
     периода (workload-based quota, стандарт контакт-центров):
       potential = отвеченные_обращения×(2+3) + закрытия×10 + очередь×15
     Отвеченное обращение — цепочка сообщений пользователя, получившая ответ
-    оператора; очередь — тикеты, оставшиеся без ответа И висящие в статусе
-    pending/open (сообщения, обработанные ботом или не требовавшие ответа,
-    в нагрузку не попадают). Персональная норма = potential × (часы оператора
+    оператора; очередь — только РЕАЛЬНО брошенные тикеты: статус pending,
+    либо open, где оператор за период не написал ни разу. «Хвосты» вида
+    «спасибо» после ответа в вечно-открытых тикетах и сообщения, обработанные
+    ботом, очередью не считаются. Персональная норма = potential × (часы оператора
     / часы команды). Игнорируете тикеты — очередь растёт и тянет норму вверх
     с полным весом (15), коэффициенты падают; нет нагрузки — коэффициент 1.0.
   team_avg — средний темп команды (баллы команды / часы команды);
@@ -276,14 +277,16 @@ async def operator_stats(
     pending_since: datetime | None = None  # первое неотвеченное сообщение пользователя
     last_op_login: str | None = None       # кому приписывать оценку
     answered_waits = 0                     # обращения, на которые операторы ответили
-    backlog_uids: set = set()              # тикеты, оставшиеся без ответа (кандидаты в очередь)
+    backlog_cand: dict = {}                # uid -> оператор участвовал в диалоге?
+    dialog_had_op = False
 
     async for m in cursor:
         uid = m.get("user_id")
         if uid != current_uid:
             if pending_since is not None and current_uid is not None:
-                backlog_uids.add(current_uid)  # диалог закончился без ответа
+                backlog_cand[current_uid] = dialog_had_op  # кончился без ответа
             current_uid, pending_since, last_op_login = uid, None, None
+            dialog_had_op = False
         ts = _as_utc(m.get("timestamp"))
         direction = m.get("direction")
         login = m.get("operator_login")
@@ -297,6 +300,7 @@ async def operator_stats(
             b["replies"] += 1
             b["tickets"].add(uid)
             last_op_login = login
+            dialog_had_op = True
             if pending_since is not None and ts is not None:
                 answered_waits += 1
                 raw = (ts - pending_since).total_seconds()
@@ -326,19 +330,22 @@ async def operator_stats(
                 if rating and last_op_login:
                     bucket(last_op_login)["ratings"].append(int(rating.group(1)))
     if pending_since is not None and current_uid is not None:
-        backlog_uids.add(current_uid)  # хвост последнего диалога
+        backlog_cand[current_uid] = dialog_had_op  # хвост последнего диалога
 
-    # очередь: из неотвеченных берём только РЕАЛЬНО висящие тикеты
-    # (support.status pending/open) — сообщения, которые бот обработал сам
-    # или которые не требовали ответа, в нагрузку не попадают
+    # Очередь = только РЕАЛЬНО брошенные тикеты:
+    #  * статус pending (никто не подключился), или
+    #  * статус open, но оператор за период не написал НИ РАЗУ (игнор).
+    # «Хвосты» вида «спасибо/ок» после ответа оператора в вечно-открытых
+    # тикетах и сообщения, обработанные ботом, очередью НЕ считаются.
     backlog = 0
-    if backlog_uids:
+    if backlog_cand:
         users_col = get_db()[settings.users_collection]
         async for u in users_col.find(
-                {"user_data.user_id": {"$in": list(backlog_uids)}},
-                {"info.support.status": 1}):
+                {"user_data.user_id": {"$in": list(backlog_cand)}},
+                {"user_data.user_id": 1, "info.support.status": 1}):
             st = ((((u.get("info") or {}).get("support")) or {}).get("status") or "").lower()
-            if st in ("pending", "open"):
+            had_op = backlog_cand.get((u.get("user_data") or {}).get("user_id"), False)
+            if st == "pending" or (st == "open" and not had_op):
                 backlog += 1
 
     is_owner = op.get("role") == "owner"
