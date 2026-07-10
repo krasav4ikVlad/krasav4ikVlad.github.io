@@ -35,6 +35,8 @@ def operator_public(op: dict) -> OperatorPublic:
         permissions=resolved_permissions(op),
         created_at=to_iso_z(op["created_at"]) if op.get("created_at") else None,
         last_login_at=to_iso_z(op["last_login_at"]) if op.get("last_login_at") else None,
+        salary_base=op.get("salary_base"),
+        hours_per_week=op.get("hours_per_week"),
     )
 
 

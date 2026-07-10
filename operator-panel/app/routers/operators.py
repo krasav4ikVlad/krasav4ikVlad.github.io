@@ -126,6 +126,12 @@ async def update_operator(operator_id: str, body: OperatorUpdate,
     if body.permissions is not None:
         updates["permissions"] = body.permissions
         changed_public["permissions"] = body.permissions
+    if body.salary_base is not None:
+        updates["salary_base"] = body.salary_base
+        changed_public["salary_base"] = body.salary_base
+    if body.hours_per_week is not None:
+        updates["hours_per_week"] = body.hours_per_week
+        changed_public["hours_per_week"] = body.hours_per_week
     if not updates:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Нет изменений")
 

@@ -48,6 +48,9 @@ class OperatorUpdate(BaseModel):
     role: Literal["operator", "owner"] | None = None
     active: bool | None = None
     permissions: dict[str, bool] | None = None
+    # для расчёта зарплаты по активности (страница «Активность»)
+    salary_base: int | None = Field(default=None, ge=0, le=10_000_000)   # оклад, ₽/мес
+    hours_per_week: float | None = Field(default=None, ge=0, le=168)     # график, ч/нед
 
     _perm_keys = field_validator("permissions")(_validate_permission_keys)
 
@@ -67,6 +70,8 @@ class OperatorPublic(BaseModel):
     permissions: dict[str, bool]  # effective (resolved) permission map
     created_at: str | None = None
     last_login_at: str | None = None
+    salary_base: int | None = None
+    hours_per_week: float | None = None
 
 
 # ---------------------------------------------------------------- user actions

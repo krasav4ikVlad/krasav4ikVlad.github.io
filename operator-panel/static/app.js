@@ -1503,7 +1503,9 @@ function viewStats() {
         <input type="date" name="st-from" value="${esc(st.from)}" style="flex:0 1 150px">
         <input type="date" name="st-to" value="${esc(st.to)}" style="flex:0 1 150px">
         <button class="btn btn-sm" id="st-apply">Показать</button>
-        ${S.me.role === 'owner' ? '<button class="btn btn-ghost btn-sm" id="st-csv">Скачать CSV</button>' : ''}
+        ${S.me.role === 'owner' ? `
+          <button class="btn btn-ghost btn-sm" id="st-settings">Настройки расчёта</button>
+          <button class="btn btn-ghost btn-sm" id="st-csv">Скачать CSV</button>` : ''}
       </div>
       <div id="st-summary" class="stats-grid" style="margin:14px 0 0"></div>
     </div>
@@ -1537,30 +1539,40 @@ function viewStats() {
       <div class="stat"><div class="stat-label">Средняя скорость ответа</div><div class="stat-value">${fmtDur(avgAll)}</div></div>
       <div class="stat"><div class="stat-label">Оценок получено</div><div class="stat-value">${tot('rating_count')}</div></div>`;
 
+    const showPay = rows.some(r => 'salary_base' in r);
     $t.innerHTML = rows.length ? `<div class="table-wrap"><table>
-      <tr><th>#</th><th>Оператор</th><th>Баллы</th><th>Ответы</th><th>Тикетов</th><th>Закрыто</th>
-        <th>Скорость (медиана)</th><th>Быстрых ≤${data.points.fast_threshold_min} мин</th><th>Оценка</th></tr>
+      <tr><th>#</th><th>Оператор</th><th>Баллы</th><th>Коэфф.</th>${showPay ? '<th>К выплате</th>' : ''}
+        <th>Ответы</th><th>Тикетов</th><th>Закрыто</th>
+        <th>Скорость (медиана)</th><th>Быстрых ≤${data.points.fast_threshold_min} мин</th><th>Оценка</th><th>График</th></tr>
       ${rows.map((r, i) => `
         <tr class="${r.login === S.me.login ? 'st-me' : ''}">
           <td>${i === 0 ? '🏆' : i + 1}</td>
           <td>${esc(r.name)} <span class="muted mono" style="font-size:11px">${esc(r.login)}</span></td>
-          <td><b>${fmtNum(r.score)}</b></td>
+          <td><b>${fmtNum(r.score)}</b>${r.norm_points ? `<span class="muted" style="font-size:11px"> / ${fmtNum(r.norm_points)}</span>` : ''}</td>
+          <td>${r.coeff != null ? `<b>×${r.coeff.toFixed(2)}</b>` : '<span class="muted" title="Задайте часы в неделю в карточке оператора">—</span>'}</td>
+          ${showPay ? `<td>${'payout' in r && r.payout != null ? `<b>${fmtNum(r.payout)} ₽</b>` : ('salary_base' in r ? '<span class="muted">—</span>' : '')}</td>` : ''}
           <td>${r.replies}</td>
           <td>${r.tickets}</td>
           <td>${r.closes}</td>
           <td>${fmtDur(r.median_wait_sec)}${r.avg_wait_sec != null ? ` <span class="muted">(ср. ${fmtDur(r.avg_wait_sec)})</span>` : ''}</td>
           <td>${r.measured ? `${r.fast} из ${r.measured} (${Math.round(r.fast / r.measured * 100)}%)` : '—'}</td>
           <td>${r.rating_avg != null ? `★ ${r.rating_avg} <span class="muted">(${r.rating_count})</span>` : '—'}</td>
+          <td>${r.hours_per_week != null ? esc(r.hours_per_week) + ' ч/нед' : '—'}</td>
         </tr>`).join('')}
     </table></div>`
       : '<div class="center">За выбранный период активности нет</div>';
 
     const p = data.points;
+    const a = data.settings || {};
+    const workWin = a.work_start === a.work_end ? 'круглосуточно' : `${a.work_start}–${a.work_end} (UTC+${a.tz_offset_hours})`;
     document.getElementById('st-formula').innerHTML =
       `Баллы: ответ +${p.reply} · закрытие тикета +${p.close} · быстрый первый ответ (≤${p.fast_threshold_min} мин) ещё +${p.fast} · ` +
-      `оценка пользователя ±${p.rating_step}×(звёзды−3), т.е. 5★ = +${p.rating_step * 2}, 1★ = −${p.rating_step * 2}. ` +
-      `Учитываются ответы с сайта и из Telegram (если бот пишет их в общую историю). ` +
-      `Для премий: назначьте цену балла — например, при 5 ₽/балл оператор с 400 баллами получает 2000 ₽.`;
+      `оценка пользователя ±${p.rating_step}×(звёзды−3), т.е. 5★ = +${p.rating_step * 2}, 1★ = −${p.rating_step * 2}.<br>` +
+      `Коэффициент = баллы ÷ норма, в пределах ×${a.coeff_min}–×${a.coeff_max}. ` +
+      `Норма = ${a.norm_points_per_hour} баллов/час × часы оператора за период. ` +
+      `К выплате = оклад × коэффициент (пропорционально периоду).<br>` +
+      `Рабочее окно поддержки: ${workWin} — время вне окна не считается ожиданием ответа. ` +
+      `Учитываются ответы с сайта и из Telegram (если бот пишет их в общую историю).`;
   };
 
   const setPreset = (preset) => {
@@ -1583,14 +1595,70 @@ function viewStats() {
     if (!st.from || !st.to) { toast('Выберите обе даты', 'err'); return; }
     load();
   };
+  const setBtn = document.getElementById('st-settings');
+  if (setBtn) setBtn.onclick = async () => {
+    let cfg;
+    try { cfg = await api('/api/stats/settings'); }
+    catch (err) { toast(err.message, 'err'); return; }
+    const $m = openModal(`
+      <h2>Настройки расчёта зарплаты</h2>
+      <form id="act-set">
+        <div class="field"><label>Норма баллов за час работы</label>
+          <input name="norm" type="number" step="0.5" min="0" value="${esc(cfg.norm_points_per_hour)}">
+          <div class="muted" style="font-size:12px; margin-top:4px">
+            Норма оператора за период = это число × его часы. Пример: 10 баллов/час ≈ 4 ответа или 1 закрытие в час.</div></div>
+        <div class="row">
+          <div class="field"><label>Коэфф. минимум</label>
+            <input name="cmin" type="number" step="0.05" min="0" value="${esc(cfg.coeff_min)}"></div>
+          <div class="field"><label>Коэфф. максимум</label>
+            <input name="cmax" type="number" step="0.05" min="0" value="${esc(cfg.coeff_max)}"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label>Поддержка работает с</label>
+            <input name="wstart" value="${esc(cfg.work_start)}" placeholder="09:00"></div>
+          <div class="field"><label>до</label>
+            <input name="wend" value="${esc(cfg.work_end)}" placeholder="24:00"></div>
+          <div class="field"><label>Часовой пояс, UTC+</label>
+            <input name="tz" type="number" min="-12" max="14" value="${esc(cfg.tz_offset_hours)}"></div>
+        </div>
+        <div class="muted" style="font-size:12px; margin-bottom:12px">
+          Время вне окна не считается ожиданием ответа (ночь никого не штрафует).
+          Одинаковые «с» и «до» = круглосуточно. Окно может переходить через полночь (18:00–02:00).
+          Оклад и часы в неделю задаются в карточке каждого оператора (страница «Операторы»).</div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+          <button type="submit" class="btn">Сохранить</button>
+        </div>
+      </form>`);
+    $m.querySelector('#act-set').addEventListener('submit', async e => {
+      e.preventDefault();
+      const f = e.target;
+      try {
+        await api('/api/stats/settings', { method: 'PUT', body: {
+          norm_points_per_hour: parseFloat(f.norm.value) || 0,
+          coeff_min: parseFloat(f.cmin.value) || 0,
+          coeff_max: parseFloat(f.cmax.value) || 0,
+          work_start: f.wstart.value.trim(),
+          work_end: f.wend.value.trim(),
+          tz_offset_hours: parseInt(f.tz.value, 10) || 0,
+        }});
+        closeModal();
+        toast('Сохранено ✓');
+        load();
+      } catch (err) { toast(err.message, 'err'); }
+    });
+  };
+
   const csvBtn = document.getElementById('st-csv');
   if (csvBtn) csvBtn.onclick = () => {
     const d = S.stData;
     if (!d || !d.rows.length) { toast('Нет данных для выгрузки', 'err'); return; }
-    const head = ['Логин', 'Имя', 'Баллы', 'Ответы', 'Тикетов', 'Закрыто',
+    const head = ['Логин', 'Имя', 'Баллы', 'Норма', 'Коэффициент', 'Оклад, ₽/мес', 'К выплате, ₽',
+      'Часов/нед', 'Ответы', 'Тикетов', 'Закрыто',
       'Медиана ответа, сек', 'Среднее, сек', 'Быстрых', 'Замерено', 'Оценка', 'Кол-во оценок'];
     const lines = [head.join(';')].concat(d.rows.map(r => [
-      r.login, r.name, r.score, r.replies, r.tickets, r.closes,
+      r.login, r.name, r.score, r.norm_points ?? '', r.coeff ?? '', r.salary_base ?? '', r.payout ?? '',
+      r.hours_per_week ?? '', r.replies, r.tickets, r.closes,
       r.median_wait_sec ?? '', r.avg_wait_sec ?? '', r.fast, r.measured,
       r.rating_avg ?? '', r.rating_count,
     ].map(v => String(v).replace(/;/g, ',')).join(';')));
@@ -1812,6 +1880,12 @@ function modalOperatorEdit(op) {
           <option value="owner" ${op.role === 'owner' ? 'selected' : ''}>owner</option>
         </select></div>
       ${permCheckboxesHtml(op.permissions)}
+      <div class="row">
+        <div class="field"><label>Оклад, ₽/мес (для «Активности»)</label>
+          <input name="salary" type="number" min="0" step="500" value="${op.salary_base ?? ''}" placeholder="30000"></div>
+        <div class="field"><label>График, часов в неделю</label>
+          <input name="hours" type="number" min="0" max="168" step="1" value="${op.hours_per_week ?? ''}" placeholder="40"></div>
+      </div>
       <label style="display:flex;gap:8px;align-items:center;color:var(--text)">
         <input type="checkbox" name="active" style="width:auto" ${op.active ? 'checked' : ''}> Учётка активна
       </label>
@@ -1841,6 +1915,8 @@ function modalOperatorEdit(op) {
     const f = e.target;
     const body = { name: f.name.value.trim(), role: f.role.value, active: f.active.checked };
     if (f.role.value === 'operator') body.permissions = readPermCheckboxes($m);
+    if (f.salary.value !== '') body.salary_base = parseInt(f.salary.value, 10);
+    if (f.hours.value !== '') body.hours_per_week = parseFloat(f.hours.value);
     try {
       await api('/api/operators/' + op.id, { method: 'PATCH', body });
       closeModal();
