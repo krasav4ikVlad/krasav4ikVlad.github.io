@@ -168,6 +168,9 @@ async def update_operator(operator_id: str, body: OperatorUpdate,
     if body.hours_per_week is not None:
         updates["hours_per_week"] = body.hours_per_week
         changed_public["hours_per_week"] = body.hours_per_week
+    if body.tg_username is not None:
+        updates["tg_username"] = body.tg_username.strip().lstrip("@").lower()
+        changed_public["tg_username"] = updates["tg_username"]
     if body.schedule is not None:
         clean, hours = validate_schedule(body.schedule)
         updates["schedule"] = clean

@@ -165,6 +165,22 @@ async def operator_stats(
     tz_off = act["tz_offset_hours"]
 
     settings = get_settings()
+
+    # TG-username -> логин панели: ответы из Telegram-треда засчитываются
+    # тому же оператору, а не отдельной строкой рейтинга
+    alias: dict[str, str] = {}
+    op_info: dict[str, dict] = {}
+    async for o in get_db()[settings.operators_collection].find(
+            {}, {"login": 1, "name": 1, "salary_base": 1, "hours_per_week": 1,
+                 "schedule": 1, "tg_username": 1}):
+        op_info[o["login"]] = o
+        tg = (o.get("tg_username") or "").strip().lstrip("@").lower()
+        if tg:
+            alias[tg] = o["login"]
+
+    def canon(raw_login: str) -> str:
+        return alias.get((raw_login or "").strip().lstrip("@").lower(), raw_login)
+
     col = get_db()[settings.support_messages_collection]
     cursor = col.find(
         {"timestamp": {"$gte": start, "$lt": end}},
@@ -195,6 +211,7 @@ async def operator_stats(
             if pending_since is None and ts is not None:
                 pending_since = ts
         elif direction == "operator" and login:
+            login = canon(login)
             b = bucket(login)
             b["replies"] += 1
             b["tickets"].add(uid)
@@ -212,6 +229,7 @@ async def operator_stats(
         elif direction == "system":
             text = m.get("text") or ""
             if login and CLOSE_RE.search(text):
+                login = canon(login)
                 bucket(login)["closes"] += 1
                 last_op_login = login
                 pending_since = None
@@ -219,12 +237,6 @@ async def operator_stats(
                 rating = RATING_RE.search(text)
                 if rating and last_op_login:
                     bucket(last_op_login)["ratings"].append(int(rating.group(1)))
-
-    # данные операторов: имя + оклад + график
-    op_info: dict[str, dict] = {}
-    async for o in get_db()[settings.operators_collection].find(
-            {}, {"login": 1, "name": 1, "salary_base": 1, "hours_per_week": 1, "schedule": 1}):
-        op_info[o["login"]] = o
 
     is_owner = op.get("role") == "owner"
     my_login = op.get("login")

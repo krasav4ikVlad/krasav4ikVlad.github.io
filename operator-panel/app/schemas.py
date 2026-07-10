@@ -54,6 +54,9 @@ class OperatorUpdate(BaseModel):
     # недельный график: {"mon": "09:00-18:00", "tue": "", ...}; пусто = выходной,
     # конец меньше начала = смена через полночь; часы/нед считаются автоматически
     schedule: dict[str, str] | None = None
+    # username в Telegram (без @) — чтобы ответы из TG-треда засчитывались
+    # этому же оператору в «Активности», а не отдельной строкой
+    tg_username: str | None = Field(default=None, max_length=64)
 
     _perm_keys = field_validator("permissions")(_validate_permission_keys)
 
@@ -76,6 +79,7 @@ class OperatorPublic(BaseModel):
     salary_base: int | None = None
     hours_per_week: float | None = None
     schedule: dict[str, str] | None = None
+    tg_username: str | None = None
 
 
 # ---------------------------------------------------------------- user actions

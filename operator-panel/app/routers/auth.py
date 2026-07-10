@@ -38,6 +38,7 @@ def operator_public(op: dict) -> OperatorPublic:
         salary_base=op.get("salary_base"),
         hours_per_week=op.get("hours_per_week"),
         schedule=op.get("schedule"),
+        tg_username=op.get("tg_username"),
     )
 
 
