@@ -5,28 +5,30 @@
 логирует их с operator_login — см. docs/bot-integration.md):
 
   * ответы и число тикетов, в которых оператор участвовал;
-  * закрытия тикетов (системные сообщения «Тикет закрыт…» с operator_login);
+  * закрытия тикетов (системные сообщения «Тикет закрыт…» с operator_login) —
+    ТОЛЬКО справочно: тикеты закрываются автоматически (app/autoclose.py),
+    поэтому баллов закрытие не даёт и в норму не входит;
   * скорость первого ответа: от первого НЕотвеченного сообщения пользователя
     до ответа оператора (паузы дольше суток не учитываются в скорости);
   * оценки пользователей (системные сообщения «Оценка: N» — приписываются
     оператору, который последним вёл тикет).
 
 Баллы (формула фиксированная, показана операторам в интерфейсе):
-  ответ +2 · закрытие +10 · быстрый ответ (≤10 мин) ещё +3
+  ответ +2 · быстрый ответ (≤10 мин) ещё +3
   оценка: +2×(N−3) → 5★=+4, 4★=+2, 3★=0, 2★=−2, 1★=−4
 
 Зарплата по коэффициенту (настройки владельца — «Настройки расчёта»).
 Режимы нормы:
   auto (по нагрузке, рекомендуется) — норма привязана к реальной работе
     периода (workload-based quota, стандарт контакт-центров):
-      potential = отвеченные_обращения×(2+3) + закрытия×10 + очередь×15
+      potential = отвеченные_обращения×(2+3) + очередь×(2+3)
     Отвеченное обращение — цепочка сообщений пользователя, получившая ответ
     оператора; очередь — только РЕАЛЬНО брошенные тикеты: статус pending,
     либо open, где оператор за период не написал ни разу. «Хвосты» вида
     «спасибо» после ответа в вечно-открытых тикетах и сообщения, обработанные
     ботом, очередью не считаются. Персональная норма = potential × (часы оператора
     / часы команды). Игнорируете тикеты — очередь растёт и тянет норму вверх
-    с полным весом (15), коэффициенты падают; нет нагрузки — коэффициент 1.0.
+    с тем же весом, что отвеченное обращение; нет нагрузки — коэффициент 1.0.
   team_avg — средний темп команды (баллы команды / часы команды);
   manual — число баллов/час задаёт владелец.
 Далее одинаково: норма_баллов = ставка × часы_оператора_за_период,
@@ -158,7 +160,6 @@ FAST_ANSWER_SEC = 10 * 60          # «быстрый ответ» — в теч
 MAX_MEASURED_WAIT_SEC = 24 * 3600  # ожидания дольше суток не портят среднюю скорость
 
 POINTS_REPLY = 2
-POINTS_CLOSE = 10
 POINTS_FAST = 3
 POINTS_PER_RATING_STEP = 2         # 2×(оценка−3)
 
@@ -408,8 +409,9 @@ async def operator_stats(
         avg_wait = sum(waits) / len(waits) if waits else None
         median_wait = waits[len(waits) // 2] if waits else None
         ratings = b["ratings"]
+        # закрытия в баллы не входят: тикеты закрываются автоматически,
+        # b["closes"] остаётся справочной колонкой
         score = (b["replies"] * POINTS_REPLY
-                 + b["closes"] * POINTS_CLOSE
                  + b["fast"] * POINTS_FAST
                  + sum((r - 3) * POINTS_PER_RATING_STEP for r in ratings))
         info = op_info.get(login, {})
@@ -434,12 +436,11 @@ async def operator_stats(
 
     # фаза 2: ставка нормы (баллов/час)
     mode = act.get("norm_mode", "auto")
-    closes_total = sum(b["closes"] for b in per_op.values())
-    # «доступные» баллы = реальная работа периода: отвеченные обращения,
-    # фактические закрытия и висящая очередь (за неё — полный вес: ответ+закрытие)
-    potential = (answered_waits * (POINTS_REPLY + POINTS_FAST)
-                 + closes_total * POINTS_CLOSE
-                 + backlog * (POINTS_REPLY + POINTS_FAST + POINTS_CLOSE))
+    # «доступные» баллы = реальная работа периода: отвеченные обращения и
+    # висящая очередь (тот же вес — игнорировать тикеты невыгодно).
+    # Закрытия в норму не входят: тикеты закрываются автоматически.
+    potential = ((answered_waits + backlog)
+                 * (POINTS_REPLY + POINTS_FAST))
     tot_hours = sum(r["hours_period"] for r in rows if r["hours_period"])
     if mode == "manual":
         rate = act["norm_points_per_hour"] or None
@@ -469,12 +470,12 @@ async def operator_stats(
 
     return {
         "date_from": date_from, "date_to": date_to, "days": days,
-        "points": {"reply": POINTS_REPLY, "close": POINTS_CLOSE, "fast": POINTS_FAST,
+        "points": {"reply": POINTS_REPLY, "fast": POINTS_FAST,
                    "rating_step": POINTS_PER_RATING_STEP,
                    "fast_threshold_min": FAST_ANSWER_SEC // 60},
         "settings": act,
         "norm_used": round(rate, 2) if rate else None,
-        "demand": {"answered": answered_waits, "closes": closes_total,
+        "demand": {"answered": answered_waits,
                    "backlog": backlog, "potential_points": potential},
         "rows": rows,
     }
