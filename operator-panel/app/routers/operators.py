@@ -34,6 +34,10 @@ INTERVAL_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)-([01]?\d|2[0-3]):([0-5]\d
 FLOAT_RE = re.compile(
     r"^([01]?\d|2[0-3]):([0-5]\d)-([01]?\d|2[0-3]):([0-5]\d)~(\d{1,2}(?:\.\d)?)$")
 
+# потолок недельных часов (12 ч × 7 дней): завышенный график — яд для нормы
+# активности, он раздувает часы команды и занижает норму остальных операторов
+MAX_WEEK_HOURS = 84
+
 
 def validate_schedule(schedule: dict) -> tuple[dict, float]:
     """Проверяет недельный график и возвращает (нормализованный график, часов/нед).
@@ -81,6 +85,12 @@ def validate_schedule(schedule: dict) -> tuple[dict, float]:
     if unknown:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             f"Неизвестные дни в графике: {', '.join(sorted(unknown))}")
+    if total_min > MAX_WEEK_HOURS * 60:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"В графике {round(total_min / 60, 1)} ч/нед — больше {MAX_WEEK_HOURS} ч. "
+            "Такой график раздувает часы команды и занижает норму остальных "
+            "операторов. Укажите реальные рабочие часы.")
     return clean, round(total_min / 60, 1)
 
 

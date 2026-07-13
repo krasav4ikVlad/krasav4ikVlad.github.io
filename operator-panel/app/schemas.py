@@ -50,7 +50,7 @@ class OperatorUpdate(BaseModel):
     permissions: dict[str, bool] | None = None
     # для расчёта зарплаты по активности (страница «Активность»)
     salary_base: int | None = Field(default=None, ge=0, le=10_000_000)   # оклад, ₽/мес
-    hours_per_week: float | None = Field(default=None, ge=0, le=168)     # график, ч/нед
+    hours_per_week: float | None = Field(default=None, ge=0, le=84)      # график, ч/нед (потолок 84: завышенные часы ломают норму активности)
     # недельный график: {"mon": "09:00-18:00", "tue": "", ...}; пусто = выходной,
     # конец меньше начала = смена через полночь; часы/нед считаются автоматически
     schedule: dict[str, str] | None = None

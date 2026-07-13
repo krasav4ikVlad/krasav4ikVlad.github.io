@@ -1562,6 +1562,17 @@ function viewStats() {
     </table></div>`
       : '<div class="center">За выбранный период активности нет</div>';
 
+    // раздутые часы у одного оператора съедают норму всей команды — подсветим
+    if (S.me.role === 'owner') {
+      const fat = rows.filter(r => (r.hours_per_week || 0) > 84);
+      if (fat.length) {
+        $t.insertAdjacentHTML('beforeend', `<div class="error-note" style="margin-top:10px">
+          Похоже на ошибку в графике: ${fat.map(r => `${esc(r.name)} — ${esc(r.hours_per_week)} ч/нед`).join(', ')}.
+          Такие часы раздувают часы команды: норма остальных занижается, а их коэффициенты
+          взлетают к максимуму. Исправьте график в карточке оператора (страница «Операторы»).</div>`);
+      }
+    }
+
     const p = data.points;
     const a = data.settings || {};
     const workWin = a.work_start === a.work_end ? 'круглосуточно' : `${a.work_start}–${a.work_end} (UTC+${a.tz_offset_hours})`;
