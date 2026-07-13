@@ -822,6 +822,7 @@ function viewTickets() {
   $view.innerHTML = `
     <h1>Тикеты поддержки</h1>
     <div class="card">
+      <div id="tk-stats" class="stats-grid" style="margin-bottom:14px"></div>
       <div class="filter-bar">
         <select id="tk-filter">
           <option value="" ${tk.status === '' ? 'selected' : ''}>Все статусы</option>
@@ -839,8 +840,29 @@ function viewTickets() {
     loadTickets();
   };
   loadTickets();
+  loadTicketSummary();
   // автообновление списка — можно сидеть и ждать новые тикеты
-  S.ticketTimer = setInterval(() => loadTickets(true), 5000);
+  S.ticketTimer = setInterval(() => { loadTickets(true); loadTicketSummary(); }, 5000);
+}
+
+async function loadTicketSummary() {
+  const el = document.getElementById('tk-stats');
+  if (!el) return;
+  let s;
+  try { s = await api('/api/ticket-stats/summary'); }
+  catch (e) { return; } // сводка не критична — список работает и без неё
+  el.innerHTML = `
+    <div class="stat"><div class="stat-label">🟡 Ожидают</div>
+      <div class="stat-value">${fmtNum(s.pending)}</div></div>
+    <div class="stat"><div class="stat-label">🟢 У оператора</div>
+      <div class="stat-value">${fmtNum(s.open)}</div></div>
+    <div class="stat"><div class="stat-label">Обращений сегодня</div>
+      <div class="stat-value">${fmtNum(s.today.appeals)}</div>
+      <div class="muted" style="font-size:11.5px; margin-top:2px">за последний час: ${fmtNum(s.today.last_hour)}</div></div>
+    <div class="stat"><div class="stat-label">Отвечено сегодня</div>
+      <div class="stat-value">${fmtNum(s.today.answered)}</div></div>
+    <div class="stat"><div class="stat-label">Без ответа сегодня</div>
+      <div class="stat-value"${s.today.unanswered ? ' style="color:var(--red)"' : ''}>${fmtNum(s.today.unanswered)}</div></div>`;
 }
 
 const TK_SORT_LABELS = [

@@ -20,7 +20,7 @@ from .. import ai
 from ..ai import AIError
 from ..config import get_settings
 from ..database import get_db
-from ..security import OwnerOperator
+from ..security import CurrentOperator, OwnerOperator
 from ..utils import utcnow
 from .stats import _as_utc, _load_act_settings, _parse_date
 
@@ -179,6 +179,73 @@ async def ticket_stats(
         "heatmap": heat,
         "by_date": [{"date": k, "count": v} for k, v in sorted(by_date.items())],
         "user_types": [t for t in type_agg.values() if t["appeals"] or t["users"]],
+    }
+
+
+# ---------------------------------------------------------------- сводка для страницы «Тикеты»
+
+@router.get("/summary")
+async def tickets_summary(_op: CurrentOperator):
+    """Живая сводка для всех операторов: очередь по статусам и обращения за
+    сегодня (локальные сутки) — сколько пришло, за последний час, отвечено ли."""
+    settings = get_settings()
+    db = get_db()
+    users = db[settings.users_collection]
+    msgs = db[settings.support_messages_collection]
+    act = await _load_act_settings()
+    tz = timezone(timedelta(hours=act.get("tz_offset_hours", 3)))
+    now = utcnow()
+    day_start = now.astimezone(tz).replace(
+        hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+    pending_cnt = await users.count_documents(
+        {"info.support.status": "pending", "info.support.thread_id": {"$exists": True}})
+    open_cnt = await users.count_documents(
+        {"info.support.status": "open", "info.support.thread_id": {"$exists": True}})
+
+    # сутки контекста до полуночи, чтобы продолжение вчерашней переписки
+    # не считалось новым обращением
+    cursor = msgs.find(
+        {"timestamp": {"$gte": day_start - timedelta(days=1)}},
+        {"user_id": 1, "direction": 1, "timestamp": 1},
+    ).sort([("user_id", 1), ("timestamp", 1)])
+
+    day_chains: list[dict] = []
+    cur_uid = None
+    waiting = False
+    open_chain: dict | None = None
+    async for m in cursor:
+        uid = m.get("user_id")
+        ts = _as_utc(m.get("timestamp"))
+        if uid is None or ts is None:
+            continue
+        if uid != cur_uid:
+            cur_uid, waiting, open_chain = uid, False, None
+        if m.get("direction") == "user":
+            if not waiting:
+                ch = {"ts": ts, "answered": False}
+                if ts >= day_start:
+                    day_chains.append(ch)
+                open_chain = ch
+            waiting = True
+        else:  # ответ оператора или системное закрытие завершают цепочку
+            if open_chain is not None:
+                open_chain["answered"] = True
+                open_chain = None
+            waiting = False
+
+    hour_ago = now - timedelta(hours=1)
+    answered = sum(1 for c in day_chains if c["answered"])
+    return {
+        "pending": pending_cnt,
+        "open": open_cnt,
+        "today": {
+            "appeals": len(day_chains),
+            "answered": answered,
+            "unanswered": len(day_chains) - answered,
+            "last_hour": sum(1 for c in day_chains if c["ts"] >= hour_ago),
+        },
+        "tz_offset_hours": act.get("tz_offset_hours", 3),
     }
 
 
