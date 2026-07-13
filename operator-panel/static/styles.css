@@ -496,3 +496,8 @@ tr.st-me td:first-child { border-left: 3px solid var(--blue); }
   .toast { max-width: none; }
 }
 @keyframes sheetUp { from { transform: translateY(40px); opacity: .6; } to { transform: none; opacity: 1; } }
+
+/* --- справка оператора --- */
+.help-list { margin: 8px 0 4px 20px; }
+.help-list li { margin: 7px 0; line-height: 1.55; }
+.card p { line-height: 1.55; margin: 8px 0; }
