@@ -211,6 +211,7 @@ async def tickets_summary(_op: CurrentOperator):
     ).sort([("user_id", 1), ("timestamp", 1)])
 
     day_chains: list[dict] = []
+    waiting_uids: set = set()  # диалоги, где прямо сейчас последнее слово за пользователем
     cur_uid = None
     waiting = False
     open_chain: dict | None = None
@@ -220,6 +221,8 @@ async def tickets_summary(_op: CurrentOperator):
         if uid is None or ts is None:
             continue
         if uid != cur_uid:
+            if cur_uid is not None and waiting:
+                waiting_uids.add(cur_uid)
             cur_uid, waiting, open_chain = uid, False, None
         if m.get("direction") == "user":
             if not waiting:
@@ -233,12 +236,22 @@ async def tickets_summary(_op: CurrentOperator):
                 open_chain["answered"] = True
                 open_chain = None
             waiting = False
+    if cur_uid is not None and waiting:
+        waiting_uids.add(cur_uid)
+
+    waiting_now = 0
+    if waiting_uids:
+        waiting_now = await users.count_documents({
+            "user_data.user_id": {"$in": list(waiting_uids)},
+            "info.support.status": {"$in": ["pending", "open"]},
+        })
 
     hour_ago = now - timedelta(hours=1)
     answered = sum(1 for c in day_chains if c["answered"])
     return {
         "pending": pending_cnt,
         "open": open_cnt,
+        "waiting_now": waiting_now,
         "today": {
             "appeals": len(day_chains),
             "answered": answered,

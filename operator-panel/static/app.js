@@ -830,10 +830,17 @@ function viewTickets() {
           <option value="open" ${tk.status === 'open' ? 'selected' : ''}>🟢 У оператора</option>
           <option value="closed" ${tk.status === 'closed' ? 'selected' : ''}>🔴 Закрытые</option>
         </select>
+        <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--dim); white-space:nowrap">
+          <input type="checkbox" id="tk-sound" style="width:auto" ${soundEnabled() ? 'checked' : ''}>
+          звук новых обращений</label>
         <span class="muted" style="align-self:center; font-size:12px" id="tk-updated"></span>
       </div>
       <div id="tk-list">${spinnerHtml()}</div>
     </div>`;
+  document.getElementById('tk-sound').onchange = e => {
+    localStorage.setItem('op_sound', e.target.checked ? '1' : '0');
+    if (e.target.checked) beep(); // и проверка, что звук работает
+  };
   document.getElementById('tk-filter').onchange = e => {
     tk.status = e.target.value;
     tk.page = 1;
@@ -864,6 +871,61 @@ async function loadTicketSummary() {
     <div class="stat"><div class="stat-label">Без ответа сегодня</div>
       <div class="stat-value"${s.today.unanswered ? ' style="color:var(--red)"' : ''}>${fmtNum(s.today.unanswered)}</div></div>`;
 }
+
+// ================================================================ оповещения: звук + бейдж на вкладке
+
+const FAVICON_BASE = (document.querySelector('link[rel=icon]') || {}).href || '';
+let alertPrevWaiting = null;
+
+function soundEnabled() { return localStorage.getItem('op_sound') !== '0'; }
+
+function beep() {
+  if (!soundEnabled()) return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(880, ctx.currentTime);
+    o.frequency.setValueAtTime(660, ctx.currentTime + 0.18);
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+    o.start(); o.stop(ctx.currentTime + 0.55);
+    o.onended = () => ctx.close();
+  } catch (e) { /* звук заблокирован браузером до первого клика — не страшно */ }
+}
+
+function setAlertBadge(n) {
+  document.title = (n > 0 ? `(${n}) ` : '') + 'Панель оператора';
+  const link = document.querySelector('link[rel=icon]');
+  if (!link) return;
+  if (!n) { if (FAVICON_BASE) link.href = FAVICON_BASE; return; }
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const x = c.getContext('2d');
+  x.fillStyle = '#141414';
+  x.beginPath(); x.roundRect(0, 0, 64, 64, 16); x.fill();
+  x.fillStyle = '#ffffff'; x.font = '800 26px Arial'; x.textAlign = 'center';
+  x.fillText('RS', 30, 46);
+  x.fillStyle = '#dc2626';
+  x.beginPath(); x.arc(46, 18, 17, 0, 7); x.fill();
+  x.fillStyle = '#ffffff'; x.font = '800 20px Arial';
+  x.fillText(n > 9 ? '9+' : String(n), 46, 25);
+  link.href = c.toDataURL('image/png');
+}
+
+async function pollAlerts() {
+  if (!S.token || !S.me) return;
+  let s;
+  try { s = await api('/api/ticket-stats/summary'); } catch (e) { return; }
+  const n = s.waiting_now;
+  if (alertPrevWaiting !== null && n > alertPrevWaiting) beep();
+  alertPrevWaiting = n;
+  setAlertBadge(n);
+}
+setInterval(pollAlerts, 15000);
+setTimeout(pollAlerts, 3000);
 
 // тикет ждёт ответа: последнее слово за пользователем, тикет не закрыт
 function ticketAwaiting(t) {
@@ -1710,9 +1772,11 @@ function viewStats() {
   };
   const setBtn = document.getElementById('st-settings');
   if (setBtn) setBtn.onclick = async () => {
-    let cfg, ac;
-    try { [cfg, ac] = await Promise.all([api('/api/stats/settings'), api('/api/stats/autoclose')]); }
-    catch (err) { toast(err.message, 'err'); return; }
+    let cfg, ac, esc2;
+    try {
+      [cfg, ac, esc2] = await Promise.all([
+        api('/api/stats/settings'), api('/api/stats/autoclose'), api('/api/stats/escalation')]);
+    } catch (err) { toast(err.message, 'err'); return; }
     const $m = openModal(`
       <h2>Настройки расчёта зарплаты</h2>
       <form id="act-set">
@@ -1767,6 +1831,19 @@ function viewStats() {
           «Вопрос не решён» (она открывает тикет заново). Неотвеченные тикеты автозакрытие
           не трогает — они остаются в очереди. Закрытия тикетов на баллы и норму не влияют:
           активность считается по ответам, их скорости и оценкам пользователей.</div>
+        <h3 style="margin:16px 0 8px; font-size:15px">Эскалация неотвеченных</h3>
+        <div class="row" style="align-items:center">
+          <div class="field" style="flex:0 0 auto"><label style="display:flex; gap:8px; align-items:center; font-weight:400">
+            <input type="checkbox" name="esc_on" ${esc2.enabled ? 'checked' : ''} style="width:auto"> Включено</label></div>
+          <div class="field"><label>Алерт через, минут</label>
+            <input name="esc_min" type="number" step="5" min="5" max="1440" value="${esc(esc2.minutes)}"></div>
+          <div class="field"><label>Повторять каждые, минут</label>
+            <input name="esc_rep" type="number" step="5" min="10" max="1440" value="${esc(esc2.repeat_minutes)}"></div>
+        </div>
+        <div class="muted" style="font-size:12px; margin-bottom:12px">
+          Если обращение ждёт ответа дольше указанного времени (считается только рабочее окно
+          поддержки — ночь не в счёт), в общий раздел саппорт-чата уходит алерт со списком
+          тикетов. Пока не ответят — алерт повторяется. Ответ оператора сбрасывает отсчёт.</div>
         <div class="modal-actions">
           <button type="button" class="btn btn-ghost" onclick="closeModal()">Отмена</button>
           <button type="submit" class="btn">Сохранить</button>
@@ -1793,6 +1870,11 @@ function viewStats() {
         await api('/api/stats/autoclose', { method: 'PUT', body: {
           enabled: f.ac_on.checked,
           hours: parseFloat(f.ac_hours.value) || 24,
+        }});
+        await api('/api/stats/escalation', { method: 'PUT', body: {
+          enabled: f.esc_on.checked,
+          minutes: parseFloat(f.esc_min.value) || 15,
+          repeat_minutes: parseFloat(f.esc_rep.value) || 30,
         }});
         closeModal();
         toast('Сохранено ✓');

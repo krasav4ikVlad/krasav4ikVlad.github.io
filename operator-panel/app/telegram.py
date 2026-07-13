@@ -70,6 +70,16 @@ class TelegramClient:
             payload["reply_markup"] = reply_markup
         await self._call("sendMessage", payload)
 
+    async def send_to_chat(self, text: str) -> None:
+        """Сообщение в общий раздел саппорт-чата (вне тредов) — для алертов."""
+        if not self.support_chat_id:
+            raise TelegramError("Не задан SUPPORT_CHAT_ID")
+        await self._call("sendMessage", {
+            "chat_id": self.support_chat_id,
+            "text": text, "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        })
+
     async def send_to_thread(self, thread_id: int, text: str) -> None:
         if not self.support_chat_id:
             raise TelegramError("Не задан SUPPORT_CHAT_ID")

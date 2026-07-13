@@ -115,6 +115,26 @@ async def put_activity_settings(body: ActivitySettings, _owner: OwnerOperator):
     return await _load_act_settings()
 
 
+class EscalationSettings(BaseModel):
+    enabled: bool
+    minutes: float = Field(ge=5, le=1440)
+    repeat_minutes: float = Field(ge=10, le=1440)
+
+
+@router.get("/escalation")
+async def get_escalation_settings(_op: CurrentOperator):
+    from ..escalation import load_escalation_settings
+    return await load_escalation_settings()
+
+
+@router.put("/escalation")
+async def put_escalation_settings(body: EscalationSettings, _owner: OwnerOperator):
+    await get_db()["panel_settings"].update_one(
+        {"_id": "escalation"}, {"$set": body.model_dump()}, upsert=True)
+    from ..escalation import load_escalation_settings
+    return await load_escalation_settings()
+
+
 class AutocloseSettings(BaseModel):
     enabled: bool
     hours: float = Field(ge=1, le=720)  # от часа до 30 дней

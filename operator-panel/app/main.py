@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .autoclose import autoclose_loop
+from .escalation import escalation_loop
 from .config import get_settings
 from .database import close_client, ensure_indexes
 from .routers import (actions, audit_log, auth, operators, quick_replies, stats,
@@ -41,11 +42,14 @@ async def lifespan(_app: FastAPI):
     if not (settings.remnawave_base_url and settings.remnawave_token):
         log.warning("Remnawave API is NOT configured — subscription changes will require force_local")
     log.info("Operator panel started (db=%s)", settings.mongo_db)
-    autoclose_task = asyncio.create_task(autoclose_loop())
+    bg_tasks = [asyncio.create_task(autoclose_loop()),
+                asyncio.create_task(escalation_loop())]
     yield
-    autoclose_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await autoclose_task
+    for t in bg_tasks:
+        t.cancel()
+    for t in bg_tasks:
+        with contextlib.suppress(asyncio.CancelledError):
+            await t
     await close_client()
 
 
