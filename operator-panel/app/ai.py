@@ -15,7 +15,9 @@
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 
 try:
     import anthropic
@@ -175,6 +177,89 @@ def _dialog_to_text(messages: list[dict]) -> str:
         if text:
             lines.append(f"{who}: {text[:600]}")
     return "\n".join(lines) or "(сообщений пока нет)"
+
+
+def _ai_error_from(e: Exception) -> AIError:
+    """Единая расшифровка ошибок Anthropic API в понятный оператору текст."""
+    if isinstance(e, anthropic.AuthenticationError):
+        return AIError("Неверный ANTHROPIC_API_KEY", 503)
+    if isinstance(e, anthropic.RateLimitError):
+        return AIError("ИИ перегружен (rate limit) — попробуйте через минуту")
+    if isinstance(e, anthropic.APIStatusError):
+        detail = ""
+        try:
+            detail = (e.body or {}).get("error", {}).get("message", "")[:200]
+        except Exception:
+            pass
+        hint = ""
+        if e.status_code == 403:
+            hint = (" — похоже, api.anthropic.com недоступен из региона сервера; "
+                    "укажите AI_PROXY_URL в .env (http/socks5 прокси)")
+        elif e.status_code == 404:
+            hint = " — проверьте AI_MODEL в .env"
+        return AIError(f"Ошибка ИИ-сервиса ({e.status_code})"
+                       + (f": {detail}" if detail else "") + hint)
+    if isinstance(e, anthropic.APIConnectionError):
+        return AIError(
+            f"Нет соединения с ИИ-сервисом: {str(e)[:150]} — если сервер в регионе "
+            "без прямого доступа к api.anthropic.com, укажите AI_PROXY_URL в .env")
+    return AIError(f"Ошибка ИИ: {str(e)[:200]}")
+
+
+TOPICS_SYSTEM = """Ты — аналитик службы поддержки VPN-сервиса RS VPN.
+Тебе дан пронумерованный список первых сообщений из обращений пользователей.
+
+Сгруппируй обращения по темам (от 4 до 9 тем; мелкие и непонятные объединяй
+в тему «Другое»). Для каждой темы коротко объясни, в чём именно проблема
+пользователей и что они чаще всего просят — так, чтобы владелец сервиса понял
+суть без чтения самих тикетов.
+
+Верни СТРОГО JSON без пояснений и без markdown-ограждений:
+{"topics": [{"name": "короткое название темы",
+             "count": число_обращений_в_теме,
+             "summary": "1-2 предложения: суть проблемы и чего хотят пользователи",
+             "examples": [номера, 2-3 характерных сообщений]}]}
+Сумма count по всем темам должна равняться количеству сообщений в списке.
+Темы отсортируй по count по убыванию. Пиши по-русски."""
+
+
+async def analyze_ticket_topics(snippets: list[str]) -> dict:
+    """Группирует первые сообщения обращений по темам. Возвращает {"topics": [...]}."""
+    settings = get_settings()
+    client = _get_client()
+    numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(snippets))
+
+    async def _call(extra: dict):
+        return await client.messages.create(
+            model=settings.ai_model,
+            max_tokens=2000,
+            system=[{"type": "text", "text": TOPICS_SYSTEM}],
+            messages=[{"role": "user",
+                       "content": f"Всего сообщений: {len(snippets)}\n\n{numbered}"}],
+            **extra,
+        )
+
+    try:
+        try:
+            response = await _call({"output_config": {"effort": settings.ai_effort}})
+        except TypeError:
+            response = await _call({})
+    except anthropic.APIError as e:
+        raise _ai_error_from(e)
+
+    if response.stop_reason == "refusal":
+        raise AIError("ИИ отказался анализировать эти сообщения")
+    text = "".join(b.text for b in response.content if b.type == "text").strip()
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        raise AIError("ИИ вернул ответ не в формате JSON — попробуйте ещё раз")
+    try:
+        data = json.loads(m.group(0))
+    except ValueError:
+        raise AIError("Не удалось разобрать JSON от ИИ — попробуйте ещё раз")
+    if not isinstance(data.get("topics"), list) or not data["topics"]:
+        raise AIError("ИИ не выделил ни одной темы — попробуйте другой период")
+    return data
 
 
 async def suggest_reply(user_id: int) -> str:

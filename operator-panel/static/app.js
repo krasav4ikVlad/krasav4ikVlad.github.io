@@ -2252,6 +2252,224 @@ function showTempPasswordModal(login, tempPassword, title) {
   };
 }
 
+// ================================================================ ticket analytics view (owner)
+
+const DOW_RU = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+
+function vizTip() {
+  let t = document.getElementById('viz-tip');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'viz-tip';
+    document.body.appendChild(t);
+  }
+  return t;
+}
+
+function bindVizTips(root) {
+  const tip = vizTip();
+  root.querySelectorAll('[data-tip]').forEach(el => {
+    el.addEventListener('mouseenter', () => { tip.textContent = el.dataset.tip; tip.style.display = 'block'; });
+    el.addEventListener('mousemove', e => {
+      tip.style.left = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8) + 'px';
+      tip.style.top = (e.clientY + 16) + 'px';
+    });
+    el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  });
+}
+
+function viewTicketStats() {
+  if (!S.me || S.me.role !== 'owner') { location.hash = '#/search'; return; }
+  const st = S.tst || (S.tst = {
+    from: isoDate(new Date(Date.now() - 6 * 86400000)),
+    to: isoDate(new Date()),
+  });
+
+  $view.innerHTML = `
+    <h1>Аналитика тикетов</h1>
+    <div class="card">
+      <div class="filter-bar" style="align-items:center">
+        <button class="btn btn-ghost btn-sm" data-preset="7d">7 дней</button>
+        <button class="btn btn-ghost btn-sm" data-preset="30d">30 дней</button>
+        <button class="btn btn-ghost btn-sm" data-preset="month">Этот месяц</button>
+        <input type="date" name="ts-from" value="${esc(st.from)}" style="flex:0 1 150px">
+        <input type="date" name="ts-to" value="${esc(st.to)}" style="flex:0 1 150px">
+        <button class="btn btn-sm" id="ts-apply">Показать</button>
+      </div>
+      <div id="ts-summary" class="stats-grid" style="margin:14px 0 0"></div>
+    </div>
+    <div class="card">
+      <h2>Когда приходят обращения</h2>
+      <div class="muted" style="font-size:12.5px; margin-bottom:10px" id="ts-heat-sub"></div>
+      <div id="ts-heat">${spinnerHtml()}</div>
+    </div>
+    <div class="card">
+      <h2>По дням</h2>
+      <div id="ts-days"></div>
+    </div>
+    <div class="card">
+      <h2>Кто пишет</h2>
+      <div class="muted" style="font-size:12.5px; margin-bottom:6px">
+        Тип пользователя — по сегментации основного бота (подписка, платежи, возраст аккаунта).</div>
+      <div id="ts-types"></div>
+    </div>
+    <div class="card">
+      <h2>Темы обращений (ИИ)</h2>
+      <div class="muted" style="font-size:12.5px; margin-bottom:10px">
+        Модель читает первые сообщения обращений периода, группирует их по темам и
+        коротко описывает, в чём проблема. Результат сохраняется — повторный просмотр бесплатный.</div>
+      <div id="ts-topics"></div>
+    </div>`;
+
+  const setPreset = (preset) => {
+    const now = new Date();
+    if (preset === '7d') { st.from = isoDate(new Date(now - 6 * 86400000)); st.to = isoDate(now); }
+    else if (preset === '30d') { st.from = isoDate(new Date(now - 29 * 86400000)); st.to = isoDate(now); }
+    else if (preset === 'month') {
+      st.from = isoDate(new Date(now.getFullYear(), now.getMonth(), 1)); st.to = isoDate(now);
+    }
+    document.querySelector('[name=ts-from]').value = st.from;
+    document.querySelector('[name=ts-to]').value = st.to;
+    load();
+  };
+  document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => setPreset(b.dataset.preset));
+  document.getElementById('ts-apply').onclick = () => {
+    st.from = document.querySelector('[name=ts-from]').value;
+    st.to = document.querySelector('[name=ts-to]').value;
+    if (!st.from || !st.to) { toast('Выберите обе даты', 'err'); return; }
+    load();
+  };
+
+  const seqVar = bin => `var(--seq-${bin})`;
+  const heatBin = (v, max) => v === 0 ? 0 : Math.max(1, Math.ceil(Math.sqrt(v / max) * 6));
+
+  const renderHeat = (data) => {
+    const heat = data.heatmap;
+    const max = Math.max(1, ...heat.flat());
+    document.getElementById('ts-heat-sub').textContent =
+      `Начала обращений по дням недели и часам, локальное время UTC+${data.tz_offset_hours}. Чем темнее — тем больше.`;
+    let html = '<div class="heat-wrap"><div class="heat-grid"><div></div>';
+    for (let h = 0; h < 24; h++) html += `<div class="hl">${h}</div>`;
+    for (let d = 0; d < 7; d++) {
+      html += `<div class="hl">${DOW_RU[d]}</div>`;
+      for (let h = 0; h < 24; h++) {
+        const v = heat[d][h];
+        const bin = heatBin(v, max);
+        html += `<div class="heat-cell" ${bin ? `style="background:${seqVar(bin)}; border-color:transparent"` : ''}
+          data-tip="${DOW_RU[d]}, ${h}:00–${h + 1}:00 — ${v} обращ."></div>`;
+      }
+    }
+    html += '</div></div>';
+    html += `<div class="heat-legend">0 <i style="background:var(--card-2); border:1px solid var(--border)"></i>`;
+    for (let b = 1; b <= 6; b++) html += `<i style="background:${seqVar(b)}"></i>`;
+    html += ` ${max} обращ./час</div>`;
+    document.getElementById('ts-heat').innerHTML = html;
+    bindVizTips(document.getElementById('ts-heat'));
+  };
+
+  const renderDays = (data) => {
+    const days = data.by_date;
+    const max = Math.max(1, ...days.map(d => d.count));
+    document.getElementById('ts-days').innerHTML =
+      `<div class="day-bars">${days.map(d => {
+        const dt = new Date(d.date + 'T00:00:00');
+        return `<div class="db" style="height:${Math.max(3, d.count / max * 100)}%"
+          data-tip="${DOW_RU[(dt.getDay() + 6) % 7]} ${dt.toLocaleDateString('ru-RU')} — ${d.count} обращ."></div>`;
+      }).join('')}</div>
+      <div class="muted" style="font-size:11.5px; margin-top:6px">
+        ${new Date(days[0].date + 'T00:00:00').toLocaleDateString('ru-RU')} —
+        ${new Date(days[days.length - 1].date + 'T00:00:00').toLocaleDateString('ru-RU')},
+        пик ${max} обращ./день</div>`;
+    bindVizTips(document.getElementById('ts-days'));
+  };
+
+  const renderTypes = (data) => {
+    const types = [...data.user_types].sort((a, b) => b.appeals - a.appeals);
+    const max = Math.max(1, ...types.map(t => t.appeals));
+    const total = types.reduce((s, t) => s + t.appeals, 0) || 1;
+    document.getElementById('ts-types').innerHTML = types.length ? types.map(t => `
+      <div class="tbar-row">
+        <div class="tb-label">${esc(t.type)}</div>
+        <div class="tbar-track">
+          <div class="tbar" style="width:${Math.max(1, t.appeals / max * 100)}%"></div>
+          <div class="tbar-val">${fmtNum(t.appeals)} обращ. (${Math.round(t.appeals / total * 100)}%) · ${fmtNum(t.users)} чел.</div>
+        </div>
+      </div>`).join('')
+      : '<div class="center">Нет данных</div>';
+  };
+
+  const renderTopics = (report, cached) => {
+    const $t = document.getElementById('ts-topics');
+    if (!report) {
+      $t.innerHTML = `<button class="btn" id="ts-topics-run">Проанализировать темы</button>
+        <span class="muted" style="font-size:12.5px; margin-left:10px">займёт до минуты</span>`;
+    } else {
+      const created = report.created_at ? new Date(report.created_at).toLocaleString('ru-RU') : '';
+      $t.innerHTML = `
+        <div class="muted" style="font-size:12px; margin-bottom:4px">
+          Анализ от ${esc(created)} · выборка ${report.analyzed} из ${report.total} обращений
+          ${cached ? '· из кэша' : ''}</div>
+        ${report.topics.map(t => `
+          <div class="topic-item">
+            <div class="topic-head"><b>${esc(t.name)}</b>
+              <span class="muted" style="font-size:12.5px">${t.count} обращ. · ${t.share}%</span></div>
+            <div style="font-size:13.5px; margin-top:4px">${esc(t.summary)}</div>
+            ${t.examples && t.examples.length
+              ? `<div class="topic-ex">${t.examples.map(e => '«' + esc(e) + '»').join(' · ')}</div>` : ''}
+          </div>`).join('')}
+        <button class="btn btn-ghost btn-sm" id="ts-topics-run" style="margin-top:10px">Обновить анализ</button>`;
+    }
+    const btn = document.getElementById('ts-topics-run');
+    if (btn) btn.onclick = async () => {
+      btn.disabled = true;
+      $t.insertAdjacentHTML('beforeend',
+        `<div id="ts-topics-wait" class="muted" style="margin-top:8px; font-size:12.5px">
+          <span class="spinner"></span> ИИ читает обращения…</div>`);
+      try {
+        const res = await api(`/api/ticket-stats/topics?date_from=${st.from}&date_to=${st.to}&force=true`,
+          { method: 'POST' });
+        renderTopics(res.report, false);
+      } catch (err) {
+        document.getElementById('ts-topics-wait')?.remove();
+        btn.disabled = false;
+        toast(err.message, 'err');
+      }
+    };
+  };
+
+  const load = async () => {
+    ['ts-heat', 'ts-days', 'ts-types', 'ts-topics'].forEach(id =>
+      document.getElementById(id).innerHTML = spinnerHtml());
+    let data;
+    try {
+      data = await api(`/api/ticket-stats?date_from=${st.from}&date_to=${st.to}`);
+    } catch (err) {
+      document.getElementById('ts-heat').innerHTML = `<div class="error-note">${esc(err.message)}</div>`;
+      ['ts-days', 'ts-types', 'ts-topics'].forEach(id => document.getElementById(id).innerHTML = '');
+      return;
+    }
+    const t = data.totals;
+    const peak = t.peak
+      ? `${DOW_RU[t.peak.dow]} ${t.peak.hour}:00 (${t.peak.count})` : '—';
+    document.getElementById('ts-summary').innerHTML = `
+      <div class="stat"><div class="stat-label">Обращений</div><div class="stat-value">${fmtNum(t.appeals)}</div></div>
+      <div class="stat"><div class="stat-label">Пользователей</div><div class="stat-value">${fmtNum(t.users)}</div></div>
+      <div class="stat"><div class="stat-label">Сообщений</div><div class="stat-value">${fmtNum(t.messages)}</div></div>
+      <div class="stat"><div class="stat-label">Пик</div><div class="stat-value" style="font-size:20px">${peak}</div></div>`;
+    renderHeat(data);
+    renderDays(data);
+    renderTypes(data);
+    try {
+      const cached = await api(`/api/ticket-stats/topics?date_from=${st.from}&date_to=${st.to}`);
+      renderTopics(cached.report, cached.cached);
+    } catch (err) {
+      document.getElementById('ts-topics').innerHTML = `<div class="error-note">${esc(err.message)}</div>`;
+    }
+  };
+
+  load();
+}
+
 // ================================================================ help view (мануал для операторов)
 
 function viewHelp() {
@@ -2699,6 +2917,7 @@ async function render() {
   if (ticketMatch) { setNav('tickets'); viewTicket(parseInt(ticketMatch[1], 10)); return; }
   if (hash.startsWith('#/tickets')) { setNav('tickets'); viewTickets(); return; }
   if (hash.startsWith('#/stats')) { setNav('stats'); viewStats(); return; }
+  if (hash.startsWith('#/tstats')) { setNav('tstats'); viewTicketStats(); return; }
   if (hash.startsWith('#/help')) { setNav('help'); viewHelp(); return; }
   if (hash.startsWith('#/bot')) { setNav('bot'); viewBotHelp(); return; }
   if (hash.startsWith('#/audit')) { setNav('audit'); viewAudit(); return; }
