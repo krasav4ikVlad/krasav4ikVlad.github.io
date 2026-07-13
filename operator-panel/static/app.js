@@ -865,6 +865,11 @@ async function loadTicketSummary() {
       <div class="stat-value"${s.today.unanswered ? ' style="color:var(--red)"' : ''}>${fmtNum(s.today.unanswered)}</div></div>`;
 }
 
+// тикет ждёт ответа: последнее слово за пользователем, тикет не закрыт
+function ticketAwaiting(t) {
+  return t.status !== 'closed' && t.last_message && t.last_message.direction === 'user';
+}
+
 const TK_SORT_LABELS = [
   ['status', 'Статус'],
   ['user', 'Пользователь'],
@@ -897,7 +902,8 @@ async function loadTickets(silent = false) {
   $list.innerHTML = data.items.length ? `<div class="table-wrap"><table>
     <tr>${ths}<th>Последнее сообщение</th></tr>
     ${data.items.map(t => `
-      <tr style="cursor:pointer" onclick="location.hash='#/ticket/${t.user_id}'">
+      <tr style="cursor:pointer" class="${ticketAwaiting(t) ? 'tk-unanswered' : ''}"
+          onclick="location.hash='#/ticket/${t.user_id}'">
         <td>${ticketBadge(t.status)}</td>
         <td>${esc(t.first_name || '—')} ${t.username ? '<span class="muted">@' + esc(t.username) + '</span>' : ''}
           <div class="mono muted" style="font-size:11.5px">${esc(t.user_id)}</div></td>
@@ -1268,7 +1274,8 @@ async function loadSideTickets(activeUserId) {
   const dot = st => `<span class="side-dot side-dot-${esc(st)}"></span>`;
 
   $list.innerHTML = data.items.length ? data.items.map(m => `
-    <div class="side-row ${m.user_id === activeUserId ? 'active' : ''}" data-uid="${esc(m.user_id)}">
+    <div class="side-row ${m.user_id === activeUserId ? 'active' : ''} ${ticketAwaiting(m) ? 'tk-unanswered' : ''}"
+         data-uid="${esc(m.user_id)}">
       <div class="side-row-top">
         ${dot(m.status)}
         <span class="side-name">${esc(m.first_name || '—')}${m.username ? ' <span class="muted">@' + esc(m.username) + '</span>' : ''}</span>
