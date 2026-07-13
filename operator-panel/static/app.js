@@ -1813,7 +1813,7 @@ async function viewAudit(page = 1) {
       <h1>Аудит-лог операторов</h1>
       <div class="card">
         <div class="filter-bar" id="audit-filters">
-          <input name="a-op" placeholder="Логин оператора">
+          <select name="a-op"><option value="">Все операторы</option></select>
           <input name="a-uid" type="number" placeholder="user_id">
           <select name="a-action"><option value="">Все действия</option></select>
           <input name="a-from" type="date">
@@ -1823,12 +1823,21 @@ async function viewAudit(page = 1) {
         <div id="audit-list"></div>
       </div>`;
     try {
-      const acts = await api('/api/audit/actions');
+      const [acts, ops] = await Promise.all([api('/api/audit/actions'), api('/api/operators')]);
       const sel = document.querySelector('[name=a-action]');
       acts.actions.forEach(a => {
         const o = document.createElement('option');
         o.value = a; o.textContent = actionLabel(a);
         sel.appendChild(o);
+      });
+      // зарегистрированные операторы (включая отключённых — их история важна)
+      const selOp = document.querySelector('[name=a-op]');
+      ops.forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o.login;
+        opt.textContent = (o.name && o.name !== o.login ? `${o.name} (${o.login})` : o.login)
+          + (o.active ? '' : ' — отключён');
+        selOp.appendChild(opt);
       });
     } catch (e) { /* non-fatal */ }
   }
