@@ -1515,6 +1515,53 @@ function viewStats() {
       <div class="muted" id="st-formula" style="font-size:12.5px; margin-top:12px"></div>
     </div>`;
 
+  // расшифровка расчёта для владельца: за что баллы и как вышли норма/коэфф/выплата
+  const breakdownHtml = (r, data) => {
+    const p = data.points;
+    const a = data.settings || {};
+    const replyPts = r.replies * p.reply;
+    const fastPts = r.fast * p.fast;
+    const ratingPts = r.score - replyPts - fastPts; // остаток — ровно вклад оценок
+    const sign = v => (v > 0 ? '+' : '') + fmtNum(v);
+    const modeTxt = a.norm_mode === 'manual' ? 'задана вручную'
+      : a.norm_mode === 'team_avg' ? 'средний темп команды' : 'по нагрузке периода';
+
+    const lines = [];
+    lines.push(`<b>Баллы — ${fmtNum(r.score)}</b>`);
+    lines.push(`ответы: ${r.replies} × ${p.reply} = ${fmtNum(replyPts)}`);
+    lines.push(`быстрые первые ответы (≤${p.fast_threshold_min} мин): ${r.fast} × ${p.fast} = ${fmtNum(fastPts)}`);
+    lines.push(r.rating_count
+      ? `оценки: ${r.rating_count} шт., средняя ★${r.rating_avg} → ${sign(ratingPts)} (каждая даёт ±${p.rating_step}×(звёзды−3))`
+      : 'оценки: не было → 0');
+    lines.push(`закрыто тикетов: ${r.closes} — справочно, баллов не даёт`);
+
+    if (r.norm_points) {
+      lines.push(`<b>Норма — ${fmtNum(r.norm_points)}</b>: ${data.norm_used} баллов/час (${modeTxt}) × ${r.hours_period ?? '?'} ч оператора за период`);
+    } else if (r.coeff != null) {
+      lines.push('<b>Норма</b>: нагрузки в периоде не было — коэффициент 1.0, простой не в минус');
+    } else {
+      lines.push('<b>Норма</b>: не считается — у оператора нет часов в графике за этот период');
+    }
+
+    if (r.coeff != null && r.norm_points) {
+      const raw = r.score / r.norm_points;
+      lines.push(`<b>Коэффициент — ×${r.coeff.toFixed(2)}</b>: ${fmtNum(r.score)} ÷ ${fmtNum(r.norm_points)} = ${raw.toFixed(2)}`
+        + (r.coeff.toFixed(2) !== raw.toFixed(2) ? `, зажат в пределы ×${a.coeff_min}–×${a.coeff_max}` : ''));
+    } else if (r.coeff != null) {
+      lines.push(`<b>Коэффициент — ×${r.coeff.toFixed(2)}</b>`);
+    }
+
+    if ('salary_base' in r) {
+      if (r.payout != null) {
+        lines.push(`<b>К выплате — ${fmtNum(r.payout)} ₽</b>: оклад ${fmtNum(r.salary_base)} ₽/мес × ${r.coeff.toFixed(2)} × ${data.days} дн ÷ 30.44 (доля месяца)`);
+      } else {
+        lines.push(`<b>К выплате</b>: ${r.salary_base ? 'коэффициент не посчитан' : 'оклад не задан в карточке оператора'}`);
+      }
+    }
+    if (r.schedule) lines.push(`<span class="muted">График: ${esc(scheduleSummary(r.schedule))}</span>`);
+    return lines.join('<br>');
+  };
+
   const load = async () => {
     const $t = document.getElementById('st-table');
     $t.innerHTML = spinnerHtml();
@@ -1545,7 +1592,7 @@ function viewStats() {
         <th>Ответы</th><th>Тикетов</th><th>Закрыто</th>
         <th>Скорость (медиана)</th><th>Быстрых ≤${data.points.fast_threshold_min} мин</th><th>Оценка</th><th>График</th></tr>
       ${rows.map((r, i) => `
-        <tr class="${r.login === S.me.login ? 'st-me' : ''}">
+        <tr class="${r.login === S.me.login ? 'st-me' : ''}" data-i="${i}">
           <td>${i === 0 ? '🏆' : i + 1}</td>
           <td>${esc(r.name)} <span class="muted mono" style="font-size:11px">${esc(r.login)}</span></td>
           <td><b>${fmtNum(r.score)}</b>${r.norm_points ? `<span class="muted" style="font-size:11px"> / ${fmtNum(r.norm_points)}</span>` : ''}</td>
@@ -1561,6 +1608,23 @@ function viewStats() {
         </tr>`).join('')}
     </table></div>`
       : '<div class="center">За выбранный период активности нет</div>';
+
+    // владелец может раскрыть оператора и увидеть, за что и как посчиталось
+    if (S.me.role === 'owner') {
+      $t.querySelectorAll('tr[data-i]').forEach(tr => {
+        tr.classList.add('st-click');
+        tr.title = 'Нажмите, чтобы увидеть расчёт';
+        tr.onclick = () => {
+          const next = tr.nextElementSibling;
+          const wasOpen = next && next.classList.contains('st-detail');
+          $t.querySelectorAll('.st-detail').forEach(x => x.remove());
+          if (wasOpen) return;
+          const r = rows[parseInt(tr.dataset.i, 10)];
+          tr.insertAdjacentHTML('afterend',
+            `<tr class="st-detail"><td colspan="${tr.children.length}">${breakdownHtml(r, data)}</td></tr>`);
+        };
+      });
+    }
 
     // раздутые часы у одного оператора съедают норму всей команды — подсветим
     if (S.me.role === 'owner') {

@@ -508,3 +508,11 @@ tr.st-me td:first-child { border-left: 3px solid var(--blue); }
 .diagram img.dia-dark { display: none; }
 :root[data-theme="dark"] .diagram img.dia-light { display: none; }
 :root[data-theme="dark"] .diagram img.dia-dark { display: block; }
+
+/* --- раскрытие расчёта на «Активности» (владелец) --- */
+tr.st-click { cursor: pointer; }
+.st-detail td {
+  background: rgba(127,127,127,.07);
+  font-size: 12.5px; line-height: 1.7; padding: 12px 14px;
+}
+.st-detail:hover td { background: rgba(127,127,127,.07); }
