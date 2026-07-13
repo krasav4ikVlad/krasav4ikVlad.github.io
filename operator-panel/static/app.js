@@ -2347,7 +2347,7 @@ function viewTicketStats() {
     const heat = data.heatmap;
     const max = Math.max(1, ...heat.flat());
     document.getElementById('ts-heat-sub').textContent =
-      `Начала обращений по дням недели и часам, локальное время UTC+${data.tz_offset_hours}. Чем темнее — тем больше.`;
+      `Начала обращений по дням недели и часам, локальное время UTC+${data.tz_offset_hours}. Зелёный — мало, красный — много.`;
     let html = '<div class="heat-wrap"><div class="heat-grid"><div></div>';
     for (let h = 0; h < 24; h++) html += `<div class="hl">${h}</div>`;
     for (let d = 0; d < 7; d++) {

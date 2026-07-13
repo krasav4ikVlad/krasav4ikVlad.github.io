@@ -519,13 +519,16 @@ tr.st-click { cursor: pointer; }
 
 /* --- аналитика тикетов: тепловая карта и бары (секв. шкала из синего) --- */
 :root {
-  --seq-1: #cde2fb; --seq-2: #9ec5f4; --seq-3: #6da7ec;
-  --seq-4: #3987e5; --seq-5: #256abf; --seq-6: #104281;
+  /* тепловая карта: зелёный (мало) -> жёлтый -> красный (много);
+     яркость монотонно падает с ростом значения — читается и в ч/б */
+  --seq-1: #d8eecd; --seq-2: #a3d789; --seq-3: #e0cd5d;
+  --seq-4: #f0a73b; --seq-5: #e56636; --seq-6: #c22f2f;
   --viz-accent: #2a78d6;
 }
 :root[data-theme="dark"] {
-  --seq-1: #1d3054; --seq-2: #164a86; --seq-3: #1c5cab;
-  --seq-4: #2a78d6; --seq-5: #5598e7; --seq-6: #9ec5f4;
+  /* на тёмном фоне: чем больше, тем ярче и «горячее» */
+  --seq-1: #2c4a2c; --seq-2: #40763a; --seq-3: #94822a;
+  --seq-4: #bd7422; --seq-5: #d5512e; --seq-6: #ef5a5a;
   --viz-accent: #3987e5;
 }
 .heat-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
