@@ -13,6 +13,7 @@ repeat_minutes; ответ оператора сбрасывает состоя�
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -130,7 +131,8 @@ async def escalation_pass() -> dict:
     async for u in users.find(
             {"user_data.user_id": {"$in": uids}},
             {"user_data.user_id": 1, "user_data.username": 1,
-             "user_data.first_name": 1, "info.support.status": 1}):
+             "user_data.first_name": 1, "info.support.status": 1,
+             "info.support.thread_id": 1}):
         infos[(u.get("user_data") or {}).get("user_id")] = u
     due = [d for d in due
            if ((infos.get(d["uid"], {}).get("info") or {}).get("support") or {})
@@ -139,15 +141,24 @@ async def escalation_pass() -> dict:
         return {"enabled": True, "alerted": 0}
 
     due.sort(key=lambda d: -d["waited_min"])
-    base = (settings.panel_public_url or "").rstrip("/")
+    # ссылка на тред тикета в этом же чате: t.me/c/<id без -100>/<thread_id>
+    chat_s = str(settings.support_chat_id or "")
+    chat_base = f"https://t.me/c/{chat_s[4:]}" if chat_s.startswith("-100") else ""
+    panel_base = (settings.panel_public_url or "").rstrip("/")
     lines = [f"⚠️ <b>Тикеты ждут ответа дольше {cfg['minutes']:g} мин:</b>"]
     for d in due[:20]:
-        ud = (infos.get(d["uid"], {}).get("user_data") or {})
-        name = ud.get("first_name") or ""
-        uname = f" @{ud['username']}" if ud.get("username") else ""
-        link = f"\n   {base}/#/ticket/{d['uid']}" if base else ""
+        doc = infos.get(d["uid"], {})
+        ud = doc.get("user_data") or {}
+        thread_id = ((doc.get("info") or {}).get("support") or {}).get("thread_id")
+        name = html.escape(ud.get("first_name") or "")
+        uname = f" @{html.escape(ud['username'])}" if ud.get("username") else ""
+        label = f"#{d['uid']} {name}{uname}".strip()
+        if chat_base and thread_id:  # текст тикета — сразу ссылка в его тред
+            label = f'<a href="{chat_base}/{thread_id}">{label}</a>'
+        panel = (f' · <a href="{panel_base}/#/ticket/{d["uid"]}">панель</a>'
+                 if panel_base else "")
         again = " (повторно!)" if d["repeat"] else ""
-        lines.append(f"• #{d['uid']} {name}{uname} — {d['waited_min']} мин{again}{link}")
+        lines.append(f"• {label} — {d['waited_min']} мин{again}{panel}")
     if len(due) > 20:
         lines.append(f"… и ещё {len(due) - 20}")
 
