@@ -1066,6 +1066,9 @@ async function viewTicket(userId) {
       </div>
       <div class="actions-bar">
         <a class="btn btn-ghost" href="#/user/${t.user_id}">Карточка пользователя</a>
+        ${t.tg_thread_url
+          ? `<a class="btn btn-ghost" href="${esc(t.tg_thread_url)}" target="_blank" rel="noopener"
+               title="Открыть тред этого тикета в саппорт-чате Telegram">Тред в Telegram</a>` : ''}
         ${can('tickets') && t.status !== 'closed'
           ? '<button class="btn btn-danger" id="tk-close">Закрыть тикет</button>' : ''}
         <button class="btn btn-ghost" id="tk-refresh">Обновить</button>

@@ -48,12 +48,18 @@ def _esc(s: str) -> str:
 def _ticket_brief(doc: dict) -> dict:
     ud = doc.get("user_data") or {}
     support = ((doc.get("info") or {}).get("support")) or {}
+    thread_id = support.get("thread_id")
+    # прямая ссылка на тред тикета в саппорт-чате (t.me/c/<id без -100>/<thread>)
+    chat_s = str(get_settings().support_chat_id or "")
+    tg_url = (f"https://t.me/c/{chat_s[4:]}/{thread_id}"
+              if thread_id and chat_s.startswith("-100") else None)
     return {
         "user_id": ud.get("user_id"),
         "username": ud.get("username"),
         "first_name": ud.get("first_name"),
         "status": (support.get("status") or "pending").lower(),
-        "thread_id": support.get("thread_id"),
+        "thread_id": thread_id,
+        "tg_thread_url": tg_url,
         "pending_at": jsonable(support.get("pending_at")),
     }
 
