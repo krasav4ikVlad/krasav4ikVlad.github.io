@@ -1054,7 +1054,7 @@ async function viewTicket(userId) {
           <div style="display:flex; gap:8px; flex-wrap:wrap">
             <button class="btn btn-ghost" type="button" id="tk-attach">Прикрепить фото</button>
             <button class="btn btn-ghost" type="button" id="tk-quick">Быстрые ответы</button>
-            <button class="btn btn-ghost" type="button" id="tk-ai">Ещё вариант ИИ</button>
+            <button class="btn btn-ghost" type="button" id="tk-ai">Ответ ИИ</button>
           </div>
           <button class="btn" type="submit">Отправить</button>
         </div>
@@ -1188,32 +1188,22 @@ async function viewTicket(userId) {
       else aiStatus.classList.add('hidden');
     };
 
-    const generateAiDraft = async (auto = false) => {
-      if (auto && S.aiDisabled) return; // авто не дёргаем, но ручной клик пробует снова
+    // черновик ИИ готовится ТОЛЬКО по кнопке — при открытии тикета ничего
+    // не генерируется само (не тратим токены и не дёргаем поле ввода)
+    const generateAiDraft = async () => {
       aiBtn.disabled = true;
       setAiStatus('<span class="spinner"></span> ИИ готовит черновик ответа…');
       try {
         const data = await api(`/api/tickets/${userId}/suggest`, { method: 'POST' });
-        const typed = form.text.value.trim();
-        if (auto && typed && typed !== lastAiDraft) {
-          // оператор уже что-то пишет — не затираем, просто предлагаем
-          setAiStatus('Черновик ИИ готов — нажмите «Ещё вариант ИИ», чтобы вставить его вместо вашего текста');
-          lastAiDraft = data.suggestion;
-          return;
-        }
         form.text.value = data.suggestion;
         lastAiDraft = data.suggestion;
         setAiStatus('Черновик ИИ вставлен в поле — проверьте и поправьте текст перед отправкой');
       } catch (err) {
         if (err.status === 503) {
-          // не настроено на сервере: кнопку НЕ прячем — показываем причину,
-          // авто-генерацию до конца сессии выключаем, ручной клик пробует снова
+          // не настроено на сервере: кнопку НЕ прячем — показываем причину
           S.aiDisabled = err.message || 'ИИ-помощник не настроен на сервере';
           setAiStatus('ИИ-помощник недоступен: ' + esc(S.aiDisabled));
-          if (!auto) toast(err.message, 'err');
-        } else if (auto) {
-          setAiStatus('Не удалось получить черновик ИИ: ' + esc(err.message || '')
-            + ' — можно попробовать кнопкой «Ещё вариант ИИ»');
+          toast(err.message, 'err');
         } else {
           setAiStatus('');
           toast(err.message, 'err');
@@ -1228,7 +1218,7 @@ async function viewTicket(userId) {
       if (typed && typed !== lastAiDraft
           && !confirm('Заменить текст в поле новым черновиком ИИ?')) return;
       S.aiDisabled = null; // вдруг на сервере уже починили — пробуем
-      generateAiDraft(false);
+      generateAiDraft();
     };
 
     // ---- быстрые ответы: общие с ботом, вставляются в поле ----
@@ -1242,10 +1232,8 @@ async function viewTicket(userId) {
       form.text.focus();
       return true;
     });
-    // автогенерация при открытии тикета (кроме закрытых);
-    // если сервер уже отвечал «не настроено» — не дёргаем, но подсказываем причину
+    // если сервер уже отвечал «ИИ не настроен» — сразу показываем причину
     if (S.aiDisabled) setAiStatus('ИИ-помощник недоступен: ' + esc(S.aiDisabled));
-    else if (t.status !== 'closed') generateAiDraft(true);
 
     photoInput.onchange = () => {
       const f = photoInput.files[0];
@@ -2674,9 +2662,9 @@ function viewHelp() {
           текст вставляется в поле ответа: его можно поправить перед отправкой. Там же
           «Управлять» — добавить/изменить/выключить заготовку. Помните: активные заготовки —
           это ещё и пункты меню бота, которые видят все пользователи.</li>
-        <li><b>Черновик ИИ</b> — при открытии тикета помощник сам готовит вариант ответа по
-          переписке и базе быстрых ответов и вставляет его в поле. Кнопка «Ещё вариант ИИ»
-          даёт другой вариант. <b>Всегда читайте черновик перед отправкой</b> — ИИ может
+        <li><b>Ответ ИИ</b> — по кнопке помощник готовит черновик ответа по переписке и
+          базе быстрых ответов и вставляет его в поле; повторное нажатие даёт другой
+          вариант. <b>Всегда читайте черновик перед отправкой</b> — ИИ может
           ошибаться; вы отвечаете за то, что уходит пользователю.</li>
         <li><b>Закрыть тикет</b> — статус станет 🔴, пользователь получит просьбу оценить
           работу поддержки (кнопки 1–5), тред будет переименован. Закрывайте тикет, когда
