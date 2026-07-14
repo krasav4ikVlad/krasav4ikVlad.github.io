@@ -830,16 +830,36 @@ function viewTickets() {
           <option value="open" ${tk.status === 'open' ? 'selected' : ''}>🟢 У оператора</option>
           <option value="closed" ${tk.status === 'closed' ? 'selected' : ''}>🔴 Закрытые</option>
         </select>
-        <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--dim); white-space:nowrap">
-          <input type="checkbox" id="tk-sound" style="width:auto" ${soundEnabled() ? 'checked' : ''}>
-          звук новых обращений</label>
-        <span class="muted" style="align-self:center; font-size:12px" id="tk-updated"></span>
+        <form id="tk-search" style="display:flex; gap:8px; flex:1 1 230px; max-width:300px">
+          <input name="uid" type="number" min="1" placeholder="ID пользователя"
+            inputmode="numeric" style="flex:1; min-width:0">
+          <button class="btn btn-sm" type="submit" style="flex:0 0 auto">Найти</button>
+        </form>
+        <button class="btn btn-ghost btn-sm" id="tk-sound" type="button"
+          style="flex:0 0 auto" title="Звуковой сигнал при новом обращении"></button>
+        <span class="muted" style="align-self:center; font-size:12px; margin-left:auto" id="tk-updated"></span>
       </div>
       <div id="tk-list">${spinnerHtml()}</div>
     </div>`;
-  document.getElementById('tk-sound').onchange = e => {
-    localStorage.setItem('op_sound', e.target.checked ? '1' : '0');
-    if (e.target.checked) beep(); // и проверка, что звук работает
+  const soundBtn = document.getElementById('tk-sound');
+  const drawSound = () => soundBtn.textContent = soundEnabled() ? 'Звук: вкл' : 'Звук: выкл';
+  drawSound();
+  soundBtn.onclick = () => {
+    const on = !soundEnabled();
+    localStorage.setItem('op_sound', on ? '1' : '0');
+    drawSound();
+    if (on) beep(); // заодно проверка, что звук работает
+  };
+  document.getElementById('tk-search').onsubmit = async e => {
+    e.preventDefault();
+    const uid = parseInt(e.target.uid.value, 10);
+    if (!uid) { toast('Введите ID пользователя', 'err'); return; }
+    try {
+      await api('/api/tickets/' + uid + '?limit=1');
+      location.hash = '#/ticket/' + uid;
+    } catch (err) {
+      toast(err.status === 404 ? `Тикет пользователя ${uid} не найден` : err.message, 'err');
+    }
   };
   document.getElementById('tk-filter').onchange = e => {
     tk.status = e.target.value;
