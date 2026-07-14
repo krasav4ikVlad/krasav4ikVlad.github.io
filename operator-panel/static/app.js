@@ -1066,7 +1066,7 @@ async function viewTicket(userId) {
       <form id="tk-reply" style="margin-top:14px">
         <div class="field"><label>Ответ пользователю (уйдёт в ЛС и продублируется в тред)</label>
           <textarea name="text" rows="3" maxlength="3500"
-            placeholder="Текст ответа…"></textarea></div>
+            placeholder="Текст ответа… (Enter — отправить, Shift+Enter — новая строка)"></textarea></div>
         <input type="file" id="tk-photo" accept="image/*" class="hidden">
         <div id="tk-photo-preview" class="hidden" style="margin-bottom:10px"></div>
         <div id="tk-ai-status" class="muted hidden" style="font-size:12.5px; margin-bottom:10px"></div>
@@ -1196,6 +1196,15 @@ async function viewTicket(userId) {
     };
     ta.addEventListener('input', growTa);
     growTa();
+    // на ПК Enter отправляет, Shift+Enter — перенос строки;
+    // на сенсорных устройствах Enter остаётся переносом (кнопка «Отправить»)
+    ta.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing
+          && !window.matchMedia('(pointer: coarse)').matches) {
+        e.preventDefault();
+        if (ta.value.trim() || photoInput.files.length) form.requestSubmit();
+      }
+    });
     const photoInput = document.getElementById('tk-photo');
     const preview = document.getElementById('tk-photo-preview');
 
