@@ -970,6 +970,7 @@ const TK_SORT_LABELS = [
   ['status', 'Статус'],
   ['user', 'Пользователь'],
   ['pending_at', 'Дата обращения'],
+  ['last_message', 'Последнее сообщение'],
 ];
 
 async function loadTickets(silent = false) {
@@ -996,7 +997,7 @@ async function loadTickets(silent = false) {
     `<th class="th-sort" data-sort="${key}">${label}${arrow(key)}</th>`).join('');
 
   $list.innerHTML = data.items.length ? `<div class="table-wrap"><table>
-    <tr>${ths}<th>Последнее сообщение</th></tr>
+    <tr>${ths}</tr>
     ${data.items.map(t => `
       <tr style="cursor:pointer" class="${ticketAwaiting(t) ? 'tk-unanswered' : ''}"
           onclick="location.hash='#/ticket/${t.user_id}'">

@@ -98,6 +98,54 @@ SORT_FIELDS = {
 }
 
 
+async def _page_by_last_message(col, query: dict, direction: int,
+                                page: int, page_size: int) -> list[dict]:
+    """Страница тикетов в порядке последнего сообщения диалога.
+
+    Порядок берём из support_messages (один $group по всем диалогам), затем
+    идём по нему чанками и подтягиваем только тикеты, попадающие под фильтр,
+    пока не наберём страницу. Тикеты вообще без истории идут в конце
+    (при asc — в начале)."""
+    pipeline = [
+        {"$group": {"_id": "$user_id", "last": {"$max": "$timestamp"}}},
+        {"$sort": {"last": direction}},
+    ]
+    ordered = [d["_id"] async for d in _messages_col().aggregate(pipeline)
+               if d["_id"] is not None]
+
+    need = page * page_size
+    picked: list[dict] = []
+    no_history_first = direction == 1  # asc: «никогда не писали» раньше всех
+    if not no_history_first:
+        for i in range(0, len(ordered), 500):
+            if len(picked) >= need:
+                break
+            chunk = ordered[i:i + 500]
+            docs = {(u.get("user_data") or {}).get("user_id"): u
+                    async for u in col.find(
+                        {**query, "user_data.user_id": {"$in": chunk}},
+                        {"user_data": 1, "info.support": 1})}
+            picked.extend(docs[uid] for uid in chunk if uid in docs)
+    # добираем тикеты без истории сообщений (или отдаём их первыми при asc)
+    if len(picked) < need:
+        rest = col.find(
+            {**query, "user_data.user_id": {"$nin": ordered}},
+            {"user_data": 1, "info.support": 1},
+        ).sort("info.support.pending_at", direction).limit(need - len(picked))
+        picked.extend([u async for u in rest])
+    if no_history_first and len(picked) < need:
+        for i in range(0, len(ordered), 500):
+            if len(picked) >= need:
+                break
+            chunk = ordered[i:i + 500]
+            docs = {(u.get("user_data") or {}).get("user_id"): u
+                    async for u in col.find(
+                        {**query, "user_data.user_id": {"$in": chunk}},
+                        {"user_data": 1, "info.support": 1})}
+            picked.extend(docs[uid] for uid in chunk if uid in docs)
+    return [_ticket_brief(doc) for doc in picked[(page - 1) * page_size:need]]
+
+
 @router.get("")
 async def list_tickets(
     _op: CurrentOperator,
@@ -112,19 +160,22 @@ async def list_tickets(
         if status_filter not in TICKET_STATUSES:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Неверный статус")
         query["info.support.status"] = status_filter
-    if sort not in SORT_FIELDS:
+    if sort not in SORT_FIELDS and sort != "last_message":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Неверное поле сортировки")
     direction = -1 if order != "asc" else 1
 
     col = users_col()
     total = await col.count_documents(query)
-    cursor = (
-        col.find(query, {"user_data": 1, "info.support": 1})
-        .sort(SORT_FIELDS[sort], direction)
-        .skip((page - 1) * page_size)
-        .limit(page_size)
-    )
-    items = [_ticket_brief(doc) async for doc in cursor]
+    if sort == "last_message":
+        items = await _page_by_last_message(col, query, direction, page, page_size)
+    else:
+        cursor = (
+            col.find(query, {"user_data": 1, "info.support": 1})
+            .sort(SORT_FIELDS[sort], direction)
+            .skip((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = [_ticket_brief(doc) async for doc in cursor]
 
     # Последние сообщения всех тикетов страницы — ОДНИМ запросом (был N+1,
     # что при удалённой Mongo давало 30+ сетевых кругов на каждое обновление)
