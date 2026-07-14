@@ -271,8 +271,10 @@ async def operator_stats(
     col = get_db()[settings.support_messages_collection]
 
     # Пасс 1: первый ответ каждого оператора в каждый день — от него
-    # отсчитывается рабочий день «по 1-му ответу»
+    # отсчитывается рабочий день «по 1-му ответу»; последний ответ дня
+    # нужен для «во сколько в среднем начинает/заканчивает» (владельцу)
     day_first: dict[tuple[str, object], datetime] = {}
+    day_last: dict[tuple[str, object], datetime] = {}
     async for m in col.find(
             {"timestamp": {"$gte": start, "$lt": end}, "direction": "operator",
              "operator_login": {"$ne": None}},
@@ -283,6 +285,26 @@ async def operator_stats(
         key = (canon(m.get("operator_login")), ts.astimezone(tzinfo).date())
         if key not in day_first or ts < day_first[key]:
             day_first[key] = ts
+        if key not in day_last or ts > day_last[key]:
+            day_last[key] = ts
+
+    def work_rhythm(login: str) -> dict | None:
+        """Средние времена первого и последнего ответа по активным дням."""
+        starts: list[int] = []
+        ends: list[int] = []
+        for (lg, d), ts in day_first.items():
+            if lg != login:
+                continue
+            lt = ts.astimezone(tzinfo)
+            starts.append(lt.hour * 60 + lt.minute)
+            le = day_last[(lg, d)].astimezone(tzinfo)
+            ends.append(le.hour * 60 + le.minute)
+        if not starts:
+            return None
+        fmt = lambda m: f"{int(m) // 60:02d}:{int(m) % 60:02d}"
+        return {"days": len(starts),
+                "avg_start": fmt(sum(starts) / len(starts)),
+                "avg_end": fmt(sum(ends) / len(ends))}
 
     def day_start(login: str, local_date) -> datetime | None:
         """Начало рабочего дня оператора «по 1-му ответу»: его первый ответ
@@ -480,8 +502,9 @@ async def operator_stats(
             coeff = clamp(1.0)  # нагрузки не было — простой не по вине оператора
         r["norm_points"] = round(norm_points) if norm_points else None
         r["coeff"] = coeff
-        # оклад и сумма к выплате — ТОЛЬКО владельцу
+        # оклад, выплата и рабочий ритм (когда начинает/заканчивает) — ТОЛЬКО владельцу
         if is_owner:
+            r["work_rhythm"] = work_rhythm(r["login"])
             salary_base = (op_info.get(r["login"]) or {}).get("salary_base")
             r["salary_base"] = salary_base
             r["payout"] = (round(salary_base * coeff * days / 30.44)

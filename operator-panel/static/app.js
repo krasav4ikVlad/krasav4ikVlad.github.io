@@ -1717,6 +1717,11 @@ function viewStats() {
         lines.push(`<b>К выплате</b>: ${r.salary_base ? 'коэффициент не посчитан' : 'оклад не задан в карточке оператора'}`);
       }
     }
+    if ('work_rhythm' in r) {
+      lines.push(r.work_rhythm
+        ? `<b>Рабочий ритм</b>: активных дней ${r.work_rhythm.days}; в среднем начинает в ${r.work_rhythm.avg_start}, заканчивает в ${r.work_rhythm.avg_end} (по первому и последнему ответу за день)`
+        : '<b>Рабочий ритм</b>: ответов за период не было');
+    }
     if (r.schedule) lines.push(`<span class="muted">График: ${esc(scheduleSummary(r.schedule))}</span>`);
     return lines.join('<br>');
   };
@@ -1749,7 +1754,8 @@ function viewStats() {
     $t.innerHTML = rows.length ? `<div class="table-wrap"><table>
       <tr><th>#</th><th>Оператор</th><th>Баллы</th><th>Коэфф.</th>${showPay ? '<th>К выплате</th>' : ''}
         <th>Ответы</th><th>Тикетов</th><th>Закрыто</th>
-        <th>Скорость (медиана)</th><th>Быстрых ≤${data.points.fast_threshold_min} мин</th><th>Оценка</th><th>График</th></tr>
+        <th>Скорость (медиана)</th><th>Быстрых ≤${data.points.fast_threshold_min} мин</th><th>Оценка</th>
+        ${showPay ? '<th>Раб. день (ср.)</th>' : ''}<th>График</th></tr>
       ${rows.map((r, i) => `
         <tr class="${r.login === S.me.login ? 'st-me' : ''}" data-i="${i}">
           <td>${i === 0 ? '🏆' : i + 1}</td>
@@ -1763,6 +1769,7 @@ function viewStats() {
           <td>${fmtDur(r.median_wait_sec)}${r.avg_wait_sec != null ? ` <span class="muted">(ср. ${fmtDur(r.avg_wait_sec)})</span>` : ''}</td>
           <td>${r.measured ? `${r.fast} из ${r.measured} (${Math.round(r.fast / r.measured * 100)}%)` : '—'}</td>
           <td>${r.rating_avg != null ? `★ ${r.rating_avg} <span class="muted">(${r.rating_count})</span>` : '—'}</td>
+          ${showPay ? `<td style="white-space:nowrap"${r.work_rhythm ? ` title="Среднее время первого и последнего ответа за день (активных дней: ${r.work_rhythm.days})"` : ''}>${r.work_rhythm ? `${r.work_rhythm.avg_start}–${r.work_rhythm.avg_end}` : '—'}</td>` : ''}
           <td${r.schedule ? ` title="${esc(scheduleSummary(r.schedule))}"` : ''}>${r.hours_per_week != null ? esc(r.hours_per_week) + ' ч/нед' : '—'}${r.schedule ? ' <span class="muted" style="cursor:help">ⓘ</span>' : ''}</td>
         </tr>`).join('')}
     </table></div>`
@@ -1957,12 +1964,14 @@ function viewStats() {
     if (!d || !d.rows.length) { toast('Нет данных для выгрузки', 'err'); return; }
     const head = ['Логин', 'Имя', 'Баллы', 'Норма', 'Коэффициент', 'Оклад, ₽/мес', 'К выплате, ₽',
       'Часов/нед', 'Ответы', 'Тикетов', 'Закрыто',
-      'Медиана ответа, сек', 'Среднее, сек', 'Быстрых', 'Замерено', 'Оценка', 'Кол-во оценок'];
+      'Медиана ответа, сек', 'Среднее, сек', 'Быстрых', 'Замерено', 'Оценка', 'Кол-во оценок',
+      'Начинает (ср.)', 'Заканчивает (ср.)', 'Активных дней'];
     const lines = [head.join(';')].concat(d.rows.map(r => [
       r.login, r.name, r.score, r.norm_points ?? '', r.coeff ?? '', r.salary_base ?? '', r.payout ?? '',
       r.hours_per_week ?? '', r.replies, r.tickets, r.closes,
       r.median_wait_sec ?? '', r.avg_wait_sec ?? '', r.fast, r.measured,
       r.rating_avg ?? '', r.rating_count,
+      r.work_rhythm?.avg_start ?? '', r.work_rhythm?.avg_end ?? '', r.work_rhythm?.days ?? '',
     ].map(v => String(v).replace(/;/g, ',')).join(';')));
     const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
