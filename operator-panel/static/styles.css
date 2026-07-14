@@ -564,3 +564,34 @@ tr.tk-unanswered td { background: var(--danger-bg); }
 tr.tk-unanswered td:first-child { border-left: 3px solid var(--red); }
 tr.tk-unanswered:hover td { background: var(--danger-hover); }
 .side-row.tk-unanswered:not(.active) { border: 1px solid var(--red); background: var(--danger-bg); }
+
+/* --- чат тикета: поле ввода растёт под текст (до потолка) --- */
+#tk-reply textarea {
+  resize: none; overflow-y: auto;
+  min-height: 64px; max-height: 220px;
+}
+
+/* --- аккуратная полоса прокрутки в чате и боковом списке --- */
+.chat, .ticket-side #side-list, #tk-reply textarea {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
+}
+.chat::-webkit-scrollbar,
+.ticket-side #side-list::-webkit-scrollbar,
+#tk-reply textarea::-webkit-scrollbar { width: 8px; }
+.chat::-webkit-scrollbar-track,
+.ticket-side #side-list::-webkit-scrollbar-track,
+#tk-reply textarea::-webkit-scrollbar-track { background: transparent; }
+.chat::-webkit-scrollbar-thumb,
+.ticket-side #side-list::-webkit-scrollbar-thumb,
+#tk-reply textarea::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.chat::-webkit-scrollbar-thumb:hover,
+.ticket-side #side-list::-webkit-scrollbar-thumb:hover,
+#tk-reply textarea::-webkit-scrollbar-thumb:hover { background: var(--dim); background-clip: padding-box; }
+/* тонкий отступ, чтобы полоса не прилипала к сообщениям */
+.chat { padding-right: 6px; }

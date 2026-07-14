@@ -1188,6 +1188,14 @@ async function viewTicket(userId) {
 
   const form = document.getElementById('tk-reply');
   if (form) {
+    // поле ответа растёт под текст, но не выше max-height (дальше — свой скролл)
+    const ta = form.text;
+    const growTa = () => {
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight + 2, 220) + 'px';
+    };
+    ta.addEventListener('input', growTa);
+    growTa();
     const photoInput = document.getElementById('tk-photo');
     const preview = document.getElementById('tk-photo-preview');
 
@@ -1216,6 +1224,7 @@ async function viewTicket(userId) {
       try {
         const data = await api(`/api/tickets/${userId}/suggest`, { method: 'POST' });
         form.text.value = data.suggestion;
+        form.text.dispatchEvent(new Event('input'));
         lastAiDraft = data.suggestion;
         setAiStatus('Черновик ИИ вставлен в поле — проверьте и поправьте текст перед отправкой');
       } catch (err) {
@@ -1247,6 +1256,7 @@ async function viewTicket(userId) {
       if (typed && typed !== lastAiDraft
           && !confirm('Заменить текст в поле выбранным быстрым ответом?')) return false;
       form.text.value = text;
+      form.text.dispatchEvent(new Event('input'));
       lastAiDraft = text; // чтобы следующая вставка/ИИ не спрашивали про этот текст
       setAiStatus('');
       form.text.focus();
@@ -1304,6 +1314,7 @@ async function viewTicket(userId) {
           await api(`/api/tickets/${userId}/reply`, { method: 'POST', body: { text } });
         }
         form.text.value = '';
+        form.text.dispatchEvent(new Event('input'));
         lastAiDraft = null;
         setAiStatus('');
         toast('Отправлено ✓');
@@ -1555,6 +1566,21 @@ function hydrateAttachments(root) {
 function renderChat(messages) {
   const $chat = document.getElementById('tk-chat');
   if (!$chat) return;
+  // «прилипание» к низу: пока оператор внизу — держим его на последних
+  // сообщениях (и при перерисовке, и когда подгружаются картинки);
+  // если он листает историю выше — позицию не трогаем
+  if (!$chat.dataset.hook) {
+    $chat.dataset.hook = '1';
+    $chat.dataset.stick = '1';
+    $chat.addEventListener('scroll', () => {
+      $chat.dataset.stick =
+        $chat.scrollTop + $chat.clientHeight >= $chat.scrollHeight - 80 ? '1' : '0';
+    });
+    // вложение загрузилось и раздвинуло чат — доскролливаем, если липнем к низу
+    $chat.addEventListener('load', () => {
+      if ($chat.dataset.stick !== '0') $chat.scrollTop = $chat.scrollHeight;
+    }, true);
+  }
   const key = JSON.stringify(messages.map(m => m.timestamp));
   if ($chat.dataset.key === key) return; // ничего нового — не перерисовываем (не сбрасываем плееры)
   $chat.dataset.key = key;
@@ -1562,6 +1588,8 @@ function renderChat(messages) {
     $chat.innerHTML = '<div class="center">Сообщений пока нет</div>';
     return;
   }
+  const stick = $chat.dataset.stick !== '0';
+  const keepPos = $chat.scrollTop;
   $chat.innerHTML = messages.map(m => {
     const cls = m.direction === 'operator' ? 'msg-operator' : m.direction === 'system' ? 'msg-system' : 'msg-user';
     const who = m.direction === 'operator'
@@ -1571,7 +1599,7 @@ function renderChat(messages) {
     return `<div class="msg ${cls}">${text}${attachmentHtml(m)}<div class="msg-meta">${who ? who + ' · ' : ''}${fmtDate(m.timestamp)}</div></div>`;
   }).join('');
   hydrateAttachments($chat);
-  $chat.scrollTop = $chat.scrollHeight;
+  $chat.scrollTop = stick ? $chat.scrollHeight : keepPos;
 }
 
 // ================================================================ operator activity / stats
