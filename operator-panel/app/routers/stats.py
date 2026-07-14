@@ -336,7 +336,8 @@ async def operator_stats(
 
     current_uid = None
     pending_since: datetime | None = None  # первое неотвеченное сообщение пользователя
-    last_op_login: str | None = None       # кому приписывать оценку
+    last_op_login: str | None = None       # последний ответивший оператор
+    rating_owner: str | None = None        # чьей сессии достанутся оценки (снимок на закрытии)
     answered_waits = 0                     # обращения, на которые операторы ответили
     backlog_cand: dict = {}                # uid -> оператор участвовал в диалоге?
     dialog_had_op = False
@@ -347,6 +348,7 @@ async def operator_stats(
             if pending_since is not None and current_uid is not None:
                 backlog_cand[current_uid] = dialog_had_op  # кончился без ответа
             current_uid, pending_since, last_op_login = uid, None, None
+            rating_owner = None
             dialog_had_op = False
         ts = _as_utc(m.get("timestamp"))
         direction = m.get("direction")
@@ -381,15 +383,20 @@ async def operator_stats(
             pending_since = None
         elif direction == "system":
             text = m.get("text") or ""
-            if login and CLOSE_RE.search(text):
-                login = canon(login)
-                bucket(login)["closes"] += 1
-                last_op_login = login
+            rating = RATING_RE.search(text)
+            if rating:
+                # оценка относится к сессии, завершённой ПОСЛЕДНИМ закрытием
+                # перед ней — а не к оператору, ответившему позже в новой
+                # сессии того же диалога
+                owner_login = rating_owner or last_op_login
+                if owner_login:
+                    bucket(owner_login)["ratings"].append(int(rating.group(1)))
+            elif CLOSE_RE.search(text):
+                closer = canon(login) if login else None
+                if closer:
+                    bucket(closer)["closes"] += 1
+                rating_owner = last_op_login or closer
                 pending_since = None
-            else:
-                rating = RATING_RE.search(text)
-                if rating and last_op_login:
-                    bucket(last_op_login)["ratings"].append(int(rating.group(1)))
     if pending_since is not None and current_uid is not None:
         backlog_cand[current_uid] = dialog_had_op  # хвост последнего диалога
 

@@ -951,9 +951,64 @@ async function pollAlerts() {
   if (alertPrevWaiting !== null && n > alertPrevWaiting) beep();
   alertPrevWaiting = n;
   setAlertBadge(n);
+  pollRatings();
 }
 setInterval(pollAlerts, 15000);
 setTimeout(pollAlerts, 3000);
+
+// ---- уведомления об оценках: колокольчик в шапке ----
+let ratingItems = [];
+
+function ratingSeenTs() { return parseInt(localStorage.getItem('op_rate_seen') || '0', 10); }
+
+async function pollRatings() {
+  try { ratingItems = (await api('/api/notifications/ratings?days=7&limit=30')).items; }
+  catch (e) { return; }
+  const badge = document.getElementById('notif-badge');
+  if (!badge) return;
+  const unseen = ratingItems.filter(i => new Date(i.timestamp).getTime() > ratingSeenTs()).length;
+  badge.textContent = unseen > 9 ? '9+' : String(unseen);
+  badge.classList.toggle('hidden', unseen === 0);
+}
+
+function toggleNotifPanel() {
+  const old = document.getElementById('notif-panel');
+  if (old) { old.remove(); return; }
+  const btn = document.getElementById('notif-btn');
+  const rect = btn.getBoundingClientRect();
+  const panel = document.createElement('div');
+  panel.id = 'notif-panel';
+  panel.style.top = (rect.bottom + 8) + 'px';
+  panel.style.right = Math.max(8, window.innerWidth - rect.right) + 'px';
+  const seen = ratingSeenTs();
+  panel.innerHTML = ratingItems.length ? ratingItems.map(i => {
+    const fresh = new Date(i.timestamp).getTime() > seen;
+    const who = `${esc(i.first_name || '')}${i.username ? ' @' + esc(i.username) : ''}`.trim() || '#' + i.user_id;
+    return `<div class="notif-item" data-uid="${esc(i.user_id)}" ${fresh ? 'style="background:var(--card-2)"' : ''}>
+      <span class="notif-stars ${i.stars <= 2 ? 'low' : ''}">${'★'.repeat(i.stars)}${'☆'.repeat(5 - i.stars)}</span>
+      <span style="font-size:13px"> ${who}</span>
+      <div class="muted" style="font-size:11.5px; margin-top:2px">
+        ${i.operator_login ? 'оператор ' + esc(i.operator_login) + ' · ' : ''}${fmtDate(i.timestamp)}</div>
+    </div>`;
+  }).join('')
+    : '<div class="center" style="padding:14px 0">Оценок за неделю нет</div>';
+  document.body.appendChild(panel);
+  panel.querySelectorAll('.notif-item').forEach(el => el.onclick = () => {
+    panel.remove();
+    location.hash = '#/ticket/' + el.dataset.uid;
+  });
+  localStorage.setItem('op_rate_seen', String(Date.now()));
+  const badge = document.getElementById('notif-badge');
+  if (badge) badge.classList.add('hidden');
+  const closer = (e) => {
+    if (!panel.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
+      panel.remove();
+      document.removeEventListener('click', closer);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', closer), 0);
+}
+document.getElementById('notif-btn').onclick = toggleNotifPanel;
 
 // безопасный рендер телеграм-разметки: экранируем всё, затем возвращаем
 // только белый список тегов, которыми бот форматирует сообщения

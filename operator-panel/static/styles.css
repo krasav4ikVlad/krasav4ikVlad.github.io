@@ -622,3 +622,26 @@ tr.tk-unanswered:hover td { background: var(--danger-hover); }
   display: flex; align-items: center; justify-content: center; gap: 10px;
   padding: 10px 0 2px; font-size: 12.5px;
 }
+
+/* --- уведомления об оценках --- */
+.notif-badge {
+  position: absolute; top: -5px; right: -5px;
+  min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: 999px; background: var(--red); color: #fff;
+  font-size: 10.5px; font-weight: 700; line-height: 17px; text-align: center;
+}
+#notif-panel {
+  position: fixed; z-index: 200; width: min(360px, calc(100vw - 24px));
+  max-height: 60vh; overflow-y: auto;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: 0 10px 34px rgba(0,0,0,.14);
+  padding: 8px;
+}
+.notif-item {
+  display: block; padding: 9px 10px; border-radius: 10px;
+  cursor: pointer; border-bottom: 1px solid var(--border);
+}
+.notif-item:last-child { border-bottom: none; }
+.notif-item:hover { background: var(--card-2); }
+.notif-stars { color: var(--yellow); font-weight: 700; letter-spacing: .05em; }
+.notif-stars.low { color: var(--red); }
