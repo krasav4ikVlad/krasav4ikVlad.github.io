@@ -595,3 +595,15 @@ tr.tk-unanswered:hover td { background: var(--danger-hover); }
 #tk-reply textarea::-webkit-scrollbar-thumb:hover { background: var(--dim); background-clip: padding-box; }
 /* тонкий отступ, чтобы полоса не прилипала к сообщениям */
 .chat { padding-right: 6px; }
+
+/* --- живой предпросмотр быстрого ответа --- */
+.qr-live-preview {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--card-2); padding: 10px 12px; font-size: 13px;
+  max-height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+}
+.qr-preview, .msg-text { word-break: break-word; }
+.qr-live-preview blockquote, .msg-text blockquote, .qr-preview blockquote {
+  margin: 4px 0; padding: 4px 10px; border-left: 3px solid var(--border-2);
+  opacity: .92;
+}

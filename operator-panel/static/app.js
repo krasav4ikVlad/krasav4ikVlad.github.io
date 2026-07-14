@@ -947,6 +947,20 @@ async function pollAlerts() {
 setInterval(pollAlerts, 15000);
 setTimeout(pollAlerts, 3000);
 
+// безопасный рендер телеграм-разметки: экранируем всё, затем возвращаем
+// только белый список тегов, которыми бот форматирует сообщения
+function tgHtml(text) {
+  let s = esc(text || '');
+  s = s.replace(/&lt;(\/?)(b|strong|i|em|u|s|code|pre|blockquote)&gt;/gi, '<$1$2>');
+  s = s.replace(/&lt;br\s*\/?&gt;/gi, '<br>');
+  s = s.replace(/&lt;a href=&quot;(https?:\/\/[^"&<>\s]+)&quot;&gt;/gi,
+    '<a href="$1" target="_blank" rel="noopener">');
+  s = s.replace(/&lt;\/a&gt;/gi, '</a>');
+  // прочие теги (tg-emoji и т.п.) прячем, чтобы не пугали разметкой
+  s = s.replace(/&lt;\/?tg-emoji[^&]*&gt;/gi, '');
+  return s;
+}
+
 // тикет ждёт ответа: последнее слово за пользователем, тикет не закрыт
 function ticketAwaiting(t) {
   return t.status !== 'closed' && t.last_message && t.last_message.direction === 'user';
@@ -1414,7 +1428,7 @@ function openQuickReplies(insert) {
         <div class="qr-main" data-use="${esc(i.id)}">
           <div class="qr-title">${esc(i.title)}
             ${i.active ? '' : ' <span class="badge badge-gray">выключен</span>'}</div>
-          <div class="qr-preview muted">${esc(i.text.slice(0, 110))}${i.text.length > 110 ? '…' : ''}</div>
+          <div class="qr-preview muted">${tgHtml(i.text.slice(0, 160))}${i.text.length > 160 ? '…' : ''}</div>
         </div>
         <div class="qr-btns">
           <button class="btn btn-ghost btn-sm" data-edit="${esc(i.id)}">Изменить</button>
@@ -1462,7 +1476,11 @@ function qrEditModal(item, insert) {
       <div class="field"><label>Название (это текст кнопки в боте и на сайте)</label>
         <input name="title" required maxlength="64" value="${item ? esc(item.title) : ''}"></div>
       <div class="field"><label>Текст ответа пользователю</label>
-        <textarea name="text" rows="8" required maxlength="3500">${item ? esc(item.text) : ''}</textarea></div>
+        <textarea name="text" rows="8" required maxlength="3500">${item ? esc(item.text) : ''}</textarea>
+        <div class="muted" style="font-size:11.5px; margin-top:4px">Можно использовать теги Telegram:
+          &lt;b&gt; &lt;i&gt; &lt;u&gt; &lt;s&gt; &lt;code&gt; &lt;blockquote&gt; &lt;a href="…"&gt;</div></div>
+      <div class="field"><label>Как увидит пользователь</label>
+        <div id="qr-preview" class="qr-live-preview"></div></div>
       ${item ? `<label style="display:flex; gap:8px; align-items:center; color:var(--text); margin-bottom:12px">
         <input type="checkbox" name="active" style="width:auto" ${item.active ? 'checked' : ''}>
         Активен (виден в боте и в списке вставки)
@@ -1472,6 +1490,10 @@ function qrEditModal(item, insert) {
         <button type="submit" class="btn">Сохранить</button>
       </div>
     </form>`);
+  const pv = $m.querySelector('#qr-preview');
+  const drawPv = () => pv.innerHTML = tgHtml($m.querySelector('[name=text]').value) || '<span class="muted">пусто</span>';
+  $m.querySelector('[name=text]').addEventListener('input', drawPv);
+  drawPv();
   $m.querySelector('#qr-back').onclick = () => openQuickReplies(insert);
   $m.querySelector('#qr-form').addEventListener('submit', async e => {
     e.preventDefault();
@@ -1604,7 +1626,7 @@ function renderChat(messages) {
     const who = m.direction === 'operator'
       ? (m.operator_login ? esc(m.operator_login) + (m.source === 'tg' ? ' (TG)' : ' (сайт)') : 'оператор')
       : m.direction === 'system' ? '' : 'пользователь';
-    const text = m.text ? `<div class="msg-text">${esc(m.text)}</div>` : '';
+    const text = m.text ? `<div class="msg-text">${tgHtml(m.text)}</div>` : '';
     return `<div class="msg ${cls}">${text}${attachmentHtml(m)}<div class="msg-meta">${who ? who + ' · ' : ''}${fmtDate(m.timestamp)}</div></div>`;
   }).join('');
   hydrateAttachments($chat);

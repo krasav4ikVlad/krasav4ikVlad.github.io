@@ -251,19 +251,33 @@ async def reply_ticket(user_id: int, body: TicketReplyRequest,
     text = body.text.strip()
 
     tg = get_telegram()
-    # 1) пользователю в ЛС — как relay из треда, текст без обвязки
+
+    def _is_parse_error(e: TelegramError) -> bool:
+        # «can't parse entities…» — текст содержит < >, не являющиеся разметкой
+        return "parse" in (e.message or "").lower()
+
+    # 1) пользователю в ЛС — с HTML-разметкой (быстрые ответы форматируются
+    #    тегами как в боте); если текст не является валидным HTML — шлём как есть
     try:
-        await tg.send_to_user(user_id, _esc(text))
+        try:
+            await tg.send_to_user(user_id, text)
+        except TelegramError as e:
+            if not _is_parse_error(e):
+                raise
+            await tg.send_to_user(user_id, _esc(text))
     except TelegramError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY,
                             f"Сообщение НЕ отправлено пользователю: {e.message}")
 
     # 2) зеркало в тред — чтобы операторы в TG видели переписку с сайта
+    mirror_prefix = f"💻 <b>Ответ с сайта</b> — {_esc(operator.get('name') or operator['login'])}:\n\n"
     try:
-        await tg.send_to_thread(
-            thread_id,
-            f"💻 <b>Ответ с сайта</b> — {_esc(operator.get('name') or operator['login'])}:\n\n{_esc(text)}",
-        )
+        try:
+            await tg.send_to_thread(thread_id, mirror_prefix + text)
+        except TelegramError as e:
+            if not _is_parse_error(e):
+                raise
+            await tg.send_to_thread(thread_id, mirror_prefix + _esc(text))
     except TelegramError as e:
         # юзеру уже ушло; тред не синкнулся — фиксируем, но не откатываем
         await _store_message(user_id=user_id, direction="system",
