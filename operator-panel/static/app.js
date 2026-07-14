@@ -396,6 +396,14 @@ function viewSearch() {
 
 // ================================================================ user card view
 
+// откуда пришли в карточку: из чата тикета «Назад» ведёт обратно в чат
+function userBackHref() {
+  return S.prevHash && S.prevHash.startsWith('#/ticket/') ? S.prevHash : '#/search';
+}
+function userBackLabel() {
+  return S.prevHash && S.prevHash.startsWith('#/ticket/') ? '← К чату тикета' : '← К поиску';
+}
+
 async function viewUser(userId) {
   $view.innerHTML = spinnerHtml('Загружаем карточку…');
   let u;
@@ -403,7 +411,7 @@ async function viewUser(userId) {
     u = await api('/api/users/' + userId);
   } catch (err) {
     $view.innerHTML = `<div class="card"><div class="error-note">${esc(err.message)}</div>
-      <div style="margin-top:12px"><a href="#/search" class="btn btn-ghost">← К поиску</a></div></div>`;
+      <div style="margin-top:12px"><a href="${userBackHref()}" class="btn btn-ghost">${userBackLabel()}</a></div></div>`;
     return;
   }
   const ud = u.user_data || {};
@@ -411,7 +419,7 @@ async function viewUser(userId) {
   const reload = () => viewUser(userId);
 
   $view.innerHTML = `
-    <div style="margin-bottom:12px"><a href="#/search" class="muted" style="text-decoration:none">← К поиску</a></div>
+    <div style="margin-bottom:12px"><a href="${userBackHref()}" class="muted" style="text-decoration:none">${userBackLabel()}</a></div>
     <div class="card">
       <div class="user-header">
         <div>
@@ -1136,6 +1144,7 @@ async function viewTicket(userId) {
   document.getElementById('side-filter').onchange = e => {
     S.tk.status = e.target.value;
     S.tk.page = 1; // чтобы список тикетов открылся с той же выборки
+    S.sidePage = null; // фильтр сменился — заново ищем страницу тикета
     const list = document.getElementById('side-list');
     if (list) { list.dataset.key = ''; list.innerHTML = spinnerHtml(); }
     loadSideTickets(userId);
@@ -1373,14 +1382,20 @@ async function loadSideTickets(activeUserId) {
   const $list = document.getElementById('side-list');
   if (!$list) return;
   if (!window.matchMedia('(min-width: 1100px)').matches) return;
-  const qs = new URLSearchParams({ page: 1, page_size: 30, sort: 'pending_at', order: 'desc' });
+  // список живёт по последнему сообщению; при смене тикета открываем
+  // страницу, на которой он находится (locate на бэке)
+  if (S.sideFor !== activeUserId) { S.sideFor = activeUserId; S.sidePage = null; }
+  const qs = new URLSearchParams({ page: S.sidePage || 1, page_size: 30,
+    sort: 'last_message', order: 'desc' });
   if (S.tk && S.tk.status) qs.set('status', S.tk.status);
+  if (!S.sidePage) qs.set('locate', activeUserId);
   let data;
   try {
     data = await api('/api/tickets?' + qs);
   } catch (e) {
     return; // тихо: следующая попытка через 5 секунд
   }
+  S.sidePage = data.page;
   const key = qs.toString() + '|' + activeUserId + '|' +
     JSON.stringify(data.items.map(m => [m.user_id, m.status, m.last_message && m.last_message.text]));
   if ($list.dataset.key === key) return; // ничего нового — не перерисовываем
@@ -1402,10 +1417,22 @@ async function loadSideTickets(activeUserId) {
       </div>
       <div class="side-last muted">${m.last_message ? esc(m.last_message.text || 'вложение') : '—'}</div>
     </div>`).join('') +
-    (data.total > data.items.length
-      ? `<a href="#/tickets" class="muted" style="display:block; text-align:center; font-size:12.5px; padding:10px 0 2px">Показаны первые ${data.items.length} из ${data.total} — все тикеты →</a>`
+    (Math.ceil(data.total / data.page_size) > 1
+      ? `<div class="side-pager">
+          <button class="btn btn-ghost btn-sm" id="side-prev" ${data.page <= 1 ? 'disabled' : ''}>←</button>
+          <span class="muted">стр. ${data.page} / ${Math.ceil(data.total / data.page_size)}</span>
+          <button class="btn btn-ghost btn-sm" id="side-next" ${data.page >= Math.ceil(data.total / data.page_size) ? 'disabled' : ''}>→</button>
+        </div>`
       : '')
     : '<div class="center" style="padding:14px 0">Тикетов нет</div>';
+  const flip = d => {
+    S.sidePage = data.page + d;
+    $list.dataset.key = '';
+    loadSideTickets(activeUserId);
+  };
+  const pv = $list.querySelector('#side-prev'), nx = $list.querySelector('#side-next');
+  if (pv) pv.onclick = e => { e.stopPropagation(); flip(-1); };
+  if (nx) nx.onclick = e => { e.stopPropagation(); flip(1); };
 
   $list.querySelectorAll('.side-row').forEach(row => {
     row.onclick = () => {
@@ -3126,6 +3153,7 @@ function setNav(active) {
 
 async function render() {
   const hash = location.hash || '#/search';
+  if (S.curHash !== hash) { S.prevHash = S.curHash; S.curHash = hash; }
   if (S.ticketTimer) { clearInterval(S.ticketTimer); S.ticketTimer = null; }
   if (S.chatPoll) { S.chatPoll.abort(); S.chatPoll = null; }
   if (S.onResize) { window.removeEventListener('resize', S.onResize); S.onResize = null; }

@@ -104,6 +104,39 @@ SORT_FIELDS = {
 }
 
 
+async def _last_message_order(direction: int) -> list:
+    """user_id всех диалогов в порядке последнего сообщения (user/operator)."""
+    pipeline = [
+        {"$match": {"direction": {"$in": ["user", "operator"]}}},
+        {"$group": {"_id": "$user_id", "last": {"$max": "$timestamp"}}},
+        {"$sort": {"last": direction}},
+    ]
+    return [d["_id"] async for d in _messages_col().aggregate(pipeline)
+            if d["_id"] is not None]
+
+
+async def _locate_page_by_last_message(col, query: dict, direction: int,
+                                       uid: int, page_size: int) -> int | None:
+    """Номер страницы, на которой тикет uid находится при сортировке по
+    последнему сообщению (для бокового списка: открыть «свою» страницу)."""
+    if direction != -1:
+        return None
+    ordered = await _last_message_order(direction)
+    matched = 0
+    for i in range(0, len(ordered), 500):
+        chunk = ordered[i:i + 500]
+        found = {(u.get("user_data") or {}).get("user_id")
+                 async for u in col.find(
+                     {**query, "user_data.user_id": {"$in": chunk}},
+                     {"user_data.user_id": 1})}
+        for u2 in chunk:
+            if u2 in found:
+                matched += 1
+                if u2 == uid:
+                    return (matched - 1) // page_size + 1
+    return None
+
+
 async def _page_by_last_message(col, query: dict, direction: int,
                                 page: int, page_size: int) -> list[dict]:
     """Страница тикетов в порядке последнего сообщения диалога.
@@ -113,13 +146,7 @@ async def _page_by_last_message(col, query: dict, direction: int,
     пока не наберём страницу. Считаются только сообщения пользователя и
     оператора — системные записи (автозакрытия, оценки) не делают тикет
     «свежим». Тикеты вообще без истории идут в конце (при asc — в начале)."""
-    pipeline = [
-        {"$match": {"direction": {"$in": ["user", "operator"]}}},
-        {"$group": {"_id": "$user_id", "last": {"$max": "$timestamp"}}},
-        {"$sort": {"last": direction}},
-    ]
-    ordered = [d["_id"] async for d in _messages_col().aggregate(pipeline)
-               if d["_id"] is not None]
+    ordered = await _last_message_order(direction)
 
     need = page * page_size
     picked: list[dict] = []
@@ -162,6 +189,7 @@ async def list_tickets(
     order: str = Query(default="desc", max_length=4),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30, ge=1, le=100),
+    locate: int | None = Query(default=None),
 ):
     query: dict = {"info.support.thread_id": {"$exists": True}}
     if status_filter:
@@ -175,6 +203,12 @@ async def list_tickets(
     col = users_col()
     total = await col.count_documents(query)
     if sort == "last_message":
+        # locate: открыть страницу, на которой находится этот тикет
+        if locate is not None:
+            located = await _locate_page_by_last_message(col, query, direction,
+                                                         locate, page_size)
+            if located:
+                page = located
         items = await _page_by_last_message(col, query, direction, page, page_size)
     else:
         cursor = (

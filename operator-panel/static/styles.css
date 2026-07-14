@@ -616,3 +616,9 @@ tr.tk-unanswered:hover td { background: var(--danger-hover); }
   margin-bottom: 4px;
 }
 .qr-sec:first-child { padding-top: 0; }
+
+/* --- пейджер бокового списка тикетов --- */
+.side-pager {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 10px 0 2px; font-size: 12.5px;
+}
