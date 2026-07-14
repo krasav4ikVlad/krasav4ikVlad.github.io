@@ -21,8 +21,8 @@ from .autoclose import autoclose_loop
 from .escalation import escalation_loop
 from .config import get_settings
 from .database import close_client, ensure_indexes
-from .routers import (actions, audit_log, auth, operators, quick_replies, stats,
-                      ticket_stats, tickets, users)
+from .routers import (actions, audit_log, auth, my_quick_replies, operators,
+                      quick_replies, stats, ticket_stats, tickets, users)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +73,7 @@ app.include_router(audit_log.router)
 app.include_router(operators.router)
 app.include_router(tickets.router)
 app.include_router(quick_replies.router)
+app.include_router(my_quick_replies.router)
 app.include_router(stats.router)
 app.include_router(ticket_stats.router)
 

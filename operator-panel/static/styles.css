@@ -607,3 +607,12 @@ tr.tk-unanswered:hover td { background: var(--danger-hover); }
   margin: 4px 0; padding: 4px 10px; border-left: 3px solid var(--border-2);
   opacity: .92;
 }
+
+/* --- разделы в списке быстрых ответов --- */
+.qr-sec {
+  font-size: 11px; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--dim);
+  padding: 10px 0 6px; border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.qr-sec:first-child { padding-top: 0; }

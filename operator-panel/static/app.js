@@ -1409,47 +1409,71 @@ function openQuickReplies(insert) {
   const $m = openModal(`
     <h2>Быстрые ответы</h2>
     <div class="muted" style="font-size:12px; margin-bottom:10px">
-      Общие с ботом: изменения тут сразу видны в меню бота и наоборот.
-      Клик по названию вставляет текст в поле ответа.</div>
+      «Мои» видны только вам. «Общие» — единая база с ботом: это же пункты
+      меню самопомощи, их видят все пользователи. Клик по названию вставляет
+      текст в поле ответа.</div>
     <input id="qr-search" placeholder="Поиск по названию или тексту…" style="margin-bottom:10px">
-    <div id="qr-list" style="max-height:48vh; overflow-y:auto">${spinnerHtml()}</div>
+    <div id="qr-list" style="max-height:52vh; overflow-y:auto">${spinnerHtml()}</div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" id="qr-add">+ Добавить</button>
+      <button class="btn btn-ghost" id="qr-add-my">+ Мой ответ</button>
+      <button class="btn btn-ghost" id="qr-add">+ Общий (в бота)</button>
       <button class="btn" id="qr-close">Закрыть</button>
     </div>`);
   const $list = $m.querySelector('#qr-list');
-  let items = [];
+  let mine = [];
+  let shared = [];
 
-  const renderList = () => {
-    const q = $m.querySelector('#qr-search').value.trim().toLowerCase();
-    const filtered = items.filter(i => !q
-      || i.title.toLowerCase().includes(q) || i.text.toLowerCase().includes(q));
-    $list.innerHTML = filtered.length ? filtered.map(i => `
+  const itemHtml = (i, personal) => `
       <div class="qr-item">
-        <div class="qr-main" data-use="${esc(i.id)}">
+        <div class="qr-main" data-use="${personal ? 'm' : 's'}:${esc(i.id)}">
           <div class="qr-title">${esc(i.title)}
-            ${i.active ? '' : ' <span class="badge badge-gray">выключен</span>'}</div>
+            ${!personal && !i.active ? ' <span class="badge badge-gray">выключен</span>' : ''}</div>
           <div class="qr-preview muted">${tgHtml(i.text.slice(0, 160))}${i.text.length > 160 ? '…' : ''}</div>
         </div>
         <div class="qr-btns">
-          <button class="btn btn-ghost btn-sm" data-edit="${esc(i.id)}">Изменить</button>
-          <button class="btn btn-ghost btn-sm" data-del="${esc(i.id)}">Удалить</button>
+          <button class="btn btn-ghost btn-sm" data-edit="${personal ? 'm' : 's'}:${esc(i.id)}">Изменить</button>
+          <button class="btn btn-ghost btn-sm" data-del="${personal ? 'm' : 's'}:${esc(i.id)}">Удалить</button>
         </div>
-      </div>`).join('')
-      : '<div class="center" style="padding:14px 0">Пока пусто — добавьте первый быстрый ответ</div>';
+      </div>`;
+
+  const findItem = (ref) => {
+    const personal = ref.startsWith('m:');
+    const id = ref.slice(2);
+    const item = (personal ? mine : shared).find(i => i.id === id);
+    return item ? { item, personal } : null;
+  };
+
+  const renderList = () => {
+    const q = $m.querySelector('#qr-search').value.trim().toLowerCase();
+    const match = i => !q || i.title.toLowerCase().includes(q) || i.text.toLowerCase().includes(q);
+    const mineF = mine.filter(match);
+    const sharedF = shared.filter(match);
+    $list.innerHTML =
+      `<div class="qr-sec">Мои — видны только вам</div>`
+      + (mineF.length ? mineF.map(i => itemHtml(i, true)).join('')
+        : '<div class="center muted" style="padding:8px 0; font-size:12.5px">пусто — добавьте кнопкой «+ Мой ответ»</div>')
+      + `<div class="qr-sec">Общие — меню бота, видят все операторы и пользователи</div>`
+      + (sharedF.length ? sharedF.map(i => itemHtml(i, false)).join('')
+        : '<div class="center muted" style="padding:8px 0; font-size:12.5px">пусто</div>');
 
     $list.querySelectorAll('[data-use]').forEach(el => el.onclick = () => {
-      const item = items.find(i => i.id === el.dataset.use);
-      if (item && insert(item.text) !== false) closeModal();
+      const found = findItem(el.dataset.use);
+      if (found && insert(found.item.text) !== false) closeModal();
     });
-    $list.querySelectorAll('[data-edit]').forEach(el => el.onclick = () =>
-      qrEditModal(items.find(i => i.id === el.dataset.edit), insert));
+    $list.querySelectorAll('[data-edit]').forEach(el => el.onclick = () => {
+      const found = findItem(el.dataset.edit);
+      if (found) qrEditModal(found.item, insert, found.personal);
+    });
     $list.querySelectorAll('[data-del]').forEach(el => el.onclick = async () => {
-      const item = items.find(i => i.id === el.dataset.del);
-      if (!item) return;
-      if (!confirm(`Удалить быстрый ответ «${item.title}»? Он пропадёт и из меню бота.`)) return;
+      const found = findItem(el.dataset.del);
+      if (!found) return;
+      const warn = found.personal
+        ? `Удалить ваш быстрый ответ «${found.item.title}»?`
+        : `Удалить общий быстрый ответ «${found.item.title}»? Он пропадёт и из меню бота.`;
+      if (!confirm(warn)) return;
       try {
-        await api('/api/quick-replies/' + item.id, { method: 'DELETE' });
+        await api((found.personal ? '/api/my-quick-replies/' : '/api/quick-replies/') + found.item.id,
+          { method: 'DELETE' });
         toast('Удалено ✓');
         load();
       } catch (err) { toast(err.message, 'err'); }
@@ -1458,23 +1482,29 @@ function openQuickReplies(insert) {
 
   const load = async () => {
     try {
-      items = (await api('/api/quick-replies?all=true')).items;
+      const [m, s] = await Promise.all([
+        api('/api/my-quick-replies'), api('/api/quick-replies?all=true')]);
+      mine = m.items;
+      shared = s.items;
       renderList();
     } catch (err) {
       $list.innerHTML = `<div class="error-note">${esc(err.message)}</div>`;
     }
   };
   $m.querySelector('#qr-search').oninput = renderList;
-  $m.querySelector('#qr-add').onclick = () => qrEditModal(null, insert);
+  $m.querySelector('#qr-add-my').onclick = () => qrEditModal(null, insert, true);
+  $m.querySelector('#qr-add').onclick = () => qrEditModal(null, insert, false);
   $m.querySelector('#qr-close').onclick = closeModal;
   load();
 }
 
-function qrEditModal(item, insert) {
+function qrEditModal(item, insert, personal = false) {
+  const kind = personal ? 'личный' : 'общий';
   const $m = openModal(`
-    <h2>${item ? 'Изменить быстрый ответ' : 'Новый быстрый ответ'}</h2>
+    <h2>${item ? `Изменить ${kind} ответ` : `Новый ${kind} ответ`}</h2>
+    ${personal ? '<div class="muted" style="font-size:12px; margin-bottom:10px">Личный ответ видите только вы — в меню бота он не попадает.</div>' : ''}
     <form id="qr-form">
-      <div class="field"><label>Название (это текст кнопки в боте и на сайте)</label>
+      <div class="field"><label>${personal ? 'Название (для себя)' : 'Название (это текст кнопки в боте и на сайте)'}</label>
         <input name="title" required maxlength="64" value="${item ? esc(item.title) : ''}"></div>
       <div class="field"><label>Текст ответа пользователю</label>
         <textarea name="text" rows="8" required maxlength="3500">${item ? esc(item.text) : ''}</textarea>
@@ -1482,7 +1512,7 @@ function qrEditModal(item, insert) {
           &lt;b&gt; &lt;i&gt; &lt;u&gt; &lt;s&gt; &lt;code&gt; &lt;blockquote&gt; &lt;a href="…"&gt;</div></div>
       <div class="field"><label>Как увидит пользователь</label>
         <div id="qr-preview" class="qr-live-preview"></div></div>
-      ${item ? `<label style="display:flex; gap:8px; align-items:center; color:var(--text); margin-bottom:12px">
+      ${item && !personal ? `<label style="display:flex; gap:8px; align-items:center; color:var(--text); margin-bottom:12px">
         <input type="checkbox" name="active" style="width:auto" ${item.active ? 'checked' : ''}>
         Активен (виден в боте и в списке вставки)
       </label>` : ''}
@@ -1500,12 +1530,13 @@ function qrEditModal(item, insert) {
     e.preventDefault();
     const f = e.target;
     const body = { title: f.title.value.trim(), text: f.text.value.trim() };
+    const base = personal ? '/api/my-quick-replies' : '/api/quick-replies';
     try {
       if (item) {
-        body.active = f.active.checked;
-        await api('/api/quick-replies/' + item.id, { method: 'PATCH', body });
+        if (!personal) body.active = f.active.checked;
+        await api(base + '/' + item.id, { method: 'PATCH', body });
       } else {
-        await api('/api/quick-replies', { method: 'POST', body });
+        await api(base, { method: 'POST', body });
       }
       toast('Сохранено ✓');
       openQuickReplies(insert);
