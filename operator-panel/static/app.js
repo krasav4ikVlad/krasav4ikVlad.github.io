@@ -1214,6 +1214,17 @@ async function viewTicket(userId) {
     };
     ta.addEventListener('input', growTa);
     growTa();
+    // черновик живёт в localStorage: уход со страницы/обновление его не теряют
+    const draftKey = 'op_draft_' + userId;
+    const savedDraft = localStorage.getItem(draftKey);
+    if (!ta.value && savedDraft) {
+      ta.value = savedDraft;
+      growTa();
+    }
+    ta.addEventListener('input', () => {
+      if (ta.value.trim()) localStorage.setItem(draftKey, ta.value);
+      else localStorage.removeItem(draftKey); // отправили/стёрли — черновик не нужен
+    });
     // на ПК Enter отправляет, Shift+Enter — перенос строки;
     // на сенсорных устройствах Enter остаётся переносом (кнопка «Отправить»)
     ta.addEventListener('keydown', e => {
