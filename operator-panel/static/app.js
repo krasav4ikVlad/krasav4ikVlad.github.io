@@ -1215,11 +1215,11 @@ async function viewTicket(userId) {
       renderChat(d.messages);
       document.getElementById('tk-status').innerHTML = ticketBadge(d.ticket.status);
     } catch (e) { /* тихо: таймер может пережить уход со страницы */ }
-    loadSideTickets(userId);
+    loadSideTickets(userId, true);
   };
   document.getElementById('tk-refresh').onclick = refresh;
   // список справа — раз в 5 секунд, чат — мгновенно через long-poll ниже
-  S.ticketTimer = setInterval(() => loadSideTickets(userId), 5000);
+  S.ticketTimer = setInterval(() => loadSideTickets(userId, true), 5000);
 
   // Мгновенные обновления чата: держим запрос открытым, сервер отвечает
   // сразу, как только приходит новое сообщение (в т.ч. из Telegram).
@@ -1237,7 +1237,7 @@ async function viewTicket(userId) {
           renderChat(d.messages);
           const st = document.getElementById('tk-status');
           if (st) st.innerHTML = ticketBadge(d.ticket.status);
-          loadSideTickets(userId);
+          loadSideTickets(userId, true);
         }
       } catch (e) {
         if (pollCtl.signal.aborted || e.status === 401) return;
@@ -1433,10 +1433,14 @@ async function viewTicket(userId) {
 
 // Боковой список тикетов на широких экранах (справа от чата).
 // На телефонах блок скрыт стилями, поэтому данные зря не качаем.
-async function loadSideTickets(activeUserId) {
+async function loadSideTickets(activeUserId, silent = false) {
   const $list = document.getElementById('side-list');
   if (!$list) return;
   if (!window.matchMedia('(min-width: 1100px)').matches) return;
+  // сортировка живая (по последнему сообщению): фоновое обновление на
+  // страницах дальше первой не дёргает список — тикеты не «уезжают»
+  // из-под курсора, пока оператор листает. Вернулся на стр. 1 — обновления идут.
+  if (silent && (S.sidePage || 1) > 1) return;
   // список живёт по последнему сообщению; при смене тикета открываем
   // страницу, на которой он находится (locate на бэке)
   if (S.sideFor !== activeUserId) { S.sideFor = activeUserId; S.sidePage = null; }
