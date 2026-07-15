@@ -49,8 +49,15 @@ nginx в компоузе — единая точка входа: `/` → Next.j
 
 ```bash
 openssl rand -hex 32                 # JWT_SECRET
-python3 -c "import bcrypt; print(bcrypt.hashpw(b'ПАРОЛЬ', bcrypt.gensalt()).decode())"  # ADMIN_PASSWORD_HASH
+
+# ADMIN_PASSWORD_HASH (пароль запрашивается интерактивно, не попадает в history):
+docker run --rm -it python:3.11-slim sh -c \
+  'pip install -q bcrypt && python -c "import bcrypt,getpass; print(bcrypt.hashpw(getpass.getpass().encode(), bcrypt.gensalt()).decode())"'
 ```
+
+> **Важно:** bcrypt-хэш содержит `$` — в `.env` записывайте его строго в
+> одинарных кавычках (`ADMIN_PASSWORD_HASH='$2b$12$...'`), иначе docker
+> compose интерпретирует куски хэша как переменные и логин не заработает.
 
 ## Разработка без Docker
 
