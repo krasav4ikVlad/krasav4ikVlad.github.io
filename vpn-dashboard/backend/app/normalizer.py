@@ -147,6 +147,29 @@ class NormalizedDebit(BaseModel):
     raw: Any = None
 
 
+class NormalizedPayment(BaseModel):
+    """A provider webhook record from ``payments_webhook`` in unified form.
+
+    This is the provider-side view of a top-up: it carries the commission
+    and transaction status which never make it into ``info.transactions``.
+    Deliberately NOT merged into transactions_flat revenue (the same top-up
+    already exists there) — used for provider health, fees and
+    reconciliation.
+    """
+
+    model_config = ConfigDict(frozen=False)
+
+    txid: str
+    user_id: Optional[int] = None
+    dt: Optional[datetime] = None
+    amount: float = 0.0
+    commission: float = 0.0
+    source: Optional[str] = None
+    status: str = "other"  # paid | failed | pending | other
+    processed: Optional[bool] = None
+    tx_type: Optional[str] = None  # e.g. SBP / CARD from the provider payload
+
+
 # ---------------------------------------------------------------------------
 # Scalar parsing helpers
 # ---------------------------------------------------------------------------
@@ -624,6 +647,72 @@ def normalize_debit_entry(entry: Any) -> list[NormalizedDebit]:
                 out.extend(normalize_debit_entry(el))
         return out
     return []
+
+
+_PAID_STATUSES = {"paid", "success", "succeeded", "completed", "confirmed"}
+_FAILED_STATUSES = {"failed", "fail", "error", "declined", "canceled",
+                    "cancelled", "expired", "rejected"}
+_PENDING_STATUSES = {"pending", "created", "waiting", "processing", "new"}
+
+
+def _normalize_payment_status(value: Any, processed: Any) -> str:
+    if value is not None:
+        s = str(value).strip().lower()
+        if s in _PAID_STATUSES:
+            return "paid"
+        if s in _FAILED_STATUSES:
+            return "failed"
+        if s in _PENDING_STATUSES:
+            return "pending"
+        if s:
+            return "other"
+    # no explicit status: a processed webhook is a credited payment
+    if processed is True:
+        return "paid"
+    return "other"
+
+
+def normalize_payment_webhook(doc: dict) -> Optional[NormalizedPayment]:
+    """Normalize one ``payments_webhook`` document.
+
+    Only analytics-relevant fields are extracted; PII inside the payload
+    (email, order descriptions with user ids) is intentionally dropped.
+    """
+    if not isinstance(doc, dict):
+        return None
+    payload = doc.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+
+    txid = doc.get("txid") or payload.get("transactionId") or doc.get("_id")
+    if txid is None:
+        return None
+
+    amount = parse_amount(_first(doc, "amount_rub", "amount")
+                          or payload.get("amount"))
+    dt = parse_dt(_first(doc, "created_at", "dt", "date")
+                  or payload.get("paymentTime"))
+    user_id_raw = doc.get("user_id")
+    user_id: Optional[int] = None
+    if isinstance(user_id_raw, int) and not isinstance(user_id_raw, bool):
+        user_id = user_id_raw
+    elif isinstance(user_id_raw, str) and user_id_raw.isdigit():
+        user_id = int(user_id_raw)
+
+    processed = doc.get("processed") if isinstance(doc.get("processed"), bool) else None
+    return NormalizedPayment(
+        txid=str(txid),
+        user_id=user_id,
+        dt=dt,
+        amount=amount if amount is not None else 0.0,
+        commission=parse_amount(payload.get("commission")
+                                or doc.get("commission")) or 0.0,
+        source=normalize_source(doc.get("source") or payload.get("provider")),
+        status=_normalize_payment_status(
+            payload.get("transactionStatus") or doc.get("status"), processed),
+        processed=processed,
+        tx_type=str(payload["transactionType"])
+        if payload.get("transactionType") is not None else None,
+    )
 
 
 def normalize_debits(raw: Any) -> tuple[list[NormalizedDebit], int]:

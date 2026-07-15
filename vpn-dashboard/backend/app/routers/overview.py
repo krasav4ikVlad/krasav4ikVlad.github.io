@@ -20,7 +20,7 @@ from fastapi import APIRouter, Query
 from ..agg import NET_AMOUNT, as_utc, bucket_expr, iso, r2
 from ..cache import cached
 from ..config import get_settings
-from ..db import TX_FLAT, USERS_FLAT, get_db
+from ..db import PAYMENTS_FLAT, TX_FLAT, USERS_FLAT, get_db
 from ..remnawave import get_remnawave
 from ..ws import hub
 
@@ -143,17 +143,10 @@ async def summary() -> dict[str, Any]:
 # GET /overview/providers-status — cached 60s
 # ---------------------------------------------------------------------------
 
-@cached(ttl=60, prefix="overview:providers-status")
-async def _providers_status() -> dict[str, Any]:
-    db = get_db()
-    settings = get_settings()
-    now = datetime.now(timezone.utc)
-    since = now - timedelta(days=_PROVIDER_WINDOW_DAYS)
-
-    rows = await db[TX_FLAT].aggregate([
-        {"$match": {**_TOPUP_MATCH,
-                    "source": {"$type": "string"},
-                    "dt": {"$type": "date", "$gte": since}}},
+async def _provider_agg(db: Any, coll: str, match: dict, now: datetime) -> list[dict]:
+    """Per-source payment stream stats (shared by both data sources)."""
+    return await db[coll].aggregate([
+        {"$match": match},
         {"$sort": {"dt": -1}},
         {"$group": {
             "_id": "$source",
@@ -169,6 +162,53 @@ async def _providers_status() -> dict[str, Any]:
                       "dts": {"$slice": ["$dts", _PROVIDER_GAP_SAMPLE]}}},
         {"$sort": {"_id": 1}},
     ]).to_list(None)
+
+
+@cached(ttl=60, prefix="overview:providers-status")
+async def _providers_status() -> dict[str, Any]:
+    db = get_db()
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=_PROVIDER_WINDOW_DAYS)
+
+    # Primary source: provider webhooks mirrored into payments_flat — they
+    # carry every acquiring event with clean timestamps and commissions.
+    # Sources absent there (e.g. old providers) fall back to balance credits.
+    webhook_rows = await _provider_agg(db, PAYMENTS_FLAT, {
+        "status": "paid", "source": {"$type": "string"},
+        "dt": {"$type": "date", "$gte": since},
+    }, now)
+    balance_rows = await _provider_agg(db, TX_FLAT, {
+        **_TOPUP_MATCH, "source": {"$type": "string"},
+        "dt": {"$type": "date", "$gte": since},
+    }, now)
+
+    webhook_sources = {str(r.get("_id")) for r in webhook_rows}
+    rows = webhook_rows + [r for r in balance_rows
+                           if str(r.get("_id")) not in webhook_sources]
+
+    # commissions and failures per source over the webhook stream
+    extras: dict[str, dict[str, float]] = {}
+    if webhook_rows:
+        async for row in db[PAYMENTS_FLAT].aggregate([
+            {"$match": {"source": {"$type": "string"},
+                        "dt": {"$type": "date",
+                               "$gte": now - timedelta(days=30)}}},
+            {"$group": {
+                "_id": "$source",
+                "commission_30d": {"$sum": {"$cond": [
+                    {"$eq": ["$status", "paid"]},
+                    {"$ifNull": ["$commission", 0]}, 0]}},
+                "failed_24h": {"$sum": {"$cond": [
+                    {"$and": [{"$eq": ["$status", "failed"]},
+                              {"$gte": ["$dt", now - timedelta(hours=24)]}]},
+                    1, 0]}},
+            }},
+        ]):
+            extras[str(row.get("_id"))] = {
+                "commission_30d": r2(row.get("commission_30d")),
+                "failed_24h": int(row.get("failed_24h") or 0),
+            }
 
     providers: list[dict[str, Any]] = []
     for row in rows:
@@ -194,8 +234,9 @@ async def _providers_status() -> dict[str, Any]:
         else:
             status = "ok"
 
+        source = str(row.get("_id"))
         providers.append({
-            "source": str(row.get("_id")),
+            "source": source,
             "last_payment_at": iso(last_at),
             "payments_24h": int(row.get("payments_24h") or 0),
             "payments_7d": int(row.get("payments_7d") or 0),
@@ -203,7 +244,11 @@ async def _providers_status() -> dict[str, Any]:
             "silence_hours": r2(silence),
             "threshold_hours": r2(threshold),
             "status": status,
+            "via": "webhook" if source in webhook_sources else "balance",
+            "commission_30d": extras.get(source, {}).get("commission_30d"),
+            "failed_24h": extras.get(source, {}).get("failed_24h"),
         })
+    providers.sort(key=lambda p: p["source"])
     return {"providers": providers}
 
 

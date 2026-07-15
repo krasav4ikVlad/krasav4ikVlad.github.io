@@ -59,6 +59,7 @@ function ProvidersCard() {
               <TH>Статус</TH>
               <TH>Последний платёж</TH>
               <TH className="text-right">За 24ч</TH>
+              <TH className="text-right">Комиссия 30д</TH>
               <TH className="text-right">Тишина / порог</TH>
             </TR>
           </THead>
@@ -83,6 +84,16 @@ function ProvidersCard() {
                   </TD>
                   <TD className="text-right tabular-nums text-ink-2">
                     {fmtNum(p.payments_24h)}
+                    {p.failed_24h ? (
+                      <span className="ml-1 text-critical" title="неуспешных за 24ч">
+                        ({p.failed_24h}✕)
+                      </span>
+                    ) : null}
+                  </TD>
+                  <TD className="text-right tabular-nums text-ink-2">
+                    {p.commission_30d !== null && p.commission_30d !== undefined
+                      ? fmtMoney(p.commission_30d)
+                      : "—"}
                   </TD>
                   <TD className="whitespace-nowrap text-right tabular-nums">
                     <span

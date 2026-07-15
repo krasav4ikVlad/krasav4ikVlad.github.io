@@ -19,20 +19,21 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import DeleteMany, ReplaceOne
 
 from .config import get_settings
-from .db import ACTIVITY, ETL_STATE, TX_FLAT, USERS_FLAT
+from .db import ACTIVITY, ETL_STATE, PAYMENTS_FLAT, TX_FLAT, USERS_FLAT
 from .normalizer import (
     DebitKind,
     NormalizedDebit,
     NormalizedTransaction,
     TxKind,
     normalize_debits,
+    normalize_payment_webhook,
     normalize_transactions,
     parse_amount,
     parse_dt,
@@ -311,6 +312,47 @@ def extract_activity_dts(doc: dict) -> list[datetime]:
     return out
 
 
+async def sweep_payments(db: AsyncIOMotorDatabase, etl_at: datetime,
+                         full: bool = False) -> int:
+    """Mirror ``payments_webhook`` into ``payments_flat`` (idempotent).
+
+    Incremental by default: only documents newer than the last mirrored
+    ``dt`` (minus a safety lag) are re-read; ``full=True`` sweeps everything.
+    Returns the number of upserted rows; 0 when the collection is absent.
+    """
+    settings = get_settings()
+    name = settings.payments_collection
+    if not name or name not in await db.list_collection_names():
+        return 0
+
+    query: dict = {}
+    if not full:
+        newest = await db[PAYMENTS_FLAT].find_one(
+            {"dt": {"$type": "date"}}, sort=[("dt", -1)], projection={"dt": 1})
+        if newest and newest.get("dt"):
+            lag = newest["dt"] - timedelta(hours=6)
+            query = {"$or": [{"created_at": {"$gte": lag}},
+                             {"created_at": {"$exists": False}}]}
+
+    ops: list = []
+    count = 0
+    async for doc in db[name].find(query).batch_size(500):
+        payment = normalize_payment_webhook(doc)
+        if payment is None:
+            continue
+        row = payment.model_dump()
+        row["_id"] = row.pop("txid")
+        row["etl_at"] = etl_at
+        ops.append(ReplaceOne({"_id": row["_id"]}, row, upsert=True))
+        count += 1
+        if len(ops) >= _BULK_FLUSH:
+            await db[PAYMENTS_FLAT].bulk_write(ops, ordered=False)
+            ops = []
+    if ops:
+        await db[PAYMENTS_FLAT].bulk_write(ops, ordered=False)
+    return count
+
+
 async def run_etl(db: AsyncIOMotorDatabase) -> dict:
     """One full ETL sweep. Returns run statistics."""
     settings = get_settings()
@@ -367,6 +409,12 @@ async def run_etl(db: AsyncIOMotorDatabase) -> dict:
             await flush()
 
     await flush()
+
+    try:
+        stats["payments"] = await sweep_payments(db, etl_at)
+    except Exception:
+        log.exception("payments_webhook sweep failed")
+        stats["payments"] = 0
 
     await db[ACTIVITY].replace_one(
         {"_id": "heatmap"},

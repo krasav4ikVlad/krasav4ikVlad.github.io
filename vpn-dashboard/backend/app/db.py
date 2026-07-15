@@ -35,6 +35,7 @@ USERS_FLAT = "users_flat"
 ETL_STATE = "etl_state"
 ALERTS = "alerts"
 ACTIVITY = "activity_stats"
+PAYMENTS_FLAT = "payments_flat"
 
 
 async def ensure_indexes() -> None:
@@ -58,6 +59,12 @@ async def ensure_indexes() -> None:
 
     await db[ALERTS].create_index([("created_at", -1)], name="created_at")
     await db[ALERTS].create_index([("key", 1), ("created_at", -1)], name="key_created")
+
+    pf = db[PAYMENTS_FLAT]
+    await pf.create_index([("dt", -1)], name="dt")
+    await pf.create_index([("source", 1), ("status", 1), ("dt", -1)],
+                          name="source_status_dt")
+    await pf.create_index([("user_id", 1), ("dt", -1)], name="user_dt")
     log.info("indexes ensured")
 
 

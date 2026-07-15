@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     mongo_uri: str = Field(default="mongodb://localhost:27017", alias="MONGO_URI")
     mongo_db: str = Field(default="vpn_bot", alias="MONGO_DB")
     users_collection: str = Field(default="users", alias="USERS_COLLECTION")
+    # Provider webhook log; swept into payments_flat when the collection exists
+    payments_collection: str = Field(default="payments_webhook",
+                                     alias="PAYMENTS_COLLECTION")
 
     # --- Redis cache (falls back to in-memory when unreachable) ---
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")

@@ -89,6 +89,18 @@ last_tx_at: datetime|null
 etl_at: datetime
 ```
 
+### `payments_flat` (constant `PAYMENTS_FLAT`)
+
+Mirror of the provider webhook log (`payments_webhook`), one doc per event:
+```
+_id: str (txid), user_id: int|null, dt: datetime|null,
+amount: float, commission: float, source: str|null,
+status: "paid"|"failed"|"pending"|"other", processed: bool|null,
+tx_type: str|null, etl_at: datetime
+```
+NOT part of revenue (the same top-ups already live in transactions_flat) —
+used for provider health, commissions and reconciliation.
+
 ### Other collections
 
 - `activity_stats`: `{_id: "heatmap", cells: [{dow: 0-6, hour: 0-23, count}], computed_at}`
@@ -127,11 +139,15 @@ etl_at: datetime
   "median_gap_hours": 1.4,
   "silence_hours": 0.5,
   "threshold_hours": 6.0,
-  "status": "ok" | "warning" | "down"   // warning: silence > threshold/2; down: silence > threshold
+  "status": "ok" | "warning" | "down",  // warning: silence > threshold/2; down: silence > threshold
+  "via": "webhook" | "balance",         // data source: payments_flat vs transactions_flat
+  "commission_30d": 123.4 | null,       // provider fees, webhook sources only
+  "failed_24h": 2 | null
 }]}
 ```
-Providers = distinct non-null topup sources over last 30 days.
-Threshold = `max(settings.provider_silence_hours, 4 * median_gap_hours)`.
+Providers = distinct non-null sources over last 30 days; the webhook stream
+(`payments_flat`, status=paid) is preferred per source, balance credits are
+the fallback. Threshold = `max(settings.provider_silence_hours, 4 * median_gap_hours)`.
 
 `GET /overview/events/recent?limit=50` → `{"events": [...last WS events from hub._recent...]}` — read `app.ws.hub` ring buffer (add a public `recent()` accessor usage: `list(hub._recent)` is acceptable).
 

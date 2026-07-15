@@ -29,6 +29,10 @@ export interface ProviderStatus {
   silence_hours: number | null;
   threshold_hours: number;
   status: "ok" | "warning" | "down";
+  /** data source: provider webhooks (payments_flat) or balance credits */
+  via?: "webhook" | "balance";
+  commission_30d?: number | null;
+  failed_24h?: number | null;
 }
 export interface ProvidersStatusResponse {
   providers: ProviderStatus[];
