@@ -298,14 +298,20 @@ async def _bonus_share(*, granularity: str, from_iso: Optional[str],
     db = get_db()
     period = _period_from_iso(from_iso, to_iso)
     is_topup = {"$eq": ["$kind", "topup"]}
+    is_promo = {"$eq": ["$kind", "promo"]}
     rows = await db[TX_FLAT].aggregate([
-        {"$match": {"direction": "credit", "kind": {"$in": ["topup", "promo"]},
+        # kind=bonus are standalone gifted accruals ("Бонус за возвращение")
+        {"$match": {"direction": "credit",
+                    "kind": {"$in": ["topup", "promo", "bonus"]},
                     **_dt_match(period)}},
         {"$group": {
             "_id": bucket_expr(granularity),
             "net": {"$sum": {"$cond": [is_topup, NET_AMOUNT, 0]}},
-            "bonus": {"$sum": {"$cond": [is_topup, {"$ifNull": ["$bonus", 0]}, 0]}},
-            "promo": {"$sum": {"$cond": [is_topup, 0, {"$ifNull": ["$amount", 0]}]}},
+            "bonus": {"$sum": {"$cond": [
+                is_topup, {"$ifNull": ["$bonus", 0]},
+                {"$cond": [is_promo, 0, {"$ifNull": ["$amount", 0]}]}]}},
+            "promo": {"$sum": {"$cond": [is_promo,
+                                         {"$ifNull": ["$amount", 0]}, 0]}},
         }},
         {"$sort": {"_id": 1}},
     ]).to_list(length=None)

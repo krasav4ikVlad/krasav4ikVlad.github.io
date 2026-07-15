@@ -275,12 +275,14 @@ _RE_PROMO = re.compile(
 )
 _RE_REF = re.compile(r"реферал|referral|ref[\._ ]?income|партн[её]р", re.IGNORECASE)
 _RE_PURCHASE = re.compile(r"покупка\s+[«\"']?([^»\"'\n]+?)[»\"']?\s*$", re.IGNORECASE)
-_RE_GIFT = re.compile(r"подар", re.IGNORECASE)
+_RE_GIFT = re.compile(r"подар|дарени", re.IGNORECASE)
+# a description that IS a bonus accrual ("Бонус за возвращение (серия)")
+_RE_BONUS_WORD = re.compile(r"бонус|акци[яи]|кэшб[еэ]к|cashback", re.IGNORECASE)
 
 # Debit-side wording
 _RE_RENEWAL = re.compile(r"продлени|подписк|тариф|subscription|renew|(^|\s)pro(\s|$)", re.IGNORECASE)
 _RE_DEVICE = re.compile(r"устройств|слот|device", re.IGNORECASE)
-_RE_BYPASS = re.compile(r"bypass|байпас|трафик", re.IGNORECASE)
+_RE_BYPASS = re.compile(r"bypass|байпас|трафик|гигабайт|\bгб\b|\bgb\b", re.IGNORECASE)
 
 
 class _DescInfo(BaseModel):
@@ -334,8 +336,9 @@ def parse_description(desc: Optional[str]) -> _DescInfo:
     if info.kind is None and _RE_GIFT.search(text):
         info.kind = TxKind.GIFT
 
-    # "+ акция 40₽" as the whole description → standalone bonus accrual
-    if info.kind is None and info.bonus:
+    # "+ акция 40₽" or "Бонус за возвращение" → standalone bonus accrual,
+    # NOT provider revenue
+    if info.kind is None and (info.bonus or _RE_BONUS_WORD.search(text)):
         info.kind = TxKind.BONUS
 
     return info
@@ -385,8 +388,9 @@ def _first(d: dict, *keys: str) -> Any:
 
 def _from_dict(entry: dict) -> Optional[NormalizedTransaction]:
     amount = parse_amount(_first(entry, "amount", "sum", "value", "rub"))
-    dt = parse_dt(_first(entry, "dt", "date", "created_at", "ts", "time"))
-    desc = _first(entry, "desc", "description", "text", "title")
+    dt = parse_dt(_first(entry, "dt", "date", "created_at", "timestamp",
+                         "ts", "time"))
+    desc = _first(entry, "desc", "description", "details", "text", "title")
     desc = str(desc) if desc is not None else None
 
     meta = entry.get("meta")
@@ -429,6 +433,9 @@ def _from_dict(entry: dict) -> Optional[NormalizedTransaction]:
         # An explicit meta.source strongly implies a provider top-up.
         kind = TxKind.TOPUP if source else TxKind.UNKNOWN
 
+    if kind is TxKind.BONUS and not bonus and (amount or 0) > 0:
+        bonus = amount  # standalone accrual: the whole amount is gifted
+
     return NormalizedTransaction(
         amount=amount if amount is not None else 0.0,
         dt=dt,
@@ -461,12 +468,16 @@ def _from_legacy(entry: list | tuple) -> Optional[NormalizedTransaction]:
         # amount without any description is treated as a generic top-up.
         kind = TxKind.TOPUP if (amount or 0) > 0 else TxKind.UNKNOWN
 
+    bonus = hints.bonus
+    if kind is TxKind.BONUS and not bonus and (amount or 0) > 0:
+        bonus = amount  # standalone accrual: the whole amount is gifted
+
     return NormalizedTransaction(
         amount=amount if amount is not None else 0.0,
         dt=dt,
         kind=kind,
         source=hints.source,
-        bonus=hints.bonus,
+        bonus=bonus,
         promo_code=hints.promo_code,
         ref_meta=None,
         payment_id=payment_id,
@@ -574,8 +585,10 @@ def _debit_kind_from_desc(desc: Optional[str]) -> tuple[DebitKind, Optional[str]
 
 def _debit_from_dict(entry: dict) -> Optional[NormalizedDebit]:
     amount = parse_amount(_first(entry, "amount", "sum", "value", "rub"))
-    dt = parse_dt(_first(entry, "dt", "date", "created_at", "ts", "time"))
-    desc = _first(entry, "desc", "description", "text", "title", "reason")
+    dt = parse_dt(_first(entry, "dt", "date", "created_at", "timestamp",
+                         "ts", "time"))
+    desc = _first(entry, "desc", "description", "details", "text", "title",
+                  "reason")
     desc = str(desc) if desc is not None else None
 
     type_raw = _first(entry, "type", "kind")

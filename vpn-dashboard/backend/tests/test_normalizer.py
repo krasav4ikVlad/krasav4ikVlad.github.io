@@ -171,6 +171,17 @@ class TestLegacyFormat:
         assert tx.kind is TxKind.BONUS
         assert tx.bonus == 40.0
 
+    def test_returning_bonus_is_not_topup_revenue(self):
+        # production wording: gifted retention bonus, not provider revenue
+        tx = one([40, "2026-06-04T13:47:51.064Z", "Бонус за возвращение (серия)"])
+        assert tx.kind is TxKind.BONUS
+        assert tx.bonus == 40.0
+        assert tx.source is None
+
+    def test_promo_action_bonus_word(self):
+        tx = one([100, DT, "Акция +20%"])
+        assert tx.kind is TxKind.BONUS
+
     def test_no_description_positive_defaults_to_topup(self):
         tx = one([150, DT])
         assert tx.kind is TxKind.TOPUP
@@ -465,6 +476,22 @@ class TestDebits:
             DebitKind.RENEWAL, DebitKind.DEVICE, DebitKind.BYPASS,
         ]
         assert unparsed == 1
+
+    def test_rs2_details_timestamp_format(self):
+        """Production format: details + timestamp keys, Russian dd.mm.yyyy."""
+        [d] = normalize_debit_entry({"amount": 50,
+                                     "details": "Покупка 5 гигабайт",
+                                     "timestamp": "05.07.2026 16:38:23"})
+        assert d.kind is DebitKind.BYPASS
+        assert d.amount == 50.0
+        assert d.dt == datetime(2026, 7, 5, 16, 38, 23, tzinfo=UTC)
+
+    def test_rs2_gift_subscription(self):
+        [d] = normalize_debit_entry({"amount": 2000,
+                                     "details": "Дарение подписки",
+                                     "timestamp": "06.07.2026 12:37:41"})
+        assert d.kind is DebitKind.GIFT
+        assert d.dt is not None
 
     def test_none_field(self):
         assert normalize_debits(None) == ([], 0)
