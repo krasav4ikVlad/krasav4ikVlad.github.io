@@ -572,19 +572,29 @@ tr.tk-unanswered:hover td { background: var(--danger-hover); }
 }
 
 /* --- аккуратная полоса прокрутки в чате и боковом списке --- */
-.chat, .ticket-side #side-list, #tk-reply textarea {
+.chat, .ticket-side #side-list, #tk-reply textarea, #notif-panel,
+#qr-list, .qr-live-preview {
   scrollbar-width: thin;
   scrollbar-color: var(--border-2) transparent;
 }
 .chat::-webkit-scrollbar,
 .ticket-side #side-list::-webkit-scrollbar,
-#tk-reply textarea::-webkit-scrollbar { width: 8px; }
+#tk-reply textarea::-webkit-scrollbar,
+#notif-panel::-webkit-scrollbar,
+#qr-list::-webkit-scrollbar,
+.qr-live-preview::-webkit-scrollbar { width: 8px; }
 .chat::-webkit-scrollbar-track,
 .ticket-side #side-list::-webkit-scrollbar-track,
-#tk-reply textarea::-webkit-scrollbar-track { background: transparent; }
+#tk-reply textarea::-webkit-scrollbar-track,
+#notif-panel::-webkit-scrollbar-track,
+#qr-list::-webkit-scrollbar-track,
+.qr-live-preview::-webkit-scrollbar-track { background: transparent; }
 .chat::-webkit-scrollbar-thumb,
 .ticket-side #side-list::-webkit-scrollbar-thumb,
-#tk-reply textarea::-webkit-scrollbar-thumb {
+#tk-reply textarea::-webkit-scrollbar-thumb,
+#notif-panel::-webkit-scrollbar-thumb,
+#qr-list::-webkit-scrollbar-thumb,
+.qr-live-preview::-webkit-scrollbar-thumb {
   background: var(--border-2);
   border-radius: 999px;
   border: 2px solid transparent;
@@ -592,7 +602,10 @@ tr.tk-unanswered:hover td { background: var(--danger-hover); }
 }
 .chat::-webkit-scrollbar-thumb:hover,
 .ticket-side #side-list::-webkit-scrollbar-thumb:hover,
-#tk-reply textarea::-webkit-scrollbar-thumb:hover { background: var(--dim); background-clip: padding-box; }
+#tk-reply textarea::-webkit-scrollbar-thumb:hover,
+#notif-panel::-webkit-scrollbar-thumb:hover,
+#qr-list::-webkit-scrollbar-thumb:hover,
+.qr-live-preview::-webkit-scrollbar-thumb:hover { background: var(--dim); background-clip: padding-box; }
 /* тонкий отступ, чтобы полоса не прилипала к сообщениям */
 .chat { padding-right: 6px; }
 
