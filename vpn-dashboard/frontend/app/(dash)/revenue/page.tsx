@@ -161,7 +161,7 @@ export default function RevenuePage() {
         subtitle="Чистые пополнения (net) по платёжным провайдерам"
         loading={tsLoading && !ts}
         empty={!!ts && ts.series.length === 0}
-        csvRows={ts?.series}
+        csvRows={ts?.series.map((r) => ({ ...r }))}
         filename="revenue-by-source"
         height={300}
       >
@@ -236,7 +236,7 @@ export default function RevenuePage() {
           subtitle="На что тратят: списания по видам услуг"
           loading={byTypeLoading && !byType}
           empty={!!byType && donutData.length === 0}
-          csvRows={byType?.types}
+          csvRows={byType?.types.map((t) => ({ ...t }))}
           filename="revenue-by-type"
           height={260}
         >
