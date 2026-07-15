@@ -34,6 +34,7 @@ TX_FLAT = "transactions_flat"
 USERS_FLAT = "users_flat"
 ETL_STATE = "etl_state"
 ALERTS = "alerts"
+ACTIVITY = "activity_stats"
 
 
 async def ensure_indexes() -> None:

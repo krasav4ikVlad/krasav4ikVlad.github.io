@@ -26,7 +26,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import DeleteMany, ReplaceOne
 
 from .config import get_settings
-from .db import ETL_STATE, TX_FLAT, USERS_FLAT
+from .db import ACTIVITY, ETL_STATE, TX_FLAT, USERS_FLAT
 from .normalizer import (
     DebitKind,
     NormalizedDebit,
@@ -282,6 +282,35 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
     return rows, user_row, unparsed_c + unparsed_d
 
 
+_MAX_LOG_DTS = 500  # per-user cap so one hyperactive user can't skew ETL cost
+
+
+def extract_activity_dts(doc: dict) -> list[datetime]:
+    """Pull timestamps out of the free-form ``logs`` field for the
+    hour × weekday activity heatmap."""
+    logs = doc.get("logs")
+    if isinstance(logs, dict):
+        logs = list(logs.values())
+    if not isinstance(logs, (list, tuple)):
+        return []
+    out: list[datetime] = []
+    for entry in logs[-_MAX_LOG_DTS:]:
+        dt = None
+        if isinstance(entry, dict):
+            dt = parse_dt(entry.get("dt") or entry.get("date") or entry.get("ts")
+                          or entry.get("time") or entry.get("at"))
+        elif isinstance(entry, (list, tuple)):
+            for el in entry:
+                dt = parse_dt(el)
+                if dt:
+                    break
+        else:
+            dt = parse_dt(entry)
+        if dt:
+            out.append(dt)
+    return out
+
+
 async def run_etl(db: AsyncIOMotorDatabase) -> dict:
     """One full ETL sweep. Returns run statistics."""
     settings = get_settings()
@@ -295,6 +324,8 @@ async def run_etl(db: AsyncIOMotorDatabase) -> dict:
     tx_ops: list = []
     user_ops: list = []
     stats = {"users": 0, "tx_rows": 0, "unparsed": 0}
+    # (weekday 0=Mon, hour) → count, for the activity heatmap
+    heatmap: dict[tuple[int, int], int] = {}
 
     async def flush() -> None:
         nonlocal tx_ops, user_ops
@@ -328,10 +359,22 @@ async def run_etl(db: AsyncIOMotorDatabase) -> dict:
         }))
         user_ops.append(ReplaceOne({"_id": user_row["_id"]}, user_row, upsert=True))
 
+        for dt in extract_activity_dts(doc):
+            key = (dt.weekday(), dt.hour)
+            heatmap[key] = heatmap.get(key, 0) + 1
+
         if len(tx_ops) >= _BULK_FLUSH:
             await flush()
 
     await flush()
+
+    await db[ACTIVITY].replace_one(
+        {"_id": "heatmap"},
+        {"_id": "heatmap",
+         "cells": [{"dow": k[0], "hour": k[1], "count": v}
+                   for k, v in sorted(heatmap.items())],
+         "computed_at": etl_at},
+        upsert=True)
 
     stats["took_ms"] = int((time.monotonic() - started) * 1000)
     stats["ran_at"] = etl_at
