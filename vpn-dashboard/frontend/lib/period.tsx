@@ -35,25 +35,33 @@ export interface PeriodState {
   setCustom: (from: string, to: string) => void;
 }
 
+/** N full UTC days back from today's UTC midnight — aligned with the
+ *  backend's $dateTrunc day buckets, so the first bar is a complete day. */
+function utcDaysBack(days: number): string {
+  const start = new Date();
+  start.setUTCHours(0, 0, 0, 0);
+  start.setUTCDate(start.getUTCDate() - days);
+  return start.toISOString();
+}
+
 function presetToQuery(
   preset: PeriodPreset,
   customFrom: string | null,
   customTo: string | null,
 ): PeriodQuery {
-  const now = new Date();
   const dayMs = 86_400_000;
   switch (preset) {
     case "today": {
-      const start = new Date(now);
+      const start = new Date();
       start.setHours(0, 0, 0, 0);
       return { from: start.toISOString() };
     }
     case "7d":
-      return { from: new Date(now.getTime() - 7 * dayMs).toISOString() };
+      return { from: utcDaysBack(7) };
     case "30d":
-      return { from: new Date(now.getTime() - 30 * dayMs).toISOString() };
+      return { from: utcDaysBack(30) };
     case "90d":
-      return { from: new Date(now.getTime() - 90 * dayMs).toISOString() };
+      return { from: utcDaysBack(90) };
     case "all":
       return {};
     case "custom":
