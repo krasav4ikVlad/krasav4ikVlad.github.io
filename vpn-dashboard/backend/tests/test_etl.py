@@ -110,6 +110,55 @@ class TestFlattenUser:
         assert u["preferred_client"] == "happ"
         assert rows[0]["source"] == "wata"
 
+    def test_rs2_growth_and_refstats_shape(self):
+        """Mirror of the production RS_2 document layout (fake values)."""
+        doc = {
+            "_id": "69178c8c689fd338958ac1e1",
+            "user_data": {"user_id": 555001, "username": "rs2u",
+                          "date_joined": "2024-09-16T03:16:04.000Z",
+                          "referrer": 555000, "utm": "yt_review"},
+            "growth": {"segment": "active_paid",
+                       "joined_at": "2024-09-16T03:16:04.000Z",
+                       "days_to_expire": 24.52,
+                       "expire_at": "2026-08-09T11:16:00.000Z"},
+            "info": {
+                "balance": 9807,
+                "email": "private@example.com",
+                "transactions": [[150, DT_FIXED, "Пополнение (cardlink)"]],
+                "logs_balance": [],
+                "ref_stats": {
+                    # referrals as ARRAYS of tg ids, not counts
+                    "referrals": [1, 2, 3, 4, 5],
+                    "paying_referrals": [1, 2],
+                    "earned_total": 510,
+                    "turnover_total": 1125,
+                    "withdrawable": 575,
+                    "method": [{"type": "sbp",
+                                "data": {"fio": "Иванов И.И.",
+                                         "phone": "+79001234567"}}],
+                },
+            },
+            "vpn": {"expireAt": "2026-08-09T11:16:00.000Z",
+                    "extraDevices": [{"active": True}],
+                    "preferred_client": "happ"},
+        }
+        rows, u, unparsed = flatten_user(doc, NOW)
+        assert u["_id"] == 555001
+        assert u["joined_at"] == datetime(2024, 9, 16, 3, 16, 4, tzinfo=UTC)
+        assert u["sub_until"] is not None
+        assert u["referrer_id"] == 555000
+        assert u["campaigns"] == {"converted_from": "yt_review"}
+        rs = u["ref_stats"]
+        assert rs["referrals"] == 5
+        assert rs["paying_referrals"] == 2
+        assert rs["payout_pending"] == 575.0
+        assert rs["turnover_total"] == 1125.0
+        # payout requisites must never leak into the flat projection
+        assert "method" not in rs
+        assert "Иванов" not in str(u)
+        assert "private@example.com" not in str(u)
+        assert rows[0]["source"] == "cardlink"
+
 
 class TestExtractUserId:
     def test_from_int_id(self):

@@ -57,7 +57,8 @@ USER_PROJECTION = {
     **{f"info.{f}": 1 for f in ID_FIELDS},
     **{f"user_data.{f}": 1 for f in ID_FIELDS},
     "username": 1, "info.username": 1, "user_data.username": 1,
-    "vpn": 1,
+    "user_data.date_joined": 1, "user_data.referrer": 1, "user_data.utm": 1,
+    "vpn": 1, "info.ref_stats": 1,
     "info.transactions": 1, "logs_balance": 1, "info.logs_balance": 1,
     "growth": 1, "growth_history": 1, "info.growth_history": 1,
     "ref_stats": 1, "referrer_id": 1, "info.referrer_id": 1,
@@ -239,24 +240,36 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
     promo_txs = [t for t in credits if t.kind is TxKind.PROMO]
     all_dts = [t.dt for t in credits if t.dt] + [d.dt for d in debits if d.dt]
 
-    ref_stats_raw = _pick(doc, "ref_stats") or {}
+    ref_stats_raw = _pick(doc, "ref_stats", "info.ref_stats") or {}
     if not isinstance(ref_stats_raw, dict):
         ref_stats_raw = {}
+
+    def _count(value: Any) -> int:
+        # referrals may be stored as a count OR as an array of telegram ids
+        if isinstance(value, (list, tuple)):
+            return len(value)
+        return int(parse_amount(value) or 0)
+
     ref_stats = {
         "turnover_total": parse_amount(ref_stats_raw.get("turnover_total")) or 0.0,
         "earned_total": parse_amount(
             ref_stats_raw.get("earned_total") or ref_stats_raw.get("earned")) or 0.0,
-        "referrals": int(parse_amount(ref_stats_raw.get("referrals")) or 0),
-        "paying_referrals": int(
-            parse_amount(ref_stats_raw.get("paying_referrals")) or 0),
+        "referrals": _count(ref_stats_raw.get("referrals")),
+        "paying_referrals": _count(ref_stats_raw.get("paying_referrals")),
         "payout_pending": parse_amount(
             ref_stats_raw.get("payout_pending")
+            or ref_stats_raw.get("withdrawable")
             or ref_stats_raw.get("to_payout") or ref_stats_raw.get("balance")) or 0.0,
         "payout_history": ref_stats_raw.get("payout_history")
             if isinstance(ref_stats_raw.get("payout_history"), list) else [],
     }
 
     campaigns = _pick(doc, "campaigns", "info.campaigns")
+    if not campaigns:
+        # UTM attribution as a minimal campaign record
+        utm = _pick(doc, "user_data.utm")
+        if utm:
+            campaigns = {"converted_from": str(utm)}
     devices = _parse_extra_devices(_pick(doc, "extraDevices", "info.extraDevices",
                                          "vpn.extraDevices", "vpn.extra_devices",
                                          "vpn.devices"))
@@ -271,6 +284,8 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
         "username": username,
         "username_lower": username.lower() if username else None,
         "joined_at": parse_dt(_pick(doc, "joined_at", "created_at",
+                                    "growth.joined_at",
+                                    "user_data.date_joined",
                                     "info.joined_at", "user_data.joined_at",
                                     "info.reg_date", "reg_date",
                                     "info.created_at")),
@@ -278,10 +293,12 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
         "segment_history": segment_history,
         "days_to_expire": days_to_expire,
         "sub_until": parse_dt(_pick(doc, "sub_until", "info.sub_until",
-                                    "subscription_until", "vpn.sub_until",
-                                    "vpn.expires_at", "vpn.until")),
+                                    "subscription_until", "vpn.expireAt",
+                                    "vpn.sub_until", "vpn.expires_at",
+                                    "vpn.until", "growth.expire_at")),
         "balance": parse_amount(_pick(doc, "balance", "info.balance")) or 0.0,
-        "referrer_id": _pick(doc, "referrer_id", "info.referrer_id"),
+        "referrer_id": _pick(doc, "referrer_id", "info.referrer_id",
+                             "user_data.referrer"),
         "ref_stats": ref_stats,
         "campaigns": campaigns if isinstance(campaigns, (dict, list)) else None,
         "extra_devices": devices,
