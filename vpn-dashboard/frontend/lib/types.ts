@@ -328,6 +328,43 @@ export interface PeakHoursResponse {
   hours: { hour: number; count: number }[];
 }
 
+// ---- experiments ----
+export interface AbGroup {
+  group: string;
+  users: number;
+  paying: number;
+  conversion_pct: number;
+  arpu: number;
+  avg_ltv_paying: number;
+  renewal_share_pct: number;
+  vs_control: {
+    z: number;
+    p_value: number;
+    significant: boolean;
+    conversion_diff_pp: number;
+  } | null;
+}
+export interface AbResponse {
+  experiment: string;
+  control: string | null;
+  groups: AbGroup[];
+  untagged_users: number;
+}
+export interface Opportunity {
+  key: string;
+  title: string;
+  description: string;
+  users: number;
+  potential_rub: number;
+  assumption: string;
+}
+export interface OpportunitiesResponse {
+  median_renewal: number;
+  median_check: number;
+  opportunities: Opportunity[];
+  computed_at: string | null;
+}
+
 // ---- alerts ----
 export interface AlertRow {
   key: string;

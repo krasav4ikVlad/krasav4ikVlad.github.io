@@ -376,6 +376,42 @@ after it vs the same window before:
 ```
 Sum heatmap cells over weekdays.
 
+### `experiments.py` — prefix `/experiments`
+
+`GET /experiments/ab?experiment=ab_group|trial_ab_group&joined_from=&joined_to=` (cached 120s) →
+```json
+{"experiment": "ab_group",
+ "control": "A",                       // largest group = baseline
+ "groups": [{
+   "group": "A", "users": 500,
+   "paying": 150, "conversion_pct": 30.0,
+   "arpu": 250.0,                      // lifetime net topups / users
+   "avg_ltv_paying": 833.3,            // topups / paying
+   "renewal_share_pct": 40.0,          // paying with >= 2 renewals
+   "vs_control": {"z": 2.1, "p_value": 0.036, "significant": true,
+                  "conversion_diff_pp": 5.2} | null   // null for control itself
+ }],
+ "untagged_users": 120}
+```
+Groups from `users_flat.ab_group` / `trial_ab_group`; optional joined_at
+window. Two-sided two-proportion z-test on conversion vs control;
+significant = p < 0.05.
+
+`GET /experiments/opportunities` (cached 300s) →
+```json
+{"median_renewal": 199.0, "median_check": 299.0,
+ "opportunities": [{
+   "key": "expiring_no_balance",
+   "title": "Истекают без денег на балансе",
+   "description": "...",
+   "users": 42,
+   "potential_rub": 8358.0,            // users * relevant median * assumed conversion
+   "assumption": "конверсия напоминания 40%"
+ }]}
+```
+Keys: expiring_no_balance, winback_expired, trial_no_topup, bypass_upsell,
+dormant_balance. Estimates are labeled heuristics, not promises.
+
 ### `alerts_router.py` — prefix `/alerts`
 
 `GET /alerts/recent?limit=50` → `{"alerts": [{key, severity, title, details, created_at}]}` sorted desc.

@@ -291,6 +291,9 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
                                     "info.created_at")),
         "segment": growth.get("segment"),
         "segment_history": segment_history,
+        # experiment groups maintained by the bot
+        "ab_group": growth.get("ab_group"),
+        "trial_ab_group": growth.get("trial_ab_group"),
         "days_to_expire": days_to_expire,
         "sub_until": parse_dt(_pick(doc, "sub_until", "info.sub_until",
                                     "subscription_until", "vpn.expireAt",

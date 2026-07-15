@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import {
   Activity,
   Bell,
+  FlaskConical,
   Gift,
   LayoutDashboard,
   Package,
@@ -22,6 +23,7 @@ export const NAV = [
   { href: "/referrals", label: "Рефералка", icon: Gift },
   { href: "/promos", label: "Промокоды", icon: Ticket },
   { href: "/product", label: "Продукт", icon: Package },
+  { href: "/experiments", label: "Эксперименты", icon: FlaskConical },
   { href: "/infra", label: "Инфраструктура", icon: Server },
   { href: "/alerts", label: "Алерты", icon: Bell },
 ] as const;

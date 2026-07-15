@@ -114,6 +114,10 @@ export const api = {
 
     alertsRecent: (limit = 50) => `/api/alerts/recent${qs(undefined, { limit })}`,
     alertsStatus: () => "/api/alerts/status",
+
+    experimentsAb: (experiment: string) =>
+      `/api/experiments/ab${qs(undefined, { experiment })}`,
+    opportunities: () => "/api/experiments/opportunities",
   },
 
   alertsTest: () => request<{ sent: boolean }>("/api/alerts/test", { method: "POST" }),

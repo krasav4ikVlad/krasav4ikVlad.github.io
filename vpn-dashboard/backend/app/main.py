@@ -107,12 +107,12 @@ def create_app() -> FastAPI:
 
     from .routers import auth_router, ws_router
     from .routers import (overview, revenue, users, referrals, promos,
-                          product, infra, alerts_router)
+                          product, infra, alerts_router, experiments)
 
     app.include_router(auth_router.router, prefix="/api")
     app.include_router(ws_router.router, prefix="/api")
     for module in (overview, revenue, users, referrals, promos, product,
-                   infra, alerts_router):
+                   infra, alerts_router, experiments):
         app.include_router(module.router, prefix="/api",
                            dependencies=[require_admin])
 
