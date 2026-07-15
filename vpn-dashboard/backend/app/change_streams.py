@@ -41,16 +41,24 @@ _identity_cache: dict[str, tuple[int | None, str | None]] = {}
 _IDENTITY_CACHE_CAP = 5000
 _IDENTITY_PROJECTION = {**{f: 1 for f in ID_FIELDS},
                         **{f"info.{f}": 1 for f in ID_FIELDS},
-                        "username": 1, "info.username": 1}
+                        **{f"user_data.{f}": 1 for f in ID_FIELDS},
+                        "username": 1, "info.username": 1,
+                        "user_data.username": 1}
+
+
+def _nested_username(doc: dict) -> str | None:
+    username = doc.get("username")
+    for container in ("user_data", "info"):
+        if username is None and isinstance(doc.get(container), dict):
+            username = doc[container].get("username")
+    return str(username) if username is not None else None
 
 
 async def _resolve_identity(users_coll: Any, change: dict) -> tuple[int | None, str | None]:
     full_doc = change.get("fullDocument") or {}
     doc_key = change.get("documentKey") or {}
     user_id = extract_user_id(full_doc) or extract_user_id(doc_key)
-    username = full_doc.get("username")
-    if isinstance(full_doc.get("info"), dict) and username is None:
-        username = full_doc["info"].get("username")
+    username = _nested_username(full_doc)
     if user_id is not None:
         return user_id, username
 
@@ -67,9 +75,7 @@ async def _resolve_identity(users_coll: Any, change: dict) -> tuple[int | None, 
         return None, username
     if doc:
         user_id = extract_user_id(doc)
-        username = doc.get("username")
-        if username is None and isinstance(doc.get("info"), dict):
-            username = doc["info"].get("username")
+        username = _nested_username(doc)
     if len(_identity_cache) >= _IDENTITY_CACHE_CAP:
         _identity_cache.clear()
     _identity_cache[cache_key] = (user_id, username)

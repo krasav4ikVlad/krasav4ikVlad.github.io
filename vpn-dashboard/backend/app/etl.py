@@ -55,7 +55,9 @@ _MAX_LOG_DTS_PROJ = 500
 USER_PROJECTION = {
     "_id": 1, **{f: 1 for f in ID_FIELDS},
     **{f"info.{f}": 1 for f in ID_FIELDS},
-    "username": 1, "info.username": 1,
+    **{f"user_data.{f}": 1 for f in ID_FIELDS},
+    "username": 1, "info.username": 1, "user_data.username": 1,
+    "vpn": 1,
     "info.transactions": 1, "logs_balance": 1, "info.logs_balance": 1,
     "growth": 1, "growth_history": 1, "info.growth_history": 1,
     "ref_stats": 1, "referrer_id": 1, "info.referrer_id": 1,
@@ -91,9 +93,12 @@ def _pick(doc: dict, *paths: str) -> Any:
 
 def extract_user_id(doc: dict) -> Optional[int]:
     candidates = [doc.get(f) for f in ID_FIELDS]
-    info = doc.get("info")
-    if isinstance(info, dict):
-        candidates.extend(info.get(f) for f in ID_FIELDS)
+    # nested containers seen in the wild: info.*, user_data.* (aiogram's
+    # serialized Telegram user object carries the id as user_data.id)
+    for container in ("user_data", "info"):
+        nested = doc.get(container)
+        if isinstance(nested, dict):
+            candidates.extend(nested.get(f) for f in ID_FIELDS)
     candidates.append(doc.get("_id"))
     for candidate in candidates:
         if isinstance(candidate, bool):
@@ -207,7 +212,7 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
     if user_id is None:
         return [], None, 0
 
-    username = _pick(doc, "username", "info.username")
+    username = _pick(doc, "username", "user_data.username", "info.username")
     username = str(username) if username is not None else None
 
     credits, unparsed_c = normalize_transactions(_pick(doc, "info.transactions"))
@@ -252,22 +257,29 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
     }
 
     campaigns = _pick(doc, "campaigns", "info.campaigns")
-    devices = _parse_extra_devices(_pick(doc, "extraDevices", "info.extraDevices"))
+    devices = _parse_extra_devices(_pick(doc, "extraDevices", "info.extraDevices",
+                                         "vpn.extraDevices", "vpn.extra_devices",
+                                         "vpn.devices"))
 
     days_to_expire = parse_amount(_pick(doc, "days_to_expire",
-                                        "growth.days_to_expire"))
+                                        "vpn.days_to_expire"))
+    if days_to_expire is None and isinstance(growth, dict):
+        days_to_expire = parse_amount(growth.get("days_to_expire"))
 
     user_row = {
         "_id": user_id,
         "username": username,
         "username_lower": username.lower() if username else None,
         "joined_at": parse_dt(_pick(doc, "joined_at", "created_at",
-                                    "info.joined_at")),
+                                    "info.joined_at", "user_data.joined_at",
+                                    "info.reg_date", "reg_date",
+                                    "info.created_at")),
         "segment": growth.get("segment"),
         "segment_history": segment_history,
         "days_to_expire": days_to_expire,
         "sub_until": parse_dt(_pick(doc, "sub_until", "info.sub_until",
-                                    "subscription_until")),
+                                    "subscription_until", "vpn.sub_until",
+                                    "vpn.expires_at", "vpn.until")),
         "balance": parse_amount(_pick(doc, "balance", "info.balance")) or 0.0,
         "referrer_id": _pick(doc, "referrer_id", "info.referrer_id"),
         "ref_stats": ref_stats,
@@ -275,7 +287,8 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
         "extra_devices": devices,
         "extra_devices_active": sum(1 for d in devices if d["active"]),
         "preferred_client": _pick(doc, "preferred_client",
-                                  "info.preferred_client"),
+                                  "info.preferred_client",
+                                  "vpn.preferred_client"),
         # funnel / cohort timestamps derived from normalized history
         "first_topup_at": dated_topups[0].dt if dated_topups else None,
         "topup_total": round(sum(t.amount for t in dated_topups), 2),
@@ -337,12 +350,17 @@ async def sweep_payments(db: AsyncIOMotorDatabase, etl_at: datetime,
     Returns the number of upserted rows; 0 when the collection is absent.
     """
     settings = get_settings()
-    name = settings.payments_collection
     if settings.payments_db and getattr(db, "client", None) is not None:
         src_db = db.client[settings.payments_db]
     else:
         src_db = db
-    if not name or name not in await src_db.list_collection_names():
+    # default name has been seen both singular and plural in the wild
+    candidates = ([settings.payments_collection, "payments_webhooks"]
+                  if settings.payments_collection == "payments_webhook"
+                  else [settings.payments_collection])
+    existing = set(await src_db.list_collection_names())
+    name = next((n for n in candidates if n and n in existing), None)
+    if name is None:
         return 0
 
     query: dict = {}

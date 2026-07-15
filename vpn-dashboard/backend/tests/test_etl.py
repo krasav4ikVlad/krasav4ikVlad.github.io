@@ -10,6 +10,7 @@ from app.etl import extract_user_id, flatten_user, parse_segment_history, run_et
 
 UTC = timezone.utc
 NOW = datetime(2024, 6, 1, tzinfo=UTC)
+DT_FIXED = datetime(2024, 5, 1, 10, 0, tzinfo=UTC)
 
 
 def raw_user_mixed_formats():
@@ -87,6 +88,28 @@ class TestFlattenUser:
         rows, user_row, _ = flatten_user({"username": "x"}, NOW)
         assert rows == [] and user_row is None
 
+    def test_real_world_shape_user_data_and_vpn(self):
+        doc = {
+            "_id": "69178c8c689fd338958ac1e1",
+            "user_data": {"id": 802421217, "username": "RealUser"},
+            "info": {"transactions": [
+                [150, DT_FIXED, "Пополнение (wata)"],
+            ]},
+            "vpn": {"sub_until": DT_FIXED, "days_to_expire": 12.5,
+                    "preferred_client": "happ"},
+            "growth": {"segment": "active_paid"},
+            "growth_history": [],
+            "logs": [],
+        }
+        rows, u, unparsed = flatten_user(doc, NOW)
+        assert unparsed == 0
+        assert u["_id"] == 802421217
+        assert u["username"] == "RealUser"
+        assert u["segment"] == "active_paid"
+        assert u["days_to_expire"] == 12.5
+        assert u["preferred_client"] == "happ"
+        assert rows[0]["source"] == "wata"
+
 
 class TestExtractUserId:
     def test_from_int_id(self):
@@ -112,6 +135,16 @@ class TestExtractUserId:
     def test_nested_in_info(self):
         assert extract_user_id({"_id": object(),
                                 "info": {"tg_id": 99}}) == 99
+
+    def test_nested_in_user_data(self):
+        # aiogram-style: telegram User object serialized under user_data
+        doc = {"_id": "69178c8c689fd338958ac1e1",
+               "user_data": {"id": 802421217, "username": "u",
+                             "first_name": "X"}}
+        assert extract_user_id(doc) == 802421217
+
+    def test_hex_string_id_not_numeric(self):
+        assert extract_user_id({"_id": "69178c8c689fd338958ac1e1"}) is None
 
     def test_float_integer(self):
         assert extract_user_id({"user_id": 42.0}) == 42
