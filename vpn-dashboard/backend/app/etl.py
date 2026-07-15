@@ -43,9 +43,18 @@ log = logging.getLogger("app.etl")
 
 _BULK_FLUSH = 1000
 
+# Telegram-id candidates, in priority order; the raw ``_id`` is the last
+# resort (many deployments key users by ObjectId with the tg id in a field).
+ID_FIELDS = ("tg_id", "telegram_id", "user_id", "tgid", "chat_id",
+             "id", "uid", "tg")
+
+# per-user cap so one hyperactive user can't skew ETL cost / traffic
+_MAX_LOG_DTS_PROJ = 500
+
 # Raw-document fields the ETL needs; keeps network traffic sane on big docs.
 USER_PROJECTION = {
-    "_id": 1, "tg_id": 1, "telegram_id": 1, "user_id": 1,
+    "_id": 1, **{f: 1 for f in ID_FIELDS},
+    **{f"info.{f}": 1 for f in ID_FIELDS},
     "username": 1, "info.username": 1,
     "info.transactions": 1, "logs_balance": 1, "info.logs_balance": 1,
     "growth": 1, "growth_history": 1, "info.growth_history": 1,
@@ -57,7 +66,8 @@ USER_PROJECTION = {
     "days_to_expire": 1,
     "balance": 1, "info.balance": 1,
     "sub_until": 1, "info.sub_until": 1, "subscription_until": 1,
-    "logs": 1,
+    # only the tail is needed for the activity heatmap — big win over WAN
+    "logs": {"$slice": -_MAX_LOG_DTS_PROJ},
 }
 
 
@@ -80,12 +90,18 @@ def _pick(doc: dict, *paths: str) -> Any:
 
 
 def extract_user_id(doc: dict) -> Optional[int]:
-    for candidate in (doc.get("tg_id"), doc.get("telegram_id"),
-                      doc.get("user_id"), doc.get("_id")):
+    candidates = [doc.get(f) for f in ID_FIELDS]
+    info = doc.get("info")
+    if isinstance(info, dict):
+        candidates.extend(info.get(f) for f in ID_FIELDS)
+    candidates.append(doc.get("_id"))
+    for candidate in candidates:
         if isinstance(candidate, bool):
             continue
         if isinstance(candidate, int):
             return candidate
+        if isinstance(candidate, float) and candidate.is_integer():
+            return int(candidate)
         if isinstance(candidate, str) and candidate.isdigit():
             return int(candidate)
     return None
@@ -283,7 +299,7 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
     return rows, user_row, unparsed_c + unparsed_d
 
 
-_MAX_LOG_DTS = 500  # per-user cap so one hyperactive user can't skew ETL cost
+_MAX_LOG_DTS = _MAX_LOG_DTS_PROJ
 
 
 def extract_activity_dts(doc: dict) -> list[datetime]:
@@ -322,7 +338,11 @@ async def sweep_payments(db: AsyncIOMotorDatabase, etl_at: datetime,
     """
     settings = get_settings()
     name = settings.payments_collection
-    if not name or name not in await db.list_collection_names():
+    if settings.payments_db and getattr(db, "client", None) is not None:
+        src_db = db.client[settings.payments_db]
+    else:
+        src_db = db
+    if not name or name not in await src_db.list_collection_names():
         return 0
 
     query: dict = {}
@@ -336,7 +356,7 @@ async def sweep_payments(db: AsyncIOMotorDatabase, etl_at: datetime,
 
     ops: list = []
     count = 0
-    async for doc in db[name].find(query).batch_size(500):
+    async for doc in src_db[name].find(query).batch_size(500):
         payment = normalize_payment_webhook(doc)
         if payment is None:
             continue

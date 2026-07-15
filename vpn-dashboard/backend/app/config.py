@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # Provider webhook log; swept into payments_flat when the collection exists
     payments_collection: str = Field(default="payments_webhook",
                                      alias="PAYMENTS_COLLECTION")
+    # Database holding payments_collection; empty = same as MONGO_DB
+    payments_db: str = Field(default="", alias="PAYMENTS_DB")
 
     # --- Redis cache (falls back to in-memory when unreachable) ---
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")

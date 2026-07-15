@@ -29,11 +29,51 @@ from pymongo.errors import PyMongoError
 
 from .config import get_settings
 from .db import TX_FLAT
-from .etl import extract_user_id
+from .etl import ID_FIELDS, extract_user_id
 from .normalizer import normalize_debit_entry, normalize_transaction_entry
 from .ws import EventHub
 
 log = logging.getLogger("app.change_streams")
+
+# documentKey._id → (user_id, username); update events don't carry the tg id
+# when users are keyed by ObjectId, so we resolve it once and remember.
+_identity_cache: dict[str, tuple[int | None, str | None]] = {}
+_IDENTITY_CACHE_CAP = 5000
+_IDENTITY_PROJECTION = {**{f: 1 for f in ID_FIELDS},
+                        **{f"info.{f}": 1 for f in ID_FIELDS},
+                        "username": 1, "info.username": 1}
+
+
+async def _resolve_identity(users_coll: Any, change: dict) -> tuple[int | None, str | None]:
+    full_doc = change.get("fullDocument") or {}
+    doc_key = change.get("documentKey") or {}
+    user_id = extract_user_id(full_doc) or extract_user_id(doc_key)
+    username = full_doc.get("username")
+    if isinstance(full_doc.get("info"), dict) and username is None:
+        username = full_doc["info"].get("username")
+    if user_id is not None:
+        return user_id, username
+
+    raw_id = doc_key.get("_id")
+    if raw_id is None:
+        return None, username
+    cache_key = str(raw_id)
+    if cache_key in _identity_cache:
+        return _identity_cache[cache_key]
+
+    try:
+        doc = await users_coll.find_one({"_id": raw_id}, _IDENTITY_PROJECTION)
+    except Exception:
+        return None, username
+    if doc:
+        user_id = extract_user_id(doc)
+        username = doc.get("username")
+        if username is None and isinstance(doc.get("info"), dict):
+            username = doc["info"].get("username")
+    if len(_identity_cache) >= _IDENTITY_CACHE_CAP:
+        _identity_cache.clear()
+    _identity_cache[cache_key] = (user_id, username)
+    return user_id, username
 
 _RE_TX_FIELD = re.compile(r"^info\.transactions(?:\.(\d+))?$")
 _RE_BAL_FIELD = re.compile(r"^(?:info\.)?logs_balance(?:\.(\d+))?$")
@@ -78,12 +118,9 @@ async def _publish_debit_events(hub: EventHub, user_id: int | None,
             })
 
 
-async def _handle_change(hub: EventHub, change: dict) -> None:
+async def _handle_change(hub: EventHub, change: dict, users_coll: Any) -> None:
     op = change.get("operationType")
-    doc_key = change.get("documentKey") or {}
-    full_doc = change.get("fullDocument") or {}
-    user_id = extract_user_id(full_doc) or extract_user_id(doc_key)
-    username = full_doc.get("username")
+    user_id, username = await _resolve_identity(users_coll, change)
 
     if op == "insert":
         await hub.publish("registration", {
@@ -135,7 +172,7 @@ async def watch_users(db: AsyncIOMotorDatabase, hub: EventHub) -> None:
                 backoff = 1.0
                 async for change in stream:
                     try:
-                        await _handle_change(hub, change)
+                        await _handle_change(hub, change, users)
                     except Exception:
                         log.exception("failed to handle change event")
         except asyncio.CancelledError:

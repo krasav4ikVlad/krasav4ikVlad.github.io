@@ -3,6 +3,7 @@
 /** Live event ticker: new items slide in on top, no flicker on updates
  *  (stable keys, append-only list). */
 
+import { useState } from "react";
 import {
   AlertTriangle,
   ArrowRightLeft,
@@ -68,6 +69,18 @@ function eventView(e: LiveEvent): {
   }
 }
 
+const FILTERS: { key: string; label: string; events: LiveEvent["event"][] }[] = [
+  { key: "all", label: "Все", events: [] },
+  {
+    key: "money",
+    label: "Деньги",
+    events: ["topup", "ref_income", "promo", "purchase"],
+  },
+  { key: "reg", label: "Регистрации", events: ["registration"] },
+  { key: "segment", label: "Сегменты", events: ["segment"] },
+  { key: "alert", label: "Алерты", events: ["alert"] },
+];
+
 export function EventTicker({
   events,
   connected,
@@ -77,6 +90,12 @@ export function EventTicker({
   connected: boolean;
   maxHeight?: number;
 }) {
+  const [filter, setFilter] = useState("all");
+  const active = FILTERS.find((f) => f.key === filter) ?? FILTERS[0];
+  const shown =
+    active.key === "all"
+      ? events
+      : events.filter((e) => active.events.includes(e.event));
   return (
     <div>
       <div className="mb-2 flex items-center gap-2">
@@ -90,13 +109,29 @@ export function EventTicker({
           {connected ? "live: change streams подключены" : "офлайн-режим: опрос раз в 20с"}
         </span>
       </div>
+      <div className="mb-2 flex flex-wrap gap-1">
+        {FILTERS.map((f) => (
+          <button
+            key={f.key}
+            onClick={() => setFilter(f.key)}
+            className={cn(
+              "rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors",
+              filter === f.key
+                ? "bg-surface-2 text-ink"
+                : "text-muted hover:text-ink",
+            )}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
       <div className="space-y-1 overflow-y-auto pr-1" style={{ maxHeight }}>
-        {events.length === 0 ? (
+        {shown.length === 0 ? (
           <div className="py-8 text-center text-sm text-muted">
             Ждём события…
           </div>
         ) : (
-          events.map((e) => {
+          shown.map((e) => {
             const view = eventView(e);
             return (
               <div

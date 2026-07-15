@@ -101,6 +101,24 @@ class TestExtractUserId:
     def test_no_id(self):
         assert extract_user_id({"_id": "not-a-number"}) is None
 
+    def test_objectid_with_user_id_field(self):
+        # the common real-world shape: _id is an ObjectId, tg id in user_id
+        assert extract_user_id({"_id": object(), "user_id": 802421217}) == 802421217
+
+    @pytest.mark.parametrize("field", ["tgid", "chat_id", "id", "uid", "tg"])
+    def test_alternative_field_names(self, field):
+        assert extract_user_id({"_id": object(), field: 77}) == 77
+
+    def test_nested_in_info(self):
+        assert extract_user_id({"_id": object(),
+                                "info": {"tg_id": 99}}) == 99
+
+    def test_float_integer(self):
+        assert extract_user_id({"user_id": 42.0}) == 42
+
+    def test_bool_rejected(self):
+        assert extract_user_id({"user_id": True, "_id": "x"}) is None
+
 
 class TestParseSegmentHistory:
     def test_dict_entries(self):
