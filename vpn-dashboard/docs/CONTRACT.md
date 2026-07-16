@@ -399,7 +399,8 @@ significant = p < 0.05.
 
 `GET /experiments/opportunities` (cached 300s) →
 ```json
-{"median_renewal": 199.0, "median_check": 299.0,
+{"monthly_sub_cost": 199.0,   // median per-user renewal spend over 30d
+ "median_check": 299.0,
  "opportunities": [{
    "key": "expiring_no_balance",
    "title": "Истекают без денег на балансе",

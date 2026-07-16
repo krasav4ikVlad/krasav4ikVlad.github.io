@@ -1,6 +1,6 @@
 """ETL tests against an in-memory Mongo (mongomock-motor)."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from mongomock_motor import AsyncMongoMockClient
@@ -78,6 +78,22 @@ class TestFlattenUser:
         assert u["extra_devices_active"] == 1
         assert u["promo_activations"][0]["code"] == "WELCOME"
         assert len(u["segment_history"]) == 2
+
+    def test_daily_billing_second_sub_needs_7_day_gap(self):
+        """Daily micro-charges must not count day 2 as a 'renewal'."""
+        base = datetime(2024, 3, 1, tzinfo=UTC)
+        doc = {
+            "_id": 777,
+            "info": {"transactions": []},
+            "logs_balance": [
+                [4, base + timedelta(days=i), "Продление подписки"]
+                for i in range(10)
+            ],
+        }
+        _, u, _ = flatten_user(doc, NOW)
+        assert u["first_sub_at"] == base
+        assert u["second_sub_at"] == base + timedelta(days=7)
+        assert u["renewals_count"] == 10
 
     def test_deterministic_ids(self):
         rows1, _, _ = flatten_user(raw_user_mixed_formats(), NOW)

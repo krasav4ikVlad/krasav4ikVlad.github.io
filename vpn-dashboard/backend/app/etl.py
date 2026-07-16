@@ -235,6 +235,12 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
         key=lambda t: t.dt)
     renewal_dts = sorted(d.dt for d in debits
                          if d.kind is DebitKind.RENEWAL and d.dt)
+    # "second subscription" = a renewal ≥ 7 days after the first one, so
+    # daily micro-billing doesn't count the next day's charge as retention
+    second_sub_at = next(
+        (dt for dt in renewal_dts
+         if (dt - renewal_dts[0]).total_seconds() >= 7 * 86400), None
+    ) if renewal_dts else None
     bypass = [d for d in debits if d.kind is DebitKind.BYPASS]
     device_debits = [d for d in debits if d.kind is DebitKind.DEVICE]
     promo_txs = [t for t in credits if t.kind is TxKind.PROMO]
@@ -315,7 +321,7 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
         "topup_count": len(dated_topups),
         "bonus_total": round(sum(t.bonus for t in credits), 2),
         "first_sub_at": renewal_dts[0] if renewal_dts else None,
-        "second_sub_at": renewal_dts[1] if len(renewal_dts) > 1 else None,
+        "second_sub_at": second_sub_at,
         "last_renewal_at": renewal_dts[-1] if renewal_dts else None,
         "renewals_count": len(renewal_dts),
         "spend_total": round(sum(d.amount for d in debits), 2),

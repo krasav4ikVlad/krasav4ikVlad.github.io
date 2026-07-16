@@ -138,13 +138,22 @@ async def ab(experiment: Experiment = Query("ab_group"),
 # GET /experiments/opportunities
 # ---------------------------------------------------------------------------
 
-async def _median_debit(db: Any, kind: str, default: float) -> float:
-    since = datetime.now(timezone.utc) - timedelta(days=90)
-    amounts = [r["amount"] async for r in db[TX_FLAT].find(
-        {"direction": "debit", "kind": kind, "amount": {"$gt": 0},
-         "dt": {"$type": "date", "$gte": since}},
-        {"amount": 1}).limit(5000)]
-    return float(statistics.median(amounts)) if amounts else default
+async def _monthly_sub_cost(db: Any, default: float) -> float:
+    """Median per-user renewal spend over the last 30 days.
+
+    Robust to the billing model: with daily micro-charges (~4₽/день) a
+    single renewal transaction is meaningless — what matters is what a
+    subscriber pays per month.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=30)
+    totals = [r["total"] async for r in db[TX_FLAT].aggregate([
+        {"$match": {"direction": "debit", "kind": "renewal",
+                    "amount": {"$gt": 0},
+                    "dt": {"$type": "date", "$gte": since}}},
+        {"$group": {"_id": "$user_id", "total": {"$sum": "$amount"}}},
+        {"$limit": 5000},
+    ])]
+    return float(statistics.median(totals)) if totals else default
 
 
 async def _median_check(db: Any, default: float) -> float:
@@ -160,13 +169,13 @@ async def _median_check(db: Any, default: float) -> float:
 async def _opportunities() -> dict[str, Any]:
     db = get_db()
     now = datetime.now(timezone.utc)
-    median_renewal = await _median_debit(db, "renewal", 199.0)
+    monthly_sub_cost = await _monthly_sub_cost(db, 199.0)
     median_check = await _median_check(db, 299.0)
 
     uf = db[USERS_FLAT]
     expiring_no_balance = await uf.count_documents({
         "days_to_expire": {"$gt": 0, "$lt": 3},
-        "balance": {"$lt": median_renewal},
+        "balance": {"$lt": monthly_sub_cost},
         "renewals_count": {"$gt": 0},
     })
     winback = await uf.count_documents({
@@ -183,7 +192,7 @@ async def _opportunities() -> dict[str, Any]:
     })
     bypass_upsell = await uf.count_documents({"bypass_count": {"$gte": 2}})
     dormant_balance = await uf.count_documents({
-        "balance": {"$gte": median_renewal},
+        "balance": {"$gte": monthly_sub_cost},
         "$or": [{"days_to_expire": {"$lte": 0}},
                 {"segment": {"$regex": "expired", "$options": "i"}}],
     })
@@ -196,7 +205,7 @@ async def _opportunities() -> dict[str, Any]:
                            "а баланса на продление не хватает. Напоминание с "
                            "быстрой оплатой — самый дешёвый доход.",
             "users": expiring_no_balance,
-            "potential_rub": r2(expiring_no_balance * median_renewal * 0.4),
+            "potential_rub": r2(expiring_no_balance * monthly_sub_cost * 0.4),
             "assumption": "конверсия напоминания 40%",
         },
         {
@@ -206,7 +215,7 @@ async def _opportunities() -> dict[str, Any]:
                            "возврат (например, −20% на месяц) окупается почти "
                            "всегда.",
             "users": winback,
-            "potential_rub": r2(winback * median_renewal * 0.12),
+            "potential_rub": r2(winback * monthly_sub_cost * 0.12),
             "assumption": "конверсия winback-рассылки 12%",
         },
         {
@@ -235,12 +244,12 @@ async def _opportunities() -> dict[str, Any]:
                            "(«у вас хватает на продление») возвращает его почти "
                            "бесплатно.",
             "users": dormant_balance,
-            "potential_rub": r2(dormant_balance * median_renewal * 0.5),
+            "potential_rub": r2(dormant_balance * monthly_sub_cost * 0.5),
             "assumption": "конверсия напоминания 50%",
         },
     ]
     opportunities.sort(key=lambda o: -o["potential_rub"])
-    return {"median_renewal": r2(median_renewal),
+    return {"monthly_sub_cost": r2(monthly_sub_cost),
             "median_check": r2(median_check),
             "opportunities": opportunities,
             "computed_at": iso(as_utc(now))}

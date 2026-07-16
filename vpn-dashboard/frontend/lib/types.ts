@@ -359,7 +359,8 @@ export interface Opportunity {
   assumption: string;
 }
 export interface OpportunitiesResponse {
-  median_renewal: number;
+  /** median per-user renewal spend over 30 days (billing-model agnostic) */
+  monthly_sub_cost: number;
   median_check: number;
   opportunities: Opportunity[];
   computed_at: string | null;

@@ -140,7 +140,7 @@ function OpportunitiesSection() {
         <h2 className="text-sm font-medium text-ink-2">Возможности роста</h2>
         {data ? (
           <span className="text-xs text-muted">
-            медианное продление {fmtMoney(data.median_renewal)} · медианный чек{" "}
+            подписка ≈ {fmtMoney(data.monthly_sub_cost)}/мес · медианный чек{" "}
             {fmtMoney(data.median_check)}
           </span>
         ) : null}
