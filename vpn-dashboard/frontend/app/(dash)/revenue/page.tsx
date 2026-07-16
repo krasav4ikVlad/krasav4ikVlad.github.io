@@ -7,6 +7,7 @@ import useSWR from "swr";
 import { api, fetcher } from "@/lib/api";
 import type * as T from "@/lib/types";
 import { usePeriod, granularityFor } from "@/lib/period";
+import { fillTimeBuckets } from "@/lib/series";
 import { fmtMoney, fmtNum, fmtPct, fmtBucket } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
@@ -101,10 +102,12 @@ export default function RevenuePage() {
       }
       entry[row.source] = (Number(entry[row.source]) || 0) + row.revenue;
     }
-    return [...byBucket.values()].sort((a, b) =>
+    const sorted = [...byBucket.values()].sort((a, b) =>
       String(a.bucket).localeCompare(String(b.bucket)),
     );
-  }, [ts]);
+    // empty periods must stay visible as gaps, not silently vanish
+    return fillTimeBuckets(sorted, granularity, (bucket) => ({ bucket }));
+  }, [ts, granularity]);
 
   const donutData = useMemo(
     () =>
@@ -112,6 +115,16 @@ export default function RevenuePage() {
         .filter((t) => t.amount > 0)
         .map((t) => ({ name: t.label, value: t.amount })),
     [byType],
+  );
+
+  const bonusData = useMemo(
+    () =>
+      fillTimeBuckets(
+        (bonus?.series ?? []) as unknown as Record<string, unknown>[],
+        granularity,
+        (bucket) => ({ bucket, net: 0, bonus: 0, promo: 0 }),
+      ),
+    [bonus, granularity],
   );
 
   const money = (v: number) => fmtMoney(v);
@@ -188,7 +201,7 @@ export default function RevenuePage() {
         >
           <>
             <StackedBars
-              data={bonus?.series ?? []}
+              data={bonusData}
               keys={["net", "bonus", "promo"]}
               names={{
                 net: "Живые деньги",

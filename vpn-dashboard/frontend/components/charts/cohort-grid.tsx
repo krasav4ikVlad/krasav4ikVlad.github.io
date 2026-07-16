@@ -21,7 +21,7 @@ function cellBg(pct: number): string {
 }
 
 function cellInk(pct: number): string {
-  return pct >= 30 ? "#ffffff" : "var(--ink-2)";
+  return pct >= 30 ? "var(--seq-cell-ink-strong)" : "var(--ink-2)";
 }
 
 export function CohortGrid({

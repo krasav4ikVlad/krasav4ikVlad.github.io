@@ -31,6 +31,8 @@
   --seq-400: #3987e5;
   --seq-550: #1c5cab;
   --seq-700: #0d366b;
+  /* ink for text sitting on the strong end of the sequential ramp */
+  --seq-cell-ink-strong: #ffffff;
 
   --status-good: #0ca30c;
   --status-warning: #fab219;
@@ -59,6 +61,16 @@
   --series-6: #d95926;
   --series-7: #9085e9;
   --series-8: #e66767;
+
+  /* sequential ramp re-stepped for the dark surface: low values recede
+     toward the surface (dark navy), high values gain salience (bright) —
+     a straight copy of the light ramp would invert perceived magnitude */
+  --seq-100: #16324f;
+  --seq-250: #1c5cab;
+  --seq-400: #2f7fd4;
+  --seq-550: #5598e7;
+  --seq-700: #9ec5f4;
+  --seq-cell-ink-strong: #0b0b0b;
 
   --delta-good: #0ca30c;
 }

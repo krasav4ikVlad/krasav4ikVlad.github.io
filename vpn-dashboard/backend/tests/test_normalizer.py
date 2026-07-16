@@ -5,7 +5,7 @@ representation seen in the wild, Russian description parsing, and garbage
 resilience.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -78,6 +78,18 @@ class TestParseDt:
     @pytest.mark.parametrize("garbage", [None, "", "not a date", {}, [], True, -5, float("nan")])
     def test_garbage_returns_none(self, garbage):
         assert parse_dt(garbage) is None
+
+    def test_small_ints_are_not_1970_dates(self):
+        # amounts/ids must never be mistaken for epoch timestamps
+        assert parse_dt(150) is None
+        assert parse_dt(99.5) is None
+
+    def test_aware_dt_normalized_to_utc(self):
+        msk = datetime(2024, 5, 1, 13, 0, tzinfo=timezone(timedelta(hours=3)))
+        result = parse_dt(msk)
+        assert result == DT
+        assert result.tzinfo == UTC
+        assert result.hour == 10  # heatmap buckets must be UTC hours
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +366,28 @@ class TestNormalizeTransactionsField:
                "1": {"amount": 45, "dt": DT, "type": "ref_income"}}
         txs, unparsed = normalize_transactions(raw)
         assert len(txs) == 2 and unparsed == 0
+
+    def test_whole_field_is_single_flat_legacy_row(self):
+        # info.transactions = [150, dt, "desc"] without the outer list —
+        # must be one transaction, not shredded into 3 unparsed scalars
+        txs, unparsed = normalize_transactions(
+            [150, DT, "Пополнение (cardlink)"])
+        assert unparsed == 0
+        assert len(txs) == 1
+        assert txs[0].amount == 150.0 and txs[0].source == "cardlink"
+
+    def test_extended_json_amount_head_is_legacy(self):
+        txs, unparsed = normalize_transactions(
+            [[{"$numberInt": "150"}, {"$date": "2024-05-01T10:00:00Z"},
+              "Пополнение (wata)"]])
+        assert unparsed == 0
+        assert txs[0].amount == 150.0 and txs[0].source == "wata"
+
+    def test_explicit_zero_bonus_not_overridden_by_desc(self):
+        tx = one({"amount": 240, "dt": DT, "type": "topup",
+                  "desc": "Пополнение (cardlink) + бонус 40₽",
+                  "meta": {"source": "cardlink", "bonus_rub": 0}})
+        assert tx.bonus == 0.0  # explicit meta zero wins over the description
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import Link from "next/link";
 import { api, fetcher } from "@/lib/api";
 import type * as T from "@/lib/types";
 import { usePeriod } from "@/lib/period";
+import { fillTimeBuckets } from "@/lib/series";
 import { fmtMoney, fmtNum, fmtPct, fmtBucket } from "@/lib/format";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { ChartCard } from "@/components/charts/container";
@@ -50,11 +51,21 @@ export default function ProductPage() {
   const bypassKpiLoad = bypassLoading && !bypass;
 
   const devicesTs = useMemo(
-    () => devices?.timeseries.map((r) => ({ ...r })) ?? [],
+    () =>
+      fillTimeBuckets(
+        devices?.timeseries.map((r) => ({ ...r })) ?? [],
+        "month",
+        (bucket) => ({ bucket, amount: 0, count: 0 }),
+      ),
     [devices],
   );
   const bypassTs = useMemo(
-    () => bypass?.timeseries.map((r) => ({ ...r })) ?? [],
+    () =>
+      fillTimeBuckets(
+        bypass?.timeseries.map((r) => ({ ...r })) ?? [],
+        "day", // бэкенд бакетирует ByPass по дням
+        (bucket) => ({ bucket, amount: 0, count: 0 }),
+      ),
     [bypass],
   );
   const clientRows = clients?.clients ?? [];

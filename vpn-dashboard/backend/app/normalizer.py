@@ -188,7 +188,10 @@ def parse_dt(value: Any) -> Optional[datetime]:
         return None
 
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        # normalize to UTC so hour/weekday bucketing is consistent
+        return value.astimezone(timezone.utc)
 
     if isinstance(value, dict):
         if "$date" in value:
@@ -201,7 +204,8 @@ def parse_dt(value: Any) -> Optional[datetime]:
         return None
 
     if isinstance(value, (int, float)):
-        if not math.isfinite(value) or value <= 0:
+        # sane epoch floor (~1973): small ints are amounts/ids, not dates
+        if not math.isfinite(value) or value < 1e8:
             return None
         ts = value / 1000.0 if value > _MS_THRESHOLD else float(value)
         try:
@@ -401,7 +405,8 @@ def _from_dict(entry: dict) -> Optional[NormalizedTransaction]:
 
     source = normalize_source(_first(meta, "source", "provider", "gateway")
                               or _first(entry, "source", "provider"))
-    bonus = parse_amount(_first(meta, "bonus_rub", "bonus", "promo_rub")) or 0.0
+    # None = "not specified" (description may fill it); explicit 0 stays 0
+    bonus = parse_amount(_first(meta, "bonus_rub", "bonus", "promo_rub"))
     promo_code = _first(meta, "promo_code", "promocode", "code")
     promo_code = str(promo_code) if promo_code is not None else None
     payment_id = _first(meta, "payment_id", "order_id", "invoice_id") \
@@ -413,7 +418,7 @@ def _from_dict(entry: dict) -> Optional[NormalizedTransaction]:
         kind = hints.kind
     if source is None:
         source = hints.source
-    if not bonus:
+    if bonus is None:
         bonus = hints.bonus
     if promo_code is None:
         promo_code = hints.promo_code
@@ -487,7 +492,7 @@ def _from_legacy(entry: list | tuple) -> Optional[NormalizedTransaction]:
 
 
 def _looks_like_legacy(entry: list | tuple) -> bool:
-    """A legacy row starts with a number (or numeric string)."""
+    """A legacy row starts with a number (numeric string / extended-JSON)."""
     if not entry:
         return False
     head = entry[0]
@@ -497,6 +502,10 @@ def _looks_like_legacy(entry: list | tuple) -> bool:
         return True
     if isinstance(head, str):
         return parse_amount(head) is not None
+    if isinstance(head, dict) and any(
+            k in head for k in ("$numberInt", "$numberLong",
+                                "$numberDouble", "$numberDecimal")):
+        return True
     return False
 
 
@@ -545,6 +554,13 @@ def normalize_transactions(raw: Any) -> tuple[list[NormalizedTransaction], int]:
         raw = list(raw.values())
     if not isinstance(raw, (list, tuple)):
         return [], 1
+
+    # The whole field may itself be ONE flat legacy row
+    # ([150, dt, "desc"] instead of [[150, dt, "desc"]]) — don't shred it
+    # into per-scalar garbage.
+    if _looks_like_legacy(raw):
+        txs = normalize_transaction_entry(list(raw))
+        return txs, (0 if txs else 1)
 
     result: list[NormalizedTransaction] = []
     unparsed = 0
@@ -736,6 +752,10 @@ def normalize_debits(raw: Any) -> tuple[list[NormalizedDebit], int]:
         raw = list(raw.values())
     if not isinstance(raw, (list, tuple)):
         return [], 1
+
+    if _looks_like_legacy(raw):
+        ds = normalize_debit_entry(list(raw))
+        return ds, (0 if ds else 1)
 
     result: list[NormalizedDebit] = []
     unparsed = 0

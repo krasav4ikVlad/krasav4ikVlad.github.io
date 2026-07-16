@@ -86,12 +86,12 @@ _RE_BAL_FIELD = re.compile(r"^(?:info\.)?logs_balance(?:\.(\d+))?$")
 
 
 def _entries_from_update(value: Any, indexed: bool) -> list[Any]:
-    """A dotted-index update carries one entry; a whole-array set carries
-    the full list — take only the last element then."""
+    """Only dotted-index updates ($push) carry an unambiguous new entry.
+    A whole-array $set gives no way to tell new entries from old ones —
+    emitting the last element would produce phantom events on rewrites, so
+    those are skipped (the ETL still picks the data up)."""
     if indexed:
         return [value]
-    if isinstance(value, list) and value:
-        return [value[-1]]
     return []
 
 
@@ -162,6 +162,15 @@ async def _handle_change(hub: EventHub, change: dict, users_coll: Any) -> None:
                 })
 
 
+async def _is_replica_set(db: AsyncIOMotorDatabase) -> bool:
+    try:
+        hello = await db.client.admin.command("hello")
+        return bool(hello.get("setName"))
+    except Exception:
+        # can't tell (connection issue) — assume replica set and keep retrying
+        return True
+
+
 async def watch_users(db: AsyncIOMotorDatabase, hub: EventHub) -> None:
     """Run forever; reconnects on transient errors, degrades to polling when
     change streams are unsupported (standalone mongod)."""
@@ -184,12 +193,14 @@ async def watch_users(db: AsyncIOMotorDatabase, hub: EventHub) -> None:
         except asyncio.CancelledError:
             raise
         except PyMongoError as e:
-            # standalone mongod → change streams unsupported → poll instead
             if "replica" in str(e).lower() or "$changeStream" in str(e):
-                log.warning("change streams unavailable (standalone mongod?) — "
-                            "falling back to flat-collection polling")
-                await poll_fallback(db, hub)
-                return
+                # only demote permanently when the server truly is a
+                # standalone; transient replica-set errors must reconnect
+                if not await _is_replica_set(db):
+                    log.warning("change streams unavailable (standalone "
+                                "mongod) — falling back to polling")
+                    await poll_fallback(db, hub)
+                    return
             log.warning("change stream error, reconnecting",
                         extra={"error": str(e)})
         except Exception:

@@ -14,7 +14,7 @@ _RE_PHONE = re.compile(r"(?<!\d)(\+?[78][ -]?[\d( -]{8,14})(\d{2})(?!\d)")
 _SENSITIVE_KEYS = {
     "card", "card_number", "cardnumber", "phone", "phone_number", "email",
     "fio", "full_name", "fullname", "name", "requisites", "details",
-    "account", "iban", "wallet", "address",
+    "account", "iban", "wallet", "address", "bank", "card_holder", "holder",
 }
 
 

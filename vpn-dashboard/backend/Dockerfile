@@ -14,4 +14,8 @@ COPY app ./app
 EXPOSE 8000
 
 # Single worker: APScheduler and the change-stream watcher must run exactly once.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+# --proxy-headers: real client IPs from nginx (login throttle would otherwise
+# lump every visitor into the proxy's bucket). Safe: only nginx reaches this
+# container inside the compose network.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--no-access-log", "--proxy-headers", "--forwarded-allow-ips", "*"]

@@ -14,8 +14,24 @@ log = logging.getLogger("app.ws")
 router = APIRouter(tags=["ws"])
 
 
+def _origin_allowed(ws: WebSocket) -> bool:
+    """Reject cross-site WebSocket hijacking: the Origin (when a browser
+    sends one) must match our host or a configured CORS origin."""
+    origin = ws.headers.get("origin")
+    if not origin:
+        return True  # non-browser client
+    host = ws.headers.get("host", "")
+    origin_host = origin.split("://", 1)[-1]
+    if origin_host == host:
+        return True
+    return origin in get_settings().cors_origin_list
+
+
 @router.websocket("/ws/events")
 async def ws_events(ws: WebSocket):
+    if not _origin_allowed(ws):
+        await ws.close(code=4403)
+        return
     token = ws.cookies.get(get_settings().cookie_name)
     if not token or not decode_token(token):
         await ws.close(code=4401)

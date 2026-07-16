@@ -53,13 +53,23 @@ export function fmtDateTime(iso: string | null | undefined): string {
   });
 }
 
-/** Bucket label for time-series axes given granularity. */
+/** Bucket label for time-series axes given granularity. Buckets are UTC
+ *  ($dateTrunc) — format them in UTC too, or labels shift a day in western
+ *  timezones. */
 export function fmtBucket(iso: string, granularity: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   if (granularity === "month")
-    return d.toLocaleDateString("ru-RU", { month: "short", year: "2-digit" });
-  return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+    return d.toLocaleDateString("ru-RU", {
+      month: "short",
+      year: "2-digit",
+      timeZone: "UTC",
+    });
+  return d.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "UTC",
+  });
 }
 
 export function fmtHoursApprox(hours: number | null | undefined): string {

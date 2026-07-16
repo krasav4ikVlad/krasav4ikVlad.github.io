@@ -56,12 +56,22 @@ class EventHub:
             **payload,
         }
         self._recent.append(event)
-        dead: list[WebSocket] = []
-        for ws in list(self._clients):
+        clients = list(self._clients)
+        if not clients:
+            return
+
+        async def send(ws: WebSocket) -> bool:
+            # a stalled client must not block the publisher (or the alert
+            # engine awaiting it) — bounded, concurrent sends
             try:
-                await ws.send_json({"type": "event", **event})
+                await asyncio.wait_for(
+                    ws.send_json({"type": "event", **event}), timeout=5.0)
+                return True
             except Exception:
-                dead.append(ws)
+                return False
+
+        results = await asyncio.gather(*(send(ws) for ws in clients))
+        dead = [ws for ws, ok in zip(clients, results) if not ok]
         for ws in dead:
             await self.unregister(ws)
         if dead:

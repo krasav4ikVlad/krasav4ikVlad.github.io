@@ -8,6 +8,7 @@ import Link from "next/link";
 import { api, fetcher } from "@/lib/api";
 import type * as T from "@/lib/types";
 import { usePeriod, granularityFor } from "@/lib/period";
+import { fillTimeBuckets } from "@/lib/series";
 import { fmtMoney, fmtNum, fmtPct, fmtBucket, fmtDateTime } from "@/lib/format";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
@@ -107,7 +108,15 @@ export default function ReferralsPage() {
 
   const kpiLoad = summaryLoading && !summary;
 
-  const tsData = useMemo(() => ts?.series.map((r) => ({ ...r })) ?? [], [ts]);
+  const tsData = useMemo(
+    () =>
+      fillTimeBuckets(
+        ts?.series.map((r) => ({ ...r })) ?? [],
+        granularity,
+        (bucket) => ({ bucket, amount: 0, count: 0 }),
+      ),
+    [ts, granularity],
+  );
   const topRows = top?.referrers ?? [];
 
   const money = (v: number) => fmtMoney(v);

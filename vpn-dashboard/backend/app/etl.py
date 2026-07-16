@@ -10,8 +10,9 @@ rebuilds two flat collections:
   referral stats, devices, funnel timestamps) for cohort/segment analytics.
 
 The job is idempotent: flat transaction ``_id``s are deterministic
-(user id + direction + position), re-runs replace documents in place and
-stale rows for a user are deleted with a per-user ``DeleteMany``.
+(user id + direction + position), re-runs replace documents in place, and
+rows not re-stamped by the current sweep (shrunk lists, deleted users) are
+purged afterwards by their ``etl_at`` mark.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from pymongo import DeleteMany, ReplaceOne
+from pymongo import ReplaceOne
 
 from .config import get_settings
 from .db import ACTIVITY, ETL_STATE, PAYMENTS_FLAT, TX_FLAT, USERS_FLAT
@@ -230,9 +231,9 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
     segment_history = parse_segment_history(
         _pick(doc, "growth_history", "info.growth_history"))
 
-    dated_topups = sorted(
-        (t for t in credits if t.kind is TxKind.TOPUP and t.dt and t.amount > 0),
-        key=lambda t: t.dt)
+    all_topups = [t for t in credits
+                  if t.kind is TxKind.TOPUP and t.amount > 0]
+    dated_topups = sorted((t for t in all_topups if t.dt), key=lambda t: t.dt)
     renewal_dts = sorted(d.dt for d in debits
                          if d.kind is DebitKind.RENEWAL and d.dt)
     # "second subscription" = a renewal ≥ 7 days after the first one, so
@@ -317,8 +318,9 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
                                   "vpn.preferred_client"),
         # funnel / cohort timestamps derived from normalized history
         "first_topup_at": dated_topups[0].dt if dated_topups else None,
-        "topup_total": round(sum(t.amount for t in dated_topups), 2),
-        "topup_count": len(dated_topups),
+        # totals over ALL topups — broken legacy rows without dates still count
+        "topup_total": round(sum(t.amount for t in all_topups), 2),
+        "topup_count": len(all_topups),
         "bonus_total": round(sum(t.bonus for t in credits), 2),
         "first_sub_at": renewal_dts[0] if renewal_dts else None,
         "second_sub_at": second_sub_at,
@@ -429,9 +431,10 @@ async def run_etl(db: AsyncIOMotorDatabase) -> dict:
 
     tx_ops: list = []
     user_ops: list = []
-    stats = {"users": 0, "tx_rows": 0, "unparsed": 0}
+    stats = {"users": 0, "tx_rows": 0, "unparsed": 0, "duplicate_ids": 0}
     # (weekday 0=Mon, hour) → count, for the activity heatmap
     heatmap: dict[tuple[int, int], int] = {}
+    seen_user_ids: set[int] = set()
 
     async def flush() -> None:
         nonlocal tx_ops, user_ops
@@ -447,10 +450,20 @@ async def run_etl(db: AsyncIOMotorDatabase) -> dict:
         try:
             rows, user_row, unparsed = flatten_user(doc, etl_at)
         except Exception:
+            stats["flatten_failures"] = stats.get("flatten_failures", 0) + 1
             log.exception("flatten_user failed", extra={"raw_id": str(doc.get("_id"))})
             continue
         if user_row is None:
             continue
+        if user_row["_id"] in seen_user_ids:
+            # two raw documents resolving to one telegram id would fight over
+            # the same flat rows — keep the first, surface the anomaly
+            stats["duplicate_ids"] += 1
+            log.warning("duplicate user id in raw collection",
+                        extra={"user_id": user_row["_id"],
+                               "raw_id": str(doc.get("_id"))})
+            continue
+        seen_user_ids.add(user_row["_id"])
 
         stats["users"] += 1
         stats["tx_rows"] += len(rows)
@@ -458,11 +471,8 @@ async def run_etl(db: AsyncIOMotorDatabase) -> dict:
 
         for row in rows:
             tx_ops.append(ReplaceOne({"_id": row["_id"]}, row, upsert=True))
-        # drop rows that no longer exist in the source document
-        tx_ops.append(DeleteMany({
-            "user_id": user_row["_id"],
-            "_id": {"$nin": [r["_id"] for r in rows]},
-        }))
+        # rows that no longer exist in the source (shrunk lists, deleted
+        # users) are purged after the sweep via the etl_at stamp
         user_ops.append(ReplaceOne({"_id": user_row["_id"]}, user_row, upsert=True))
 
         for dt in extract_activity_dts(doc):
@@ -473,6 +483,15 @@ async def run_etl(db: AsyncIOMotorDatabase) -> dict:
             await flush()
 
     await flush()
+
+    # purge rows of users deleted from the raw collection: every surviving
+    # row was just re-stamped with this run's etl_at (payments_flat is
+    # incremental, so only user-derived collections are purged). Skipped when
+    # any document failed to flatten — a code bug must not cascade into
+    # deleting that user's history.
+    if not stats.get("flatten_failures"):
+        await db[TX_FLAT].delete_many({"etl_at": {"$lt": etl_at}})
+        await db[USERS_FLAT].delete_many({"etl_at": {"$lt": etl_at}})
 
     try:
         stats["payments"] = await sweep_payments(db, etl_at)

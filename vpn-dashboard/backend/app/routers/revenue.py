@@ -177,11 +177,14 @@ async def _kpis(*, from_iso: Optional[str],
             median_check = r2(statistics.median(values))
 
     prev = period.previous()
-    prev_rows = await tx.aggregate([
-        {"$match": _topup_match(prev)},
-        {"$group": {"_id": None, "revenue": {"$sum": NET_AMOUNT}}},
-    ]).to_list(length=1)
-    prev_revenue = r2(prev_rows[0].get("revenue")) if prev_rows else 0.0
+    if prev is None:  # all-time period has no "previous" to compare with
+        prev_revenue = 0.0
+    else:
+        prev_rows = await tx.aggregate([
+            {"$match": _topup_match(prev)},
+            {"$group": {"_id": None, "revenue": {"$sum": NET_AMOUNT}}},
+        ]).to_list(length=1)
+        prev_revenue = r2(prev_rows[0].get("revenue")) if prev_rows else 0.0
 
     return {
         "mrr": mrr,

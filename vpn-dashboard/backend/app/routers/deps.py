@@ -35,10 +35,11 @@ class Period:
             return 3650.0
         return max((self.to_dt - self.from_dt).total_seconds() / 86400, 1 / 24)
 
-    def previous(self) -> "Period":
-        """The adjacent preceding window of the same length (for comparisons)."""
+    def previous(self) -> Optional["Period"]:
+        """The adjacent preceding window of the same length, or None for an
+        all-time period (there is nothing before 'everything')."""
         if self.from_dt is None:
-            return Period(None, self.to_dt)
+            return None
         span = self.to_dt - self.from_dt
         return Period(self.from_dt - span, self.from_dt)
 
@@ -56,7 +57,11 @@ def get_period(
                                  description="ISO datetime, omit for all time"),
     to: Optional[str] = Query(None, description="ISO datetime, default now"),
 ) -> Period:
-    to_dt = _parse(to, "to") if to else datetime.now(timezone.utc)
+    # default 'to' is truncated to the minute so cached report keys are
+    # stable between requests instead of missing on every microsecond
+    to_dt = (_parse(to, "to") if to
+             else datetime.now(timezone.utc).replace(second=0, microsecond=0)
+             + timedelta(minutes=1))
     from_dt = _parse(from_, "from") if from_ else None
     if from_dt and from_dt >= to_dt:
         raise HTTPException(422, "'from' must be before 'to'")

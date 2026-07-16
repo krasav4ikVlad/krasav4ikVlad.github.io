@@ -87,8 +87,11 @@ cd backend && .venv/bin/python -m pytest   # 121+ тестов: нормализ
 ## Деплой под PM2 (альтернатива Docker)
 
 ```bash
-pm2 start ".venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log" --name vpn-dash-api
+pm2 start ".venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log --proxy-headers" --name vpn-dash-api
 cd frontend && npm run build
+# standalone-сборке нужны статика и public рядом с server.js:
+cp -r .next/static .next/standalone/.next/static
+cp -r public .next/standalone/public 2>/dev/null || true
 pm2 start "node .next/standalone/server.js" --name vpn-dash-web
 # nginx: скопируйте deploy/nginx.conf, заменив upstream'ы на 127.0.0.1
 ```

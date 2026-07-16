@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
@@ -51,16 +52,17 @@ async def lifespan(app: FastAPI):
         except Exception:
             log.exception("alerts run failed")
 
+    # next_run_time=now → the first sweep starts immediately but INSIDE the
+    # scheduler, so max_instances=1 also guards it against interval overlap
     scheduler.add_job(etl_job, "interval",
                       minutes=settings.etl_interval_minutes,
+                      next_run_time=datetime.now(timezone.utc),
                       max_instances=1, coalesce=True, id="etl")
     scheduler.add_job(alerts_job, "interval",
                       minutes=settings.alerts_interval_minutes,
                       max_instances=1, coalesce=True, id="alerts")
     scheduler.start()
 
-    # first ETL sweep right away so a fresh deployment has data
-    initial_etl = asyncio.create_task(etl_job())
     watcher = asyncio.create_task(watch_users(db, hub))
 
     log.info("startup complete", extra={"etl_minutes": settings.etl_interval_minutes})
@@ -68,7 +70,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         watcher.cancel()
-        initial_etl.cancel()
+        try:
+            await watcher
+        except (asyncio.CancelledError, Exception):
+            pass
         scheduler.shutdown(wait=False)
         await get_remnawave().close()
         await get_cache().close()

@@ -77,6 +77,11 @@ class TTLCache:
             if len(self._local) > 512:  # crude bound
                 now = time.monotonic()
                 self._local = {k: v for k, v in self._local.items() if v[0] > now}
+                # still over the cap (all alive)? evict the oldest entries
+                if len(self._local) > 512:
+                    for stale_key in sorted(self._local,
+                                            key=lambda k: self._local[k][0])[:256]:
+                        del self._local[stale_key]
             self._local[key] = (time.monotonic() + ttl, raw)
 
     async def close(self) -> None:
