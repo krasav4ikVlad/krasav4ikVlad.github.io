@@ -79,6 +79,13 @@ function fmtDate(v) {
   return dt.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+// выбранный тариф подписки (vpn.period основного бота, в днях)
+function periodLabel(p) {
+  const map = { 1: 'Ежедневный (1 день)', 30: '1 месяц', 90: '3 месяца', 1095: '3 года' };
+  if (p == null || p === '') return '—';
+  return map[p] || `${p} дн.`;
+}
+
 function subBadge(expireAt) {
   const dt = parseTs(expireAt);
   if (!dt) return '<span class="badge badge-gray">нет подписки</span>';
@@ -433,6 +440,7 @@ async function viewUser(userId) {
       <div class="stats-grid">
         <div class="stat"><div class="stat-label">Баланс</div><div class="stat-value">${fmtNum(u.balance)} ₽</div></div>
         <div class="stat"><div class="stat-label">Подписка до</div><div class="stat-value">${fmtDate(vpn.expireAt)}</div></div>
+        <div class="stat"><div class="stat-label">Тариф</div><div class="stat-value" style="font-size:16px" title="Выбранный период — по нему проходит автопродление">${esc(periodLabel(vpn.period))}</div></div>
         <div class="stat"><div class="stat-label">Лимит устройств</div><div class="stat-value">${esc(vpn.hwidDeviceLimit ?? '—')}</div></div>
         <div class="stat"><div class="stat-label">ByPass трафик</div><div class="stat-value">${fmtBytes(vpn.bypass_trafficLimitBytes)}</div></div>
         <div class="stat"><div class="stat-label">Реф. баланс</div><div class="stat-value">${fmtNum(u.ref_withdrawable)} ₽</div></div>
