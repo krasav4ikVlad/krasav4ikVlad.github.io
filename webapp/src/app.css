@@ -1,0 +1,106 @@
+/* Поверх TelegramUI — только то, чего в ней нет.
+   Все цвета берём из её же переменных, чтобы тема Telegram работала. */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--tgui--secondary_bg_color);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app {
+  padding-bottom: calc(24px + var(--tgui--safe_area_inset_bottom, 0px));
+}
+
+/* Строка списка, по которой нажимают: гасим стили <button>.
+   app.css подключается после styles.css библиотеки, поэтому при равной
+   специфичности выигрывают эти правила. */
+.cell-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+/* ── иконки Solar ── */
+.ico {
+  display: block;
+  width: 28px;
+  height: 28px;
+  color: var(--tgui--link_color);
+}
+.ico--sm { width: 20px; height: 20px; }
+.ico--muted { color: var(--tgui--hint_color); }
+.ico--ok { color: var(--tgui--green); }
+.ico--warn { color: #f5a623; }
+.ico--bad { color: var(--tgui--destructive_text_color); }
+
+/* Контейнер под иконку в баннере — как аватар в нативных баннерах Telegram */
+.badge-round {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--tgui--secondary_fill);
+}
+.badge-round .ico { width: 30px; height: 30px; }
+
+/* ── подсветка значений ── */
+.val-ok   { color: var(--tgui--green) }
+.val-warn { color: #f5a623 }
+.val-bad  { color: var(--tgui--destructive_text_color) }
+.hint     { color: var(--tgui--hint_color) }
+
+/* Значения в правой части Cell: не переносим и не жмём текст */
+.cell-value {
+  white-space: nowrap;
+  color: var(--tgui--hint_color);
+}
+.cell-value--strong { color: var(--tgui--text_color) }
+
+/* ── прогресс к выводу ── */
+.payout-bar {
+  padding: 10px 0 2px;
+  max-width: 200px;
+}
+
+/* ── кнопки в баннере ── */
+.banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ── экран загрузки/ошибки ── */
+.center-screen {
+  min-height: 70vh;
+  display: grid;
+  place-items: center;
+}
+
+/* Подпись под последним блоком */
+.footnote {
+  padding: 16px 24px 0;
+  text-align: center;
+  color: var(--tgui--hint_color);
+}
+
+/* Ссылка в подзаголовке строки: одной строкой, лишнее срезаем.
+   Иначе перенос рвёт длинный ref_<id> посередине числа. */
+.reflink {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--tgui--hint_color);
+}

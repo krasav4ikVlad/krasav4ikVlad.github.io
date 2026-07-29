@@ -1,3 +1,7 @@
 # Локальные данные админки скриптов — не должны попадать в git
 /data/
 /includes/scripts_config.php
+
+# Мини-апп: зависимости и сборка
+/webapp/node_modules/
+/webapp/dist/
