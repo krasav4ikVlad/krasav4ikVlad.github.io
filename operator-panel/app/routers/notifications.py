@@ -27,11 +27,13 @@ async def _alias_map() -> dict[str, str]:
     """tg_username (нижний регистр) -> логин панели."""
     alias: dict[str, str] = {}
     async for o in get_db()[get_settings().operators_collection].find(
-            {}, {"login": 1, "tg_username": 1}):
+            {}, {"login": 1, "tg_username": 1, "tg_usernames": 1}):
         alias[o["login"].lower()] = o["login"]
-        tg = (o.get("tg_username") or "").strip().lstrip("@").lower()
-        if tg:
-            alias[tg] = o["login"]
+        legacy = [o.get("tg_username")] if o.get("tg_username") else []
+        for raw in (o.get("tg_usernames") or []) + legacy:
+            tg = (raw or "").strip().lstrip("@").lower()
+            if tg:
+                alias[tg] = o["login"]
     return alias
 
 

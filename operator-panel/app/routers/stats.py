@@ -256,11 +256,13 @@ async def operator_stats(
     op_info: dict[str, dict] = {}
     async for o in get_db()[settings.operators_collection].find(
             {}, {"login": 1, "name": 1, "salary_base": 1, "hours_per_week": 1,
-                 "schedule": 1, "tg_username": 1}):
+                 "schedule": 1, "tg_username": 1, "tg_usernames": 1}):
         op_info[o["login"]] = o
-        tg = (o.get("tg_username") or "").strip().lstrip("@").lower()
-        if tg:
-            alias[tg] = o["login"]
+        legacy = [o.get("tg_username")] if o.get("tg_username") else []
+        for raw in (o.get("tg_usernames") or []) + legacy:
+            tg = (raw or "").strip().lstrip("@").lower()
+            if tg:
+                alias[tg] = o["login"]
 
     def canon(raw_login: str) -> str:
         return alias.get((raw_login or "").strip().lstrip("@").lower(), raw_login)

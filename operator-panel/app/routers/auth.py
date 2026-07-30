@@ -39,6 +39,8 @@ def operator_public(op: dict) -> OperatorPublic:
         hours_per_week=op.get("hours_per_week"),
         schedule=op.get("schedule"),
         tg_username=op.get("tg_username"),
+        tg_usernames=(op.get("tg_usernames")
+                      or ([op.get("tg_username")] if op.get("tg_username") else [])),
     )
 
 

@@ -206,9 +206,29 @@ async def update_operator(operator_id: str, body: OperatorUpdate,
     if body.hours_per_week is not None:
         updates["hours_per_week"] = body.hours_per_week
         changed_public["hours_per_week"] = body.hours_per_week
-    if body.tg_username is not None:
-        updates["tg_username"] = body.tg_username.strip().lstrip("@").lower()
-        changed_public["tg_username"] = updates["tg_username"]
+    if body.tg_username is not None:  # legacy-клиенты: один тег -> список
+        body.tg_usernames = [body.tg_username]
+    if body.tg_usernames is not None:
+        tags: list[str] = []
+        for t in body.tg_usernames:
+            t = (t or "").strip().lstrip("@").lower()
+            if t and len(t) <= 64 and t not in tags:
+                tags.append(t)
+        # один и тот же тег у двух операторов сломал бы атрибуцию TG-ответов
+        if tags:
+            async for other in _col().find({"_id": {"$ne": oid}},
+                                           {"login": 1, "tg_username": 1, "tg_usernames": 1}):
+                other_tags = {(other.get("tg_username") or "").strip().lstrip("@").lower()}
+                other_tags.update((x or "").strip().lstrip("@").lower()
+                                  for x in other.get("tg_usernames") or [])
+                clash = sorted(set(tags) & other_tags - {""})
+                if clash:
+                    raise HTTPException(
+                        status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        f"Тег @{clash[0]} уже привязан к оператору {other['login']}")
+        updates["tg_usernames"] = tags
+        updates["tg_username"] = None  # legacy-поле больше не используется
+        changed_public["tg_usernames"] = tags
     if body.schedule is not None:
         clean, hours = validate_schedule(body.schedule)
         updates["schedule"] = clean

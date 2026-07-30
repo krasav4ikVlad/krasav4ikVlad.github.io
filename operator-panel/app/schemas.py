@@ -56,7 +56,8 @@ class OperatorUpdate(BaseModel):
     schedule: dict[str, str] | None = None
     # username в Telegram (без @) — чтобы ответы из TG-треда засчитывались
     # этому же оператору в «Активности», а не отдельной строкой
-    tg_username: str | None = Field(default=None, max_length=64)
+    tg_username: str | None = Field(default=None, max_length=64)   # legacy: один тег
+    tg_usernames: list[str] | None = Field(default=None, max_length=10)  # теги TG (операторы их меняют)
 
     _perm_keys = field_validator("permissions")(_validate_permission_keys)
 
@@ -80,6 +81,7 @@ class OperatorPublic(BaseModel):
     hours_per_week: float | None = None
     schedule: dict[str, str] | None = None
     tg_username: str | None = None
+    tg_usernames: list[str] = []
 
 
 # ---------------------------------------------------------------- user actions

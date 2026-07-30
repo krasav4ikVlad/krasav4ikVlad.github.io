@@ -2484,7 +2484,11 @@ function modalOperatorEdit(op) {
         <div class="field"><label>Оклад, ₽/мес (для «Активности»)</label>
           <input name="salary" type="number" min="0" step="500" value="${op.salary_base ?? ''}" placeholder="30000"></div>
         <div class="field"><label>Username в Telegram (без @)</label>
-          <input name="tg" value="${esc(op.tg_username ?? '')}" placeholder="ivan_support"></div>
+          <input name="tg" value="${esc((op.tg_usernames && op.tg_usernames.length ? op.tg_usernames : [op.tg_username]).filter(Boolean).join(', '))}"
+            placeholder="ivan_support, ivan_backup">
+          <div class="muted" style="font-size:11.5px; margin-top:4px">Можно несколько через запятую —
+            операторы иногда меняют тег, старые оставляйте здесь же, чтобы прошлые ответы из TG
+            не потерялись в статистике.</div></div>
       </div>
       <div class="muted" style="font-size:12px; margin:-8px 0 12px">
         Укажите TG username — и ответы этого оператора из Telegram-треда будут
@@ -2537,7 +2541,7 @@ function modalOperatorEdit(op) {
     const body = { name: f.name.value.trim(), role: f.role.value, active: f.active.checked };
     if (f.role.value === 'operator') body.permissions = readPermCheckboxes($m);
     if (f.salary.value !== '') body.salary_base = parseInt(f.salary.value, 10);
-    body.tg_username = f.tg.value.trim();
+    body.tg_usernames = f.tg.value.split(',').map(s => s.trim()).filter(Boolean);
     try {
       body.schedule = readScheduleTable($m);
     } catch (err) {
