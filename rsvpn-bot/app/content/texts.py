@@ -1,0 +1,148 @@
+"""Реестр текстов.
+
+Правило: ни одной длинной строки в хендлерах и кампаниях — только ключ.
+Тогда тексты можно (а) читать все сразу, (б) править из админки без деплоя,
+(в) не дублировать одну формулировку в пяти местах.
+
+Плейсхолдеры: {name_comma} {name} {balance} {credited} {total} {price} {days}
+{support_url} {channel_url} — недостающие подставляются пустой строкой,
+поэтому опечатка в шаблоне не роняет отправку.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from string import Formatter
+
+
+@dataclass(frozen=True)
+class Text:
+    key: str
+    title: str          # человеческое название для админки
+    default: str
+    multi: str = ''     # вариант для тех, кто платил 2+ раза (необязательно)
+
+
+TEXTS: tuple[Text, ...] = (
+    # ── профиль и подписка ──────────────────────────────────────────────────
+    Text('screen.profile.caption', 'Профиль — подпись',
+         '<b>👤 Профиль</b>\n\n'
+         '<b>🆔 Идентификатор:</b> <code>{user_id}</code>\n'
+         '<b>💰 Баланс:</b> <code>{balance}₽</code>\n'
+         '<b>👥 Друзей:</b> <code>{friends}</code>\n'
+         '<b>✉️ Почта:</b> <code>{email}</code>\n'),
+    Text('screen.subscription.empty', 'Экран выбора тарифа',
+         'Выберите длительность подписки. При покупке тарифа со значком 🎁 '
+         'вы получите подарочную подписку для друга.'),
+    Text('screen.subscription.expired', 'Подписка истекла',
+         '❗️Ваша подписка истекла. Продлите её кнопкой «Продлить подписку».'),
+    Text('screen.balance.not_enough', 'Не хватает средств',
+         '❗️На балансе не хватает {missing}₽. Пополните баланс и вернитесь к покупке.'),
+    Text('screen.devices.hint', 'Менеджер устройств',
+         'Каждое устройство сверх {free_devices} стоит {device_price}₽ в месяц.'),
+    Text('error.generic', 'Общая ошибка',
+         'Что-то пошло не так. Попробуйте ещё раз или напишите в поддержку.'),
+
+    # ── кампания: новички на триале ─────────────────────────────────────────
+    Text('campaign.trial.d0', 'Триал D0 — через 2 часа',
+         '{name_comma}как вам RS VPN? 🚀\n\n'
+         'Надеемся, всё работает — сайты и сервисы снова доступны без ограничений.\n\n'
+         'У вас есть ещё <b>2 дня бесплатного периода</b>. '
+         'Подключайте на все свои устройства 👇'),
+    Text('campaign.trial.d1', 'Триал D1 — через сутки',
+         'Добрый день! 👋\n\n'
+         '{name_comma}вы уже сутки пользуетесь RS VPN — и всё это время '
+         'интернет работал без блокировок 🌐\n\n'
+         'Осталось <b>2 дня бесплатного периода</b>.'),
+    Text('campaign.trial.d2', 'Триал D2 — предпоследний день',
+         '{name_comma}у вас остался последний день бесплатного периода.\n\n'
+         'Пополните баланс сегодня — начислим бонус сверху 🎁\n\n'
+         'Предложение сгорает в полночь 👇'),
+    Text('campaign.trial.d2_hot', 'Триал D2 HOT — 6 часов',
+         '⏰ <b>Осталось меньше 6 часов</b>\n\n'
+         'Бонус к пополнению заканчивается сегодня ночью. '
+         'После — стандартные условия.'),
+    Text('campaign.trial.d3', 'Триал D3 — последний день',
+         '{name_comma}сегодня последний день бесплатного периода.\n\n'
+         'Завтра RS VPN отключится, и сайты снова станут недоступны.\n\n'
+         'Чтобы ничего не изменилось — пополните баланс 👇'),
+    Text('campaign.trial.d3_hot', 'Триал D3 HOT — 2 часа',
+         '⚠️ <b>Через 2 часа VPN отключится</b>\n\n'
+         'Продлите прямо сейчас — это дешевле чашки кофе за день 👇'),
+
+    # ── кампания: истёкшие подписки ─────────────────────────────────────────
+    Text('campaign.expired.d1', 'Истекли 1 день',
+         '{name_comma}ваша подписка RS VPN закончилась вчера.\n\n'
+         'Может, просто забыли продлить? Бывает 😊\n\nОдин клик — и всё как раньше 👇',
+         multi='{name_comma}вы уже не первый раз с нами — и вчера подписка закончилась.\n\n'
+               'Просто продлите: один клик и всё работает 👇'),
+    Text('campaign.expired.d3', 'Истекли 3 дня',
+         '{name_comma}уже 3 дня без RS VPN.\n\n'
+         'Мы начислили вам <b>{credited}₽</b> — на балансе теперь <b>{total}₽</b> 🎁\n\n'
+         'Нажмите кнопку — подписка включится за секунду 👇'),
+    Text('campaign.expired.d7', 'Истекла неделя',
+         '{name_comma}прошла неделя без RS VPN.\n\n'
+         'Мы начислили вам <b>{credited}₽</b> — на балансе <b>{total}₽</b> 🎁\n\n'
+         'Подключитесь прямо сейчас 👇'),
+    Text('campaign.expired.d14', 'Истекли 2 недели',
+         '{name_comma}прошло две недели без RS VPN.\n\n'
+         'Вернуть интернет без ограничений — один клик 👇'),
+    Text('campaign.expired.d21', 'Истекли 3 недели',
+         '{name_comma}уже 3 недели без RS VPN.\n\n'
+         'Часть сайтов и сервисов всё это время остаётся недоступной. '
+         'Вернуться — один клик 👇'),
+    Text('campaign.expired.d30', 'Истёк месяц',
+         '{name_comma}месяц без RS VPN.\n\nВозвращайтесь — один клик 👇'),
+    Text('campaign.churned.d45', 'Ушли 45 дней',
+         '{name_comma}больше месяца без RS VPN.\n\n'
+         'Мы обновили серверы и протоколы — сервис стал заметно быстрее 👇'),
+    Text('campaign.churned.d60', 'Ушли 60 дней',
+         '{name_comma}почти два месяца без RS VPN.\n\n'
+         'Новые протоколы работают даже там, где раньше были проблемы 👇'),
+    Text('campaign.churned.d90', 'Ушли 90 дней',
+         '{name_comma}прошло почти три месяца.\n\n'
+         'RS VPN заметно изменился. Если захотите вернуться — мы здесь 👇'),
+
+    # ── кампания: не заплатившие после триала ───────────────────────────────
+    Text('campaign.trial_back.s1', 'Возврат после триала — касание 1',
+         '{name_comma}вы пробовали RS VPN — и знаете, как это работает.\n\n'
+         'Интернет без блокировок продолжается с любого пополнения 👇'),
+    Text('campaign.trial_back.s2', 'Возврат после триала — касание 2',
+         '{name_comma}ещё раз напомним: интернет без ограничений '
+         'стоит меньше чашки кофе в неделю.\n\nПодключитесь прямо сейчас 👇'),
+)
+
+REGISTRY: dict[str, Text] = {t.key: t for t in TEXTS}
+
+# Переопределения из БД (админка). Ставятся при старте и после правки.
+_overrides: dict[str, str] = {}
+
+
+def set_overrides(values: dict[str, str]) -> None:
+    global _overrides
+    _overrides = {k: v for k, v in values.items() if k in REGISTRY}
+
+
+class _SafeDict(dict):
+    def __missing__(self, key):  # noqa: D105 - неизвестный плейсхолдер не должен ронять отправку
+        return ''
+
+
+def render(key: str, *, multi: bool = False, name: str | None = None, **params) -> str:
+    template = REGISTRY.get(key)
+    if template is None:
+        return _overrides.get(key, key)
+
+    raw = _overrides.get(key) or (template.multi if multi and template.multi else template.default)
+    context = _SafeDict(params)
+    context['name'] = name or ''
+    context['name_comma'] = f'{name}, ' if name else ''
+    return raw.format_map(context)
+
+
+def placeholders(key: str) -> set[str]:
+    """Какие плейсхолдеры использует шаблон — для подсказки в админке."""
+    template = REGISTRY.get(key)
+    if not template:
+        return set()
+    return {name for _, name, _, _ in Formatter().parse(template.default) if name}
