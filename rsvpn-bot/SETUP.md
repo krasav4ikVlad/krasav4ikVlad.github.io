@@ -54,8 +54,12 @@ pip install -e ".[dev]"
 ## 4. Проверить настройку
 
 ```bash
-make check
+make check              # macOS / Linux
+.\make.ps1 check        # Windows PowerShell
 ```
+
+`make` в Windows нет по умолчанию, поэтому рядом лежит `make.ps1` с теми же
+командами. Можно и напрямую: `python -m scripts.check_setup`.
 
 Скрипт ничего не меняет: подключается к базе, считает пользователей, показывает
 коллекции с пробелом в имени, перечисляет поднявшиеся платёжные системы и
@@ -64,7 +68,7 @@ make check
 ## 5. Миграции
 
 ```bash
-make migrate
+make migrate            # или .\make.ps1 migrate, или python -m migrations.runner
 ```
 
 Что делает: создаёт индексы, заливает текущие тарифы (6/150/375/3000₽),
@@ -78,6 +82,10 @@ make test    # 164 теста, без сети и без базы — прове
 make run     # бот
 make api     # вебхуки платежей и панели, отдельный процесс
 ```
+
+В Windows то же самое: `.\make.ps1 test`, `.\make.ps1 run`, `.\make.ps1 api`.
+Если PowerShell не даёт запустить скрипт, разрешите локальные:
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
 В PyCharm те же три конфигурации лежат в `.run/` и появляются в списке сами.
 
@@ -109,6 +117,17 @@ EXPIRATION_NOTIFICATIONS=-72,-24,-12,-6,-3,-1,24
 
 Откат на любом шаге — вернуть старый процесс: схема данных совместима,
 новые поля старому коду не мешают.
+
+## Соответствие команд
+
+| `make` | Напрямую |
+|---|---|
+| `make install` | `pip install -e ".[dev]"` |
+| `make check` | `python -m scripts.check_setup` |
+| `make migrate` | `python -m migrations.runner` |
+| `make test` | `pytest -q` |
+| `make run` | `python -m app.main_bot` |
+| `make api` | `uvicorn app.main_api:app --port 8000` |
 
 ## Если что-то не так
 

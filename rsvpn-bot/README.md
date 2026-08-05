@@ -22,12 +22,15 @@
 ## Запуск из терминала
 
 ```bash
-cp .env.example .env      # заполнить BOT_TOKEN, ADMIN_IDS, MONGO_URI
+cp .env.example .env      # заполнить API_TOKEN, ADMIN_IDS, TOKEN_DB
 make install
+make check                # проверить, что всё заполнено и база доступна
 make migrate              # индексы + дефолтные тарифы
 make run                  # бот
 make api                  # вебхуки платежей (отдельный процесс)
 ```
+
+Windows: те же команды через `.\make.ps1 <задача>` — `make` там не установлен.
 
 Или целиком:
 
