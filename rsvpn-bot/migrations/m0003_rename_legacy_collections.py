@@ -28,12 +28,22 @@ async def up(container) -> None:
             continue
 
         moved = 0
+        skipped = 0
         for doc in docs:
             # _id сохраняем: повторный прогон миграции ничего не задвоит
-            existing = await new.find_one({'_id': doc['_id']})
-            if existing is None:
+            if await new.find_one({'_id': doc['_id']}) is not None:
+                continue
+            try:
                 await new.insert_one(doc)
                 moved += 1
+            except Exception as exc:
+                # в старых данных мог оказаться дубль по уникальному индексу
+                # (например два одинаковых промокода) — пропускаем документ,
+                # но не обрываем перенос остальных
+                skipped += 1
+                log.warning('%r: документ %s не перенесён (%s)',
+                            old_name, doc.get('_id'), exc)
 
-        log.info('коллекция %r → %r: перенесено %s из %s',
-                 old_name, new_name, moved, len(docs))
+        log.info('коллекция %r → %r: перенесено %s из %s%s',
+                 old_name, new_name, moved, len(docs),
+                 f', пропущено дублей: {skipped}' if skipped else '')

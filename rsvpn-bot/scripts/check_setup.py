@@ -63,6 +63,30 @@ async def main() -> int:
 
         settings_count = await db['bot_settings'].count_documents({})
         line(OK, 'Изменённые настройки', f'{settings_count} шт. (остальные — по умолчанию)')
+
+        # Уникальные индексы создаются миграцией. Если в данных уже есть
+        # дубли, создание индекса упадёт — лучше узнать об этом заранее.
+        for collection, field, title in (
+            ('users', 'user_data.user_id', 'Пользователи'),
+            ('promo_codes', 'code', 'Промокоды'),
+            (' promo_codes', 'code', 'Промокоды (старая коллекция)'),
+        ):
+            name = collection.strip() if collection.startswith(' ') else collection
+            source = collection.replace(' ', '') + ' ' if collection.startswith(' ') else collection
+            if source not in names:
+                continue
+            duplicates = await db[source].aggregate([
+                {'$group': {'_id': f'${field}', 'n': {'$sum': 1}}},
+                {'$match': {'n': {'$gt': 1}}},
+                {'$limit': 5},
+            ]).to_list(length=5)
+            if duplicates:
+                problems += 1
+                line(FAIL, f'{title}: дубли по {field}',
+                     ', '.join(str(d['_id']) for d in duplicates))
+                print('     → уникальный индекс не создастся, пока дубли не убраны')
+            else:
+                line(OK, f'{title}: дублей нет', f'по полю {field}')
     except Exception as exc:
         line(FAIL, 'Подключение к Mongo', str(exc)[:120])
         problems += 1
