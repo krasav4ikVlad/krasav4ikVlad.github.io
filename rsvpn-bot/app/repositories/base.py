@@ -28,18 +28,27 @@ class Repository:
     def __init__(self, collection):
         self.col = collection
 
-    async def ensure_index(self, keys, unique: bool = False, **kwargs) -> bool:
+    async def ensure_index(self, keys, unique: bool = False,
+                           only_existing: bool = False, **kwargs) -> bool:
         """Создать индекс, разобравшись с тем, что уже есть в базе.
 
-        Два случая, из-за которых обычный create_index падает на живой базе:
+        Три случая, из-за которых обычный create_index падает на живой базе:
 
         * индекс с таким именем уже есть, но с другими параметрами — например
           неуникальный `user_data.user_id_1`, созданный руками для ускорения
           поиска дублей. Mongo не меняет параметры на лету, поэтому старый
           индекс удаляется и создаётся заново;
         * в данных остались дубли — тогда уникальный индекс не построить,
-          и об этом нужно сказать понятно, а не падать трейсбеком.
+          и об этом нужно сказать понятно, а не падать трейсбеком;
+        * в коллекции есть документы, где поля вообще нет. Для уникального
+          индекса все они одинаковы (null), поэтому второй такой документ
+          считается дублем — хотя по значению дублей нет. Лечится
+          only_existing=True: уникальность проверяется только там, где поле
+          есть, а мусорные документы просто не участвуют.
         """
+        if only_existing and isinstance(keys, str):
+            kwargs.setdefault('partialFilterExpression', {keys: {'$exists': True}})
+
         try:
             await self.col.create_index(keys, unique=unique, **kwargs)
             return True

@@ -176,3 +176,15 @@ async def test_uses_server_side_grouping_when_available(db):
     assert collection.aggregate_calls == 1
     assert len(report.groups) == 1
     assert report.groups[0].keep['_id'] == 'a1'
+
+
+async def test_report_counts_documents_without_the_field(db, dedupe):
+    await add(db, 'a1', 100)
+    await db['users'].insert_one({'_id': 'broken1', 'info': {}})
+    await db['users'].insert_one({'_id': 'broken2', 'info': {}})
+
+    report = await dedupe.scan('user_data.user_id')
+
+    assert report.missing_field == 2
+    assert set(report.missing_examples) == {'broken1', 'broken2'}
+    assert report.groups == []          # по значению дублей нет

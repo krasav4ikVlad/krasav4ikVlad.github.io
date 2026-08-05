@@ -47,3 +47,41 @@ async def test_index_is_created_when_data_is_clean(db):
 
     assert await Repository(db['users']).ensure_index('user_data.user_id',
                                                       unique=True) is True
+
+
+async def test_documents_without_the_field_block_a_plain_unique_index(db):
+    """Именно из-за них индекс не строился, хотя дублей по значению нет."""
+    await db['users'].insert_one({'_id': 1, 'user_data': {'user_id': 100}})
+    await db['users'].insert_one({'_id': 2, 'info': {}})          # поля нет
+    await db['users'].insert_one({'_id': 3, 'info': {}})          # и здесь нет
+
+    assert await Repository(db['users']).ensure_index(
+        'user_data.user_id', unique=True) is False
+
+
+async def test_partial_index_ignores_such_documents(db):
+    await db['users'].insert_one({'_id': 1, 'user_data': {'user_id': 100}})
+    await db['users'].insert_one({'_id': 2, 'info': {}})
+    await db['users'].insert_one({'_id': 3, 'info': {}})
+
+    created = await Repository(db['users']).ensure_index(
+        'user_data.user_id', unique=True, only_existing=True)
+
+    assert created is True
+
+
+async def test_partial_index_still_blocks_real_duplicates(db):
+    await db['users'].insert_one({'_id': 1, 'user_data': {'user_id': 100}})
+    await db['users'].insert_one({'_id': 2, 'user_data': {'user_id': 100}})
+
+    assert await Repository(db['users']).ensure_index(
+        'user_data.user_id', unique=True, only_existing=True) is False
+
+
+async def test_users_repository_uses_partial_index(db):
+    await db['users'].insert_one({'_id': 1, 'user_data': {'user_id': 100}})
+    await db['users'].insert_one({'_id': 2, 'logs': []})       # документ без user_id
+
+    await UsersRepository(db['users']).ensure_indexes()
+
+    assert db['users'].indexes['user_data.user_id_1'] is True

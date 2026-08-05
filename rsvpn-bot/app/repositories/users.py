@@ -16,7 +16,9 @@ from app.repositories.base import Repository
 
 class UsersRepository(Repository):
     async def ensure_indexes(self) -> None:
-        await self.ensure_index('user_data.user_id', unique=True)
+        # only_existing: документы без user_id (мусор из старых версий)
+        # не должны мешать уникальному индексу
+        await self.ensure_index('user_data.user_id', unique=True, only_existing=True)
         await self.ensure_index('growth.segment')
         await self.ensure_index('vpn.expireAt')
 

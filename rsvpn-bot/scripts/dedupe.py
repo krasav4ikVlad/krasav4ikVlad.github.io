@@ -57,7 +57,16 @@ async def main(args) -> int:
     print(f'Групп с дублями:        {len(report.groups)}')
     print(f'Лишних документов:      {report.extra_documents}')
     print(f'  из них безопасных:    {sum(len(g.remove) for g in report.safe)}')
-    print(f'  спорных:              {sum(len(g.remove) for g in report.risky)}\n')
+    print(f'  спорных:              {sum(len(g.remove) for g in report.risky)}')
+
+    if report.missing_field:
+        print(f'\n⚠️  Документов без поля {args.field}: {report.missing_field}')
+        print(f'    примеры _id: {", ".join(str(i) for i in report.missing_examples)}')
+        print('    По значению это не дубли, но уникальному индексу они мешают:')
+        print('    для него все отсутствующие значения одинаковы (null).')
+        print('    Индекс создаётся только по документам, где поле есть, —')
+        print('    просто повторите: python -m migrations.runner --only m0001')
+    print()
 
     for group in report.risky[:args.limit]:
         print(f'⚠️  {args.field}={group.key} — в дублях есть данные, которых нет '

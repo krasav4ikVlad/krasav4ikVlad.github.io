@@ -73,6 +73,10 @@ class DedupeReport:
     scanned: int = 0
     groups: list[DuplicateGroup] = field(default_factory=list)
     deleted: int = 0
+    # документы, где поля нет вообще: по значению они не дубли, но уникальному
+    # индексу мешают — для него все отсутствующие значения равны null
+    missing_field: int = 0
+    missing_examples: list[Any] = field(default_factory=list)
 
     @property
     def safe(self) -> list[DuplicateGroup]:
@@ -125,6 +129,13 @@ class DedupeService:
         """Находит дубли. Ничего не меняет."""
         report = DedupeReport()
         report.scanned = await self.col.count_documents({})
+        report.missing_field = await self.col.count_documents(
+            {field_path: {'$exists': False}})
+
+        if report.missing_field:
+            sample = await self.col.find(
+                {field_path: {'$exists': False}}, {'_id': 1}).to_list(length=5)
+            report.missing_examples = [d['_id'] for d in sample]
 
         keys = await self.duplicate_keys(field_path, progress)
 

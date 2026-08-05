@@ -286,13 +286,17 @@ class FakeCollection:
                   else tuple(k if isinstance(k, str) else k[0] for k in keys))
 
         if unique:
+            partial = kwargs.get('partialFilterExpression')
             seen = set()
             for doc in self.docs:
+                if partial and not self._match(doc, partial):
+                    continue      # документ вне условия индекса — не участвует
                 key = tuple(self._get(doc, f) for f in fields)
-                if all(v is not None for v in key):
-                    if key in seen:
-                        raise MongoError('duplicate key', code=11000)
-                    seen.add(key)
+                # без partialFilterExpression отсутствующее поле = null,
+                # и второй такой документ Mongo считает дублем
+                if key in seen:
+                    raise MongoError('duplicate key', code=11000)
+                seen.add(key)
             if fields not in self.unique_keys:
                 self.unique_keys.append(fields)
 
