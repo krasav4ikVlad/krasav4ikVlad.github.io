@@ -77,6 +77,8 @@ class VpnPanelConfig:
     base_squad_id: str = ''
     happ_rsa_public_key: str = ''
     connect_base: str = 'https://connect.rsvps.tech/'
+    # True — запросы на изменение в панель не уходят (тестовый контур)
+    dry_run: bool = False
     # секрет вебхука панели: сейчас записан прямо в lifeline.py — перевыпустить
     webhook_secret: str = ''
 
@@ -143,6 +145,7 @@ class Config:
                 happ_rsa_public_key=_env('HAPP_RSA_PUBLIC_KEY'),
                 connect_base=_env('VPN_CONNECT_BASE', default='https://connect.rsvps.tech/'),
                 webhook_secret=_env('REMNAWAVE_WEBHOOK_SECRET'),
+                dry_run=_env('PANEL_DRY_RUN', default='').lower() in ('1', 'true', 'yes'),
             ),
             payments=PaymentsConfig(
                 cardlink_token=_env('CARDLINK_ACCESS_TOKEN'),

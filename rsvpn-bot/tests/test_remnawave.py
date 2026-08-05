@@ -178,3 +178,25 @@ async def test_running_out_of_combinations_does_not_break_purchase(db):
 
     results = [await service.assign_fingerprint(i) for i in range(1, 6)]
     assert all(len(r) == 1 for r in results)
+
+
+# ── режим только чтения ─────────────────────────────────────────────────────
+async def test_dry_run_does_not_send_changes(db):
+    """Тестовый контур на копии боевых данных не должен править настоящую панель."""
+    settings = SettingsService(db['bot_settings'])
+    http = FakeHttp()
+    api = RemnawaveClient('https://panel', 'token', http, settings, dry_run=True)
+
+    await api.update_subscription('u-1', expire_at=now())
+    await api.create_subscription(1, days=30)
+
+    assert http.calls == []
+
+
+async def test_dry_run_still_reads(db):
+    settings = SettingsService(db['bot_settings'])
+    http = FakeHttp([FakeResponse(200, {'response': {'devices': [{'hwid': 'a'}]}})])
+    api = RemnawaveClient('https://panel', 'token', http, settings, dry_run=True)
+
+    assert await api.devices('u-1') == [{'hwid': 'a'}]
+    assert len(http.calls) == 1

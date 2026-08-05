@@ -38,15 +38,31 @@ def subscription_token(user_id: int, bypass: bool = False) -> str:
 
 
 class RemnawaveClient:
-    def __init__(self, base_url: str, token: str, http, settings=None, squads=None):
+    def __init__(self, base_url: str, token: str, http, settings=None, squads=None,
+                 dry_run: bool = False):
         self._base = (base_url or '').rstrip('/')
         self._token = token
         self._http = http
         self._settings = settings
         self._squads = squads
+        # dry_run: запросы на изменение не уходят в панель, только пишутся в лог.
+        # Нужен, когда тестовый бот работает на копии боевых данных: подписки
+        # в панели настоящие, и продление «понарошку» изменило бы их всерьёз.
+        self._dry_run = dry_run
+        if dry_run:
+            log.warning('панель в режиме только чтения: изменения не отправляются')
 
     # ── низкий уровень ──────────────────────────────────────────────────────
     async def _request(self, method: str, path: str, **kwargs) -> dict:
+        if self._dry_run and method.upper() != 'GET':
+            payload = kwargs.get('json') or {}
+            log.info('[dry-run] %s %s %s', method, path, payload)
+            return {'uuid': payload.get('uuid', 'dry-run'),
+                    'shortUuid': payload.get('shortUuid', 'dry-run'),
+                    'expireAt': payload.get('expireAt'),
+                    'createdAt': payload.get('createdAt'),
+                    'dry_run': True}
+
         url = f'{self._base}{path}'
         try:
             response = await self._http.request(

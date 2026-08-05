@@ -131,7 +131,8 @@ class Container:
                               container.db[names.FINGERPRINTS])
         container.squads = squads
         container.vpn = RemnawaveClient(config.vpn.base_url, config.vpn.token, http,
-                                        container.settings, squads)
+                                        container.settings, squads,
+                                        dry_run=config.vpn.dry_run)
         container.payments = PaymentRegistry(build_providers(config, http), container.settings)
         container.topup = TopupService(
             container.users, container.payments_repo, container.settings, container=container)
