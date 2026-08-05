@@ -127,6 +127,21 @@ python -m scripts.clone_db --from RS_2 --to RS_2_test
 Скрипт только читает исходную базу. В `.env` тестового бота ставим
 `MONGO_DB=RS_2_test` — дальше все миграции и записи идут туда.
 
+Если Mongo ответит `not authorized on RS_2_test`, значит пользователю выдан
+доступ только к боевой базе. Либо добавьте ему роль `readWrite` на тестовую
+(в Atlas: Database Access → Edit user → Add Specific Privilege), либо
+скопируйте в локальный Mongo и не трогайте боевой кластер вообще:
+
+```bash
+docker run -d --name mongo-test -p 27017:27017 mongo:7
+
+python -m scripts.clone_db --from RS_2 --to RS_2_test \
+  --to-uri mongodb://localhost:27017
+```
+
+Тогда в `.env` тестового бота помимо `MONGO_DB=RS_2_test` пропишите
+`TOKEN_DB=mongodb://localhost:27017`.
+
 **Панель — только чтение:**
 
 ```bash
