@@ -5,6 +5,8 @@
 
 Структура и правила — в [ARCHITECTURE.md](ARCHITECTURE.md).
 
+Перенос со старого бота и настройка — в [SETUP.md](SETUP.md).
+
 ## Запуск в PyCharm
 
 1. `File → Open` → выбрать папку **rsvpn-bot** (именно её, а не родительскую:

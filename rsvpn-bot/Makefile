@@ -1,4 +1,4 @@
-.PHONY: install run api test lint fmt migrate
+.PHONY: install run api test lint fmt migrate check
 
 install:
 	pip install -e ".[dev]"
@@ -20,3 +20,6 @@ fmt:
 
 migrate:
 	python -m migrations.runner
+
+check:
+	python -m scripts.check_setup
