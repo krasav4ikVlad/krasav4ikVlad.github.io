@@ -7,12 +7,64 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, AsyncIterator
+
+log = logging.getLogger(__name__)
+
+# Коды ошибок Mongo, которые обрабатываются осмысленно
+INDEX_CONFLICT = 86      # IndexKeySpecsConflict: индекс с тем же именем, другие параметры
+DUPLICATE_KEY = 11000    # в данных есть дубли — уникальный индекс не построить
+
+
+def index_name(keys) -> str:
+    """Имя, которое Mongo генерирует сама: поле_1, поле_-1, a_1_b_1."""
+    if isinstance(keys, str):
+        return f'{keys}_1'
+    return '_'.join(f'{field}_{direction}' for field, direction in keys)
 
 
 class Repository:
     def __init__(self, collection):
         self.col = collection
+
+    async def ensure_index(self, keys, unique: bool = False, **kwargs) -> bool:
+        """Создать индекс, разобравшись с тем, что уже есть в базе.
+
+        Два случая, из-за которых обычный create_index падает на живой базе:
+
+        * индекс с таким именем уже есть, но с другими параметрами — например
+          неуникальный `user_data.user_id_1`, созданный руками для ускорения
+          поиска дублей. Mongo не меняет параметры на лету, поэтому старый
+          индекс удаляется и создаётся заново;
+        * в данных остались дубли — тогда уникальный индекс не построить,
+          и об этом нужно сказать понятно, а не падать трейсбеком.
+        """
+        try:
+            await self.col.create_index(keys, unique=unique, **kwargs)
+            return True
+        except Exception as exc:
+            code = getattr(exc, 'code', None)
+
+            if code == INDEX_CONFLICT:
+                name = index_name(keys)
+                log.info('индекс %s пересоздаётся с unique=%s', name, unique)
+                try:
+                    await self.col.drop_index(name)
+                    await self.col.create_index(keys, unique=unique, **kwargs)
+                    return True
+                except Exception as retry:
+                    code = getattr(retry, 'code', None)
+                    exc = retry
+
+            if code == DUPLICATE_KEY:
+                log.error('индекс %s не создан: в коллекции %s остались дубли. '
+                          'Выполните: python -m scripts.dedupe --collection %s',
+                          index_name(keys), self.col.name, self.col.name)
+                return False
+
+            log.warning('индекс %s не создан: %s', index_name(keys), exc)
+            return False
 
     async def ensure_indexes(self) -> None:
         """Переопределяется в наследниках. Вызывается миграцией на старте."""

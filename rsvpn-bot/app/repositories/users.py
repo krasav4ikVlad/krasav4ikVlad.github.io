@@ -16,9 +16,9 @@ from app.repositories.base import Repository
 
 class UsersRepository(Repository):
     async def ensure_indexes(self) -> None:
-        await self.col.create_index('user_data.user_id', unique=True)
-        await self.col.create_index('growth.segment')
-        await self.col.create_index('vpn.expireAt')
+        await self.ensure_index('user_data.user_id', unique=True)
+        await self.ensure_index('growth.segment')
+        await self.ensure_index('vpn.expireAt')
 
     # ── чтение ──────────────────────────────────────────────────────────────
     async def get(self, user_id: int, projection: dict | None = None) -> dict | None:

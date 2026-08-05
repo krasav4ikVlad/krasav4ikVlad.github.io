@@ -46,7 +46,9 @@ class GiftService:
         self.notifier = notifier
 
     async def ensure_indexes(self) -> None:
-        await self.gifts.create_index('gift_id', unique=True)
+        from app.repositories.base import Repository
+
+        await Repository(self.gifts).ensure_index('gift_id', unique=True)
 
     async def create(self, from_user_id: int, plan_code: str) -> str:
         """Создать подарок и вернуть его id для ссылки."""

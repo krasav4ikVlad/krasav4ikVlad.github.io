@@ -12,8 +12,8 @@ from app.repositories.base import Repository
 
 class PaymentsRepository(Repository):
     async def ensure_indexes(self) -> None:
-        await self.col.create_index('txid', unique=True)
-        await self.col.create_index('user_id')
+        await self.ensure_index('txid', unique=True)
+        await self.ensure_index('user_id')
 
     async def register(self, txid: str, user_id: int, amount: int,
                        provider: str, payload: dict) -> bool:

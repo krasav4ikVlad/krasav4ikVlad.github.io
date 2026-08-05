@@ -28,7 +28,7 @@ class PlansRepository(Repository):
         self._loaded_at = 0.0
 
     async def ensure_indexes(self) -> None:
-        await self.col.create_index('code', unique=True)
+        await self.ensure_index('code', unique=True)
 
     async def seed(self) -> None:
         if await self.col.count_documents({}) == 0:

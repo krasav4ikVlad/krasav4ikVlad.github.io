@@ -46,6 +46,14 @@ class DuplicateKeyError(Exception):
     """Аналог pymongo.errors.DuplicateKeyError для заглушки."""
 
 
+class MongoError(Exception):
+    """Ошибка Mongo с кодом — как OperationFailure у pymongo."""
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
+
+
 class FakeResult:
     def __init__(self, matched=0, modified=0, upserted_id=None):
         self.matched_count = matched
@@ -61,6 +69,7 @@ class FakeCollection:
         self.docs: list[dict] = []
         self._auto_id = 0
         self.unique_keys: list[tuple[str, ...]] = []
+        self.indexes: dict[str, bool] = {}
 
     # ── чтение ──────────────────────────────────────────────────────────────
     @staticmethod
@@ -266,14 +275,35 @@ class FakeCollection:
         return await self.find_one({'_id': doc_id})
 
     async def create_index(self, keys, unique=False, **kwargs):
-        if not unique:
-            return None
-        if isinstance(keys, str):
-            fields = (keys,)
-        else:
-            fields = tuple(k if isinstance(k, str) else k[0] for k in keys)
-        if fields not in self.unique_keys:
-            self.unique_keys.append(fields)
+        from app.repositories.base import index_name
+
+        name = index_name(keys)
+        existing = self.indexes.get(name)
+        if existing is not None and existing != unique:
+            raise MongoError('An existing index has the same name', code=86)
+
+        fields = ((keys,) if isinstance(keys, str)
+                  else tuple(k if isinstance(k, str) else k[0] for k in keys))
+
+        if unique:
+            seen = set()
+            for doc in self.docs:
+                key = tuple(self._get(doc, f) for f in fields)
+                if all(v is not None for v in key):
+                    if key in seen:
+                        raise MongoError('duplicate key', code=11000)
+                    seen.add(key)
+            if fields not in self.unique_keys:
+                self.unique_keys.append(fields)
+
+        self.indexes[name] = unique
+        return name
+
+    async def drop_index(self, name):
+        unique = self.indexes.pop(name, None)
+        if unique:
+            self.unique_keys = [k for k in self.unique_keys
+                                if '_'.join(f'{f}_1' for f in k) != name]
         return None
 
 

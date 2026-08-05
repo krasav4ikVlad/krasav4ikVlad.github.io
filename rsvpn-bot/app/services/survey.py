@@ -40,7 +40,9 @@ class SurveyService:
         self.settings = settings
 
     async def ensure_indexes(self) -> None:
-        await self.answers.create_index('user_id', unique=True)
+        from app.repositories.base import Repository
+
+        await Repository(self.answers).ensure_index('user_id', unique=True)
 
     async def start(self, user_id: int, questions: list[str]) -> None:
         await self.answers.update_one(

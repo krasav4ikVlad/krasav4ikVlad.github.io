@@ -46,9 +46,12 @@ class PromoService:
         self.vpn = vpn
 
     async def ensure_indexes(self) -> None:
-        await self.codes.create_index('code', unique=True)
+        from app.repositories.base import Repository
+
+        await Repository(self.codes).ensure_index('code', unique=True)
         # именно этот индекс делает повторную активацию невозможной
-        await self.usages.create_index([('promo_id', 1), ('user_id', 1)], unique=True)
+        await Repository(self.usages).ensure_index(
+            [('promo_id', 1), ('user_id', 1)], unique=True)
 
     async def redeem(self, user_id: int, raw_code: str) -> PromoResult:
         if not await self.settings.flag('features.promo_enabled'):
