@@ -78,3 +78,27 @@ def test_media_accepts_any_common_extension(container, tmp_path):
 
     (tmp_path / 'profile.png').write_bytes(b'x')
     assert container.media('profile').endswith('profile.png')   # png приоритетнее
+
+
+def test_media_accepts_old_project_filenames(container, tmp_path):
+    """Картинки из старого проекта должны работать без переименования."""
+    import dataclasses
+
+    container.config = dataclasses.replace(container.config, media_dir=str(tmp_path))
+
+    (tmp_path / 'new_type_sub.png').write_bytes(b'x')
+    (tmp_path / 'new_your_bypass_sub.png').write_bytes(b'x')
+
+    assert container.media('subscription').endswith('new_type_sub.png')
+    assert container.media('bypass').endswith('new_your_bypass_sub.png')
+    assert container.media('profile') is None
+
+
+def test_new_name_wins_over_the_old_one(container, tmp_path):
+    import dataclasses
+
+    container.config = dataclasses.replace(container.config, media_dir=str(tmp_path))
+    (tmp_path / 'new_profile.png').write_bytes(b'x')
+    (tmp_path / 'profile.png').write_bytes(b'x')
+
+    assert container.media('profile').endswith('profile.png')

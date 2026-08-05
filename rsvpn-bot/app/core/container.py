@@ -76,16 +76,44 @@ class Container:
     # ── медиа ───────────────────────────────────────────────────────────────
     MEDIA_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp')
 
+    # Имена файлов из старого проекта: картинки можно просто скопировать
+    # в media/ как есть, не переименовывая.
+    MEDIA_ALIASES = {
+        'profile': ('new_profile',),
+        'subscription': ('new_type_sub',),
+        'subscription_active': ('new_your_sub',),
+        'subscription_creating': ('new_sub_creating',),
+        'subscription_extended': ('new_sub_extended',),
+        'subscription_expired': ('new_sub_was_expire',),
+        'no_funds': ('new_no_funds',),
+        'devices': ('new_limit_devices',),
+        'devices_list': ('new_your_devices',),
+        'devices_added': ('new_devices_added',),
+        'payment': ('new_top_up', 'new_edit_top_up'),
+        'payment_created': ('new_payment_created',),
+        'balance_added': ('new_balance_added',),
+        'referrals': ('new_referrals',),
+        'gifts': ('new_gifts',),
+        'gift_accepted': ('new_gift_accepted',),
+        'bypass': ('new_your_bypass_sub', 'new_by_gb'),
+        'bypass_buying': ('new_gb_buying',),
+        'email': ('new_email',),
+        'duration': ('new_duration',),
+        'error': ('new_error',),
+    }
+
     def media(self, key: str) -> str | None:
         """Путь к картинке экрана. Нет файла — экран отправится текстом.
 
-        Расширение любое из распространённых: класть можно и png, и jpg.
+        Ищутся: media/<ключ>.<png|jpg|jpeg|webp>, затем имена из старого
+        проекта (MEDIA_ALIASES) — чтобы картинки работали сразу после копирования.
         """
         folder = Path(self.config.media_dir)
-        for extension in self.MEDIA_EXTENSIONS:
-            path = folder / f'{key}{extension}'
-            if path.exists():
-                return str(path)
+        for name in (key, *self.MEDIA_ALIASES.get(key, ())):
+            for extension in self.MEDIA_EXTENSIONS:
+                path = folder / f'{name}{extension}'
+                if path.exists():
+                    return str(path)
         return None
 
     # ── контент ─────────────────────────────────────────────────────────────

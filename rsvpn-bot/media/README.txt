@@ -15,10 +15,20 @@
 Файла нет — экран просто уйдёт текстом, ошибки не будет.
 Проверить, что бот видит: python -m scripts.check_setup
 
-Из старого проекта соответствие такое:
-  img/new_profile.png        -> media/profile.png
-  img/new_type_sub.png       -> media/subscription.png
-  img/new_your_sub.png       -> media/subscription_active.png
-  img/new_no_funds.png       -> media/no_funds.png
-  img/new_limit_devices.png  -> media/devices.png
-  img/new_referrals.png      -> media/referrals.png
+ПЕРЕИМЕНОВЫВАТЬ НЕ ОБЯЗАТЕЛЬНО.
+
+Файлы из старого проекта распознаются по своим именам, просто скопируйте их
+сюда как есть:
+
+  new_profile.png          -> экран профиля
+  new_type_sub.png         -> выбор тарифа
+  new_your_sub.png         -> действующая подписка
+  new_no_funds.png         -> не хватает средств
+  new_limit_devices.png    -> менеджер устройств
+  new_your_devices.png     -> список устройств
+  new_top_up.png           -> выбор оплаты
+  new_referrals.png        -> реферальная программа
+  new_gifts.png            -> подарки
+  new_your_bypass_sub.png  -> белые списки
+
+Полный список соответствий — в app/core/container.py, MEDIA_ALIASES.

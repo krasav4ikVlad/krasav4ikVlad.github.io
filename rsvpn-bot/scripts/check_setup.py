@@ -150,12 +150,24 @@ async def main() -> int:
     print('\n── Картинки экранов ─────────────────────────────────────────')
     from app.core.container import Container
 
+    import os
+
     container = Container(config=config, db=db)
     found, missing = [], []
     for key in SCREEN_IMAGES:
-        (found if container.media(key) else missing).append(key)
+        path = container.media(key)
+        if path:
+            found.append(f'{key} → {os.path.basename(path)}')
+        else:
+            missing.append(key)
 
-    line(OK, f'Найдено в {config.media_dir}/', ', '.join(found) or 'ничего')
+    if found:
+        line(OK, f'Найдено в {config.media_dir}/', '')
+        for item in found:
+            print(f'     {item}')
+    else:
+        line(WARN, f'В {config.media_dir}/ картинок не найдено', 'экраны уйдут текстом')
+
     if missing:
         line(OK, 'Без картинки (уйдут текстом)', ', '.join(missing))
 

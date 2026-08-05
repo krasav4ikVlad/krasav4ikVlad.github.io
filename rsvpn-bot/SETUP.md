@@ -171,6 +171,12 @@ python -m migrations.runner                 # когда переключили�
 Расширение любое: png, jpg, jpeg, webp. Файла нет — экран уйдёт текстом,
 ошибки не будет. Что бот нашёл, покажет `python -m scripts.check_setup`.
 
+**Переименовывать не обязательно:** старые имена (`new_profile.png`,
+`new_type_sub.png`, `new_your_sub.png`, `new_limit_devices.png`,
+`new_top_up.png`, `new_referrals.png`, `new_gifts.png`,
+`new_your_bypass_sub.png`, `new_your_devices.png`) распознаются как есть —
+достаточно скопировать содержимое старой папки `img` в `media`.
+
 ## 9. Запуск
 
 ```bash
