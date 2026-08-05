@@ -63,3 +63,18 @@ def test_dangerous_combination_is_visible(monkeypatch):
 
     # именно это сочетание меняет боевые данные
     assert config.vpn.dry_run is False and config.scheduler_enabled is True
+
+
+# ── картинки экранов ────────────────────────────────────────────────────────
+def test_media_accepts_any_common_extension(container, tmp_path):
+    import dataclasses
+
+    container.config = dataclasses.replace(container.config, media_dir=str(tmp_path))
+
+    assert container.media('profile') is None
+
+    (tmp_path / 'profile.jpg').write_bytes(b'x')
+    assert container.media('profile').endswith('profile.jpg')
+
+    (tmp_path / 'profile.png').write_bytes(b'x')
+    assert container.media('profile').endswith('profile.png')   # png приоритетнее

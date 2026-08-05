@@ -74,10 +74,19 @@ class Container:
         self.survey = SurveyService(self.users, self.db['survey_bonus'], self.settings)
 
     # ── медиа ───────────────────────────────────────────────────────────────
+    MEDIA_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp')
+
     def media(self, key: str) -> str | None:
-        """Путь к картинке экрана. Нет файла — экран отправится текстом."""
-        path = Path(self.config.media_dir) / f'{key}.png'
-        return str(path) if path.exists() else None
+        """Путь к картинке экрана. Нет файла — экран отправится текстом.
+
+        Расширение любое из распространённых: класть можно и png, и jpg.
+        """
+        folder = Path(self.config.media_dir)
+        for extension in self.MEDIA_EXTENSIONS:
+            path = folder / f'{key}{extension}'
+            if path.exists():
+                return str(path)
+        return None
 
     # ── контент ─────────────────────────────────────────────────────────────
     async def notify(self, bot, topic_key: str, text: str) -> None:

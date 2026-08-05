@@ -11,6 +11,10 @@ from __future__ import annotations
 import asyncio
 import sys
 
+# Ключи экранов: файл media/<ключ>.png (или .jpg) подставляется автоматически
+SCREEN_IMAGES = ('profile', 'subscription', 'subscription_active', 'no_funds',
+                 'devices', 'payment', 'referrals', 'gifts', 'bypass')
+
 OK = '✅'
 WARN = '⚠️ '
 FAIL = '❌'
@@ -142,6 +146,18 @@ async def main() -> int:
         line(OK if provider.verified else WARN, provider.code,
              'подпись проверяется' if provider.verified
              else 'вебхук без подписи — принимается любой запрос')
+
+    print('\n── Картинки экранов ─────────────────────────────────────────')
+    from app.core.container import Container
+
+    container = Container(config=config, db=db)
+    found, missing = [], []
+    for key in SCREEN_IMAGES:
+        (found if container.media(key) else missing).append(key)
+
+    line(OK, f'Найдено в {config.media_dir}/', ', '.join(found) or 'ничего')
+    if missing:
+        line(OK, 'Без картинки (уйдут текстом)', ', '.join(missing))
 
     print('\n── Режим работы ─────────────────────────────────────────────')
     line(OK if config.vpn.dry_run else WARN, 'Панель',
