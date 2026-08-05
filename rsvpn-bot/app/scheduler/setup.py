@@ -25,6 +25,8 @@ def create_scheduler(container, bot) -> AsyncIOScheduler:
 
     scheduler.add_job(jobs.charge_subscriptions, 'interval', minutes=15,
                       args=[container], id='charge_subscriptions')
+    scheduler.add_job(jobs.reconcile_lifeline, 'interval', minutes=15,
+                      args=[container], id='reconcile_lifeline')
     scheduler.add_job(jobs.update_segments, 'interval', minutes=60,
                       args=[container], id='update_segments',
                       next_run_time=now() + timedelta(minutes=5))

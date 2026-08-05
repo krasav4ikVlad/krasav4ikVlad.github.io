@@ -41,6 +41,8 @@ class Container:
     notifier: Any = None
     analytics: Any = None
     expiry: Any = None
+    squads: Any = None
+    lifeline: Any = None
     entities: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -103,8 +105,12 @@ class Container:
         import httpx
         http = httpx.AsyncClient(timeout=20)
 
-        container.vpn = RemnawaveClient(
-            config.vpn.base_url, config.vpn.token, http, config.vpn.base_squad_id)
+        from app.services.squads import SquadService
+        squads = SquadService(container.settings, container.db['settings_collection'],
+                              container.db[names.FINGERPRINTS])
+        container.squads = squads
+        container.vpn = RemnawaveClient(config.vpn.base_url, config.vpn.token, http,
+                                        container.settings, squads)
         container.payments = PaymentRegistry(build_providers(config, http), container.settings)
         container.topup = TopupService(
             container.users, container.payments_repo, container.settings, container=container)
@@ -119,6 +125,8 @@ class Container:
         from app.bot.keyboards.common import campaign_keyboards
         from app.campaigns.sender import Sender
         from app.services.expiry import ExpiryNotifier
+        from app.services.lifeline import LifelineService
 
+        self.lifeline = LifelineService(self.users, self.settings, self.vpn)
         self.expiry = ExpiryNotifier(self.users, self.settings, Sender(), bot,
-                                     campaign_keyboards())
+                                     campaign_keyboards(), self.lifeline)

@@ -73,12 +73,13 @@ def key_for_hours(hours: int) -> str | None:
 
 
 class ExpiryNotifier:
-    def __init__(self, users, settings, sender, bot, keyboards=None):
+    def __init__(self, users, settings, sender, bot, keyboards=None, lifeline=None):
         self.users = users
         self.settings = settings
         self.sender = sender
         self.bot = bot
         self.keyboards = keyboards or {}
+        self.lifeline = lifeline
 
     async def handle(self, event: str, data: dict, meta: dict) -> dict:
         if not await self.settings.flag('expiry.notify_enabled'):
@@ -98,6 +99,11 @@ class ExpiryNotifier:
         uuid = data.get('uuid') or data.get('id')
         if uuid and uuid == self.users.pick(user, 'vpn.bypass_uuid'):
             return {'ok': True, 'note': 'bypass_ignored'}
+
+        # подписка кончилась — оставляем человеку запасной сервер, чтобы он
+        # мог открыть бота и продлить даже при блокировке Telegram
+        if event == EXPIRED_EVENT and self.lifeline:
+            await self.lifeline.on_expired(user)
 
         key = key_for_hours(hours)
         if not key or not await self.settings.flag(f'expiry.send_{key}'):

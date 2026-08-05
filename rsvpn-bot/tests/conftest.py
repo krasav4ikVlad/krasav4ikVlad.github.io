@@ -174,6 +174,11 @@ class FakeCollection:
             current = current.setdefault(part, {})
         current[parts[-1]] = value
 
+    async def find_one_and_update(self, query, update, upsert=False,
+                                  return_document=True):
+        await self.update_one(query, update, upsert=upsert)
+        return await self.find_one(query)
+
     async def create_index(self, *args, **kwargs):
         return None
 

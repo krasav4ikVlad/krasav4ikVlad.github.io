@@ -37,6 +37,15 @@ async def charge_subscriptions(container) -> None:
     raise NotImplementedError
 
 
+async def reconcile_lifeline(container) -> None:
+    """Вернуть тех, кто продлился, но остался на запасном сервере."""
+    if not container.lifeline:
+        return
+    restored = await container.lifeline.reconcile()
+    if restored:
+        log.info('lifeline: возвращено %s подписок', restored)
+
+
 async def update_segments(container) -> None:
     """Пересчёт growth.segment по правилам из domain/segments.py."""
     raise NotImplementedError

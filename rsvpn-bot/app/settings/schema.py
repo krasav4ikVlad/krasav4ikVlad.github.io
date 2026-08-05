@@ -98,6 +98,24 @@ SCHEMA: tuple[Group, ...] = (
         Setting('bonus.churn_survey_reward', 'Бонус за ответ в опросе оттока', 'int', 8, unit='₽', min=0),
     )),
 
+    Group('squads', '🖥 Серверы (сквады панели)', (
+        Setting('squads.base', 'Базовый сквад', 'str',
+                '727b7629-6c08-47dc-8741-33501be0e5b7'),
+        Setting('squads.extra', 'Ротационные сквады', 'str', '',
+                hint='UUID через запятую — выдаются новым подпискам по кругу'),
+        Setting('squads.fingerprint', 'Сквады для «отпечатка»', 'str', '',
+                hint='UUID через запятую'),
+        Setting('squads.fingerprint_pick', 'Сколько выдавать из них', 'int', 5, min=0),
+    )),
+
+    Group('bypass', '🚧 ByPass (белые списки)', (
+        Setting('bypass.squad_uuid', 'Сквад ByPass', 'str',
+                'ac03f8c3-0de7-4380-9774-00079d0385ce'),
+        Setting('bypass.external_squad_uuid', 'Внешний сквад ByPass', 'str',
+                'dd4fd59f-415a-4fab-8af7-afde9db099bc'),
+        Setting('bypass.default_traffic_gb', 'Трафик по умолчанию', 'int', 1, unit=' Гб', min=1),
+    )),
+
     Group('expiry', '⏰ Напоминания об истечении', (
         Setting('expiry.notify_enabled', 'Напоминания включены', 'bool', True,
                 hint='Приходят вебхуками от панели, а не опросом базы'),
