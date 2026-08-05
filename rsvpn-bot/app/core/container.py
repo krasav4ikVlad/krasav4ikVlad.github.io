@@ -45,14 +45,28 @@ class Container:
     lifeline: Any = None
     renewal: Any = None
     device_billing: Any = None
+    promo: Any = None
+    gifts: Any = None
+    payouts: Any = None
+    survey: Any = None
     entities: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        from app.services.payouts import PayoutService
+        from app.services.promo import PromoService
+        from app.services.survey import SurveyService
+
         self.users = UsersRepository(self.db[names.USERS])
         self.plans = PlansRepository(self.db[names.PLANS])
         self.payments_repo = PaymentsRepository(self.db[names.PAYMENTS])
         self.settings = SettingsService(
             self.db[names.BOT_SETTINGS], self.db[names.SETTINGS_AUDIT])
+
+        # сервисы без внешних зависимостей доступны сразу, в том числе в тестах
+        self.promo = PromoService(self.users, self.db[names.PROMO_CODES],
+                                  self.db[names.PROMO_USAGES], self.settings)
+        self.payouts = PayoutService(self.users, self.settings)
+        self.survey = SurveyService(self.users, self.db['survey_bonus'], self.settings)
 
     # ── медиа ───────────────────────────────────────────────────────────────
     def media(self, key: str) -> str | None:
@@ -84,6 +98,10 @@ class Container:
         """Индексы, сиды, прогрев кэшей. Идемпотентно — можно вызывать всегда."""
         for repo in (self.users, self.plans, self.payments_repo):
             await repo.ensure_indexes()
+        for service in (self.promo, self.survey):
+            await service.ensure_indexes()
+        if self.gifts:
+            await self.gifts.ensure_indexes()
         await self.plans.seed()
         await self.reload_texts()
         log.info('контейнер готов: тарифов=%s', len(await self.plans.all(only_enabled=False)))
@@ -119,6 +137,10 @@ class Container:
         container.billing = BillingService(
             container.users, container.plans, container.settings,
             container.vpn, container.topup)
+        from app.services.gifts import GiftService
+        container.gifts = GiftService(container.users, container.db[names.GIFTS],
+                                      container.plans, container.settings, container.vpn)
+        container.promo.vpn = container.vpn
         container.entities = build_entities(container)
         return container
 

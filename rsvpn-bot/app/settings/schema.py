@@ -57,6 +57,8 @@ SCHEMA: tuple[Group, ...] = (
         Setting('features.devices_enabled', 'Покупка доп. устройств', 'bool', True),
         Setting('features.bypass_enabled', 'ByPass (белые списки)', 'bool', True),
         Setting('features.gifts_enabled', 'Подарки', 'bool', True),
+        Setting('gifts.aliases', 'Старые коды подарков', 'str', '3years:3year',
+                hint='старый:новый через запятую — для ссылок, выданных раньше'),
         Setting('features.referrals_enabled', 'Реферальная программа', 'bool', True),
         Setting('features.payouts_enabled', 'Вывод реф. баланса', 'bool', True),
         Setting('features.promo_enabled', 'Промокоды', 'bool', True),
@@ -158,6 +160,8 @@ SCHEMA: tuple[Group, ...] = (
         Setting('survey.enabled', 'Опрос включён', 'bool', True),
         Setting('survey.bonus', 'Бонус за прохождение', 'int', 25, unit='₽', min=0),
         Setting('survey.price_question_value', 'Цена в вопросе про подписку', 'int', 150, unit='₽'),
+        Setting('survey.questions', 'Вопросы по порядку', 'str', 'stability,price',
+                hint='Ключи через запятую'),
     )),
 
     Group('campaigns', '📣 Кампании и рассылки', (

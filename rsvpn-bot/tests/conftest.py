@@ -42,6 +42,10 @@ class FakeCursor:
             raise StopAsyncIteration
 
 
+class DuplicateKeyError(Exception):
+    """Аналог pymongo.errors.DuplicateKeyError для заглушки."""
+
+
 class FakeResult:
     def __init__(self, matched=0, modified=0, upserted_id=None):
         self.matched_count = matched
@@ -56,6 +60,7 @@ class FakeCollection:
         self.name = name
         self.docs: list[dict] = []
         self._auto_id = 0
+        self.unique_keys: list[tuple[str, ...]] = []
 
     # ── чтение ──────────────────────────────────────────────────────────────
     @staticmethod
@@ -77,6 +82,14 @@ class FakeCollection:
 
     def _match(self, doc, query):
         for key, condition in query.items():
+            if key == '$or':
+                if not any(self._match(doc, sub) for sub in condition):
+                    return False
+                continue
+            if key == '$and':
+                if not all(self._match(doc, sub) for sub in condition):
+                    return False
+                continue
             value = doc.get('_id') if key == '_id' else self._get(doc, key)
             if isinstance(condition, dict):
                 for op, expected in condition.items():
@@ -152,6 +165,13 @@ class FakeCollection:
 
     # ── запись ──────────────────────────────────────────────────────────────
     async def insert_one(self, doc):
+        # уникальные индексы — не декорация: на них держится защита от
+        # повторной активации промокода
+        for keys in self.unique_keys:
+            probe = {k: self._get(doc, k) for k in keys}
+            if all(v is not None for v in probe.values()) and await self.find_one(probe):
+                raise DuplicateKeyError(f'{self.name}: дубль по {keys}')
+
         # как настоящая БД: коллекция владеет своими данными, а не ссылками
         # на словари из теста (иначе правка документа меняет и ожидаемое значение)
         doc = copy.deepcopy(doc)
@@ -233,10 +253,27 @@ class FakeCollection:
 
     async def find_one_and_update(self, query, update, upsert=False,
                                   return_document=True):
-        await self.update_one(query, update, upsert=upsert)
-        return await self.find_one(query)
+        """Возвращает документ ПОСЛЕ изменения — как Mongo с ReturnDocument.AFTER.
 
-    async def create_index(self, *args, **kwargs):
+        Искать его повторно по исходному фильтру нельзя: обновление обычно
+        как раз и выводит документ из-под условия (used_count < max_uses).
+        """
+        found = await self.find_one(query)
+        result = await self.update_one(query, update, upsert=upsert)
+        if found is None and not result.upserted_id:
+            return None
+        doc_id = found['_id'] if found else result.upserted_id
+        return await self.find_one({'_id': doc_id})
+
+    async def create_index(self, keys, unique=False, **kwargs):
+        if not unique:
+            return None
+        if isinstance(keys, str):
+            fields = (keys,)
+        else:
+            fields = tuple(k if isinstance(k, str) else k[0] for k in keys)
+        if fields not in self.unique_keys:
+            self.unique_keys.append(fields)
         return None
 
 
