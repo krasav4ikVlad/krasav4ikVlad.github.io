@@ -77,22 +77,44 @@ async def main() -> int:
             ('promo_codes', 'code', 'Промокоды'),
             (' promo_codes', 'code', 'Промокоды (старая коллекция)'),
         ):
-            name = collection.strip() if collection.startswith(' ') else collection
             source = collection.replace(' ', '') + ' ' if collection.startswith(' ') else collection
             if source not in names:
                 continue
+
+            # _id: null — это документы, где поля нет вообще. Дублями по
+            # значению они не являются, а уникальный индекс строится только
+            # по документам с полем, поэтому и ему они не мешают.
             duplicates = await db[source].aggregate([
                 {'$group': {'_id': f'${field}', 'n': {'$sum': 1}}},
-                {'$match': {'n': {'$gt': 1}}},
+                {'$match': {'n': {'$gt': 1}, '_id': {'$ne': None}}},
                 {'$limit': 5},
             ]).to_list(length=5)
+
             if duplicates:
                 problems += 1
                 line(FAIL, f'{title}: дубли по {field}',
                      ', '.join(str(d['_id']) for d in duplicates))
-                print('     → уникальный индекс не создастся, пока дубли не убраны')
+                print(f'     → выполните: python -m scripts.dedupe --collection {source!r}')
             else:
                 line(OK, f'{title}: дублей нет', f'по полю {field}')
+
+            missing = await db[source].count_documents({field: {'$exists': False}})
+            if missing:
+                line(OK, f'{title}: документов без поля', f'{missing} — индексу не мешают')
+
+        # Индекс либо есть, либо нет — это надёжнее любых догадок
+        try:
+            indexes = await db['users'].index_information()
+            spec = indexes.get('user_data.user_id_1') or {}
+            if spec.get('unique'):
+                line(OK, 'Уникальный индекс на user_data.user_id',
+                     'есть' + (' (только по документам с полем)'
+                               if spec.get('partialFilterExpression') else ''))
+            else:
+                line(WARN, 'Уникальный индекс на user_data.user_id', 'не создан')
+                print('     → python -m migrations.runner --only m0001 --redo m0001')
+        except Exception as exc:
+            line(WARN, 'Индексы users', str(exc)[:80])
     except Exception as exc:
         line(FAIL, 'Подключение к Mongo', str(exc)[:120])
         problems += 1
