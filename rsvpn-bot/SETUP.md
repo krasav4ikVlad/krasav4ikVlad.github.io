@@ -23,6 +23,12 @@ cp -r tmp/rsvpn-bot ./rsvpn-bot && rm -rf tmp
 pip install -e ".[dev]"
 ```
 
+Если установка не пойдёт — тот же набор зависимостей ставится так:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
 ## 3. Заполнить .env
 
 `cp .env.example .env` и перенести значения из старого `config.py` — имена

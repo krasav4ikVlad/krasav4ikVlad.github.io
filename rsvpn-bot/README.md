@@ -24,7 +24,7 @@
 
 ```bash
 cp .env.example .env      # заполнить API_TOKEN, ADMIN_IDS, TOKEN_DB
-make install
+make install              # или: pip install -r requirements-dev.txt
 make check                # проверить, что всё заполнено и база доступна
 make migrate              # индексы + дефолтные тарифы
 make run                  # бот
