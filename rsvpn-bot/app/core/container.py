@@ -56,6 +56,19 @@ class Container:
         return str(path) if path.exists() else None
 
     # ── контент ─────────────────────────────────────────────────────────────
+    async def notify(self, bot, topic_key: str, text: str) -> None:
+        """Уведомление в админ-чат. Номера тем — настройки, а не числа в коде."""
+        if not await self.settings.flag('notify.enabled'):
+            return
+        try:
+            await bot.send_message(
+                chat_id=await self.settings.int('notify.chat_id'),
+                message_thread_id=await self.settings.int(f'notify.topic_{topic_key}') or None,
+                text=text,
+            )
+        except Exception as exc:  # уведомление не должно ломать основной сценарий
+            log.warning('админ-уведомление не отправлено: %s', exc)
+
     async def reload_texts(self) -> None:
         from app.content import texts
         docs = await self.db[names.CONTENT_OVERRIDES].find({}).to_list(length=None)

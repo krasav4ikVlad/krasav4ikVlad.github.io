@@ -81,6 +81,8 @@ SCHEMA: tuple[Group, ...] = (
         Setting('price.devices_free_limit', 'Бесплатных устройств в подписке', 'int', 2, min=1),
         Setting('price.start_balance', 'Стартовый баланс при регистрации', 'int', 18, unit='₽', min=0),
         Setting('price.gift_3years', 'Подарок «3 года» (списание)', 'int', 3000, unit='₽', min=0),
+        Setting('price.trial_days', 'Длительность бесплатного периода', 'int', 3, unit=' дн.', min=0),
+        Setting('price.default_device_limit', 'Устройств в новой подписке', 'int', 2, min=1),
         # Сами тарифы (цена/дни/подарки) — отдельная сущность, см. core/plans.py
     )),
 
@@ -107,13 +109,32 @@ SCHEMA: tuple[Group, ...] = (
         Setting('campaign.broadcast_delay_ms', 'Пауза между сообщениями рассылки', 'int', 40, unit='мс', min=0),
     )),
 
+    Group('notify', '🔔 Уведомления админам', (
+        # темы форума в админ-чате: сейчас эти числа зашиты в 17 местах кода
+        Setting('notify.chat_id', 'Чат для уведомлений', 'int', -1002433849803),
+        Setting('notify.topic_registration', 'Тема: регистрации', 'int', 2),
+        Setting('notify.topic_topup', 'Тема: пополнения', 'int', 3),
+        Setting('notify.topic_topup_try', 'Тема: попытки пополнения', 'int', 4),
+        Setting('notify.topic_subscription', 'Тема: покупка/продление', 'int', 244),
+        Setting('notify.topic_bypass', 'Тема: покупка трафика ByPass', 'int', 24236),
+        Setting('notify.topic_devices', 'Тема: доп. устройства', 'int', 24238),
+        Setting('notify.topic_email', 'Тема: привязка почты', 'int', 24240),
+        Setting('notify.topic_promo', 'Тема: промокоды', 'int', 24484),
+        Setting('notify.topic_campaigns', 'Тема: отчёты кампаний', 'int', 470234),
+        Setting('notify.enabled', 'Слать уведомления админам', 'bool', True),
+    )),
+
     Group('links', '🔗 Ссылки и контакты', (
         Setting('link.support', 'Поддержка', 'str', 'https://t.me/RSConnectHelp_bot'),
         Setting('link.channel', 'Канал', 'str', 'https://t.me/rsconnect_vpn'),
         Setting('link.connect_base', 'База ссылки подключения', 'str', 'https://connect.rsvps.tech/'),
         Setting('link.web_cabinet', 'Личный кабинет', 'str', 'https://console.rscore.app/'),
         Setting('link.tribute', 'Tribute (карты)', 'str', 'https://t.me/tribute/app?startapp=dNvx'),
-        Setting('admin.log_chat_id', 'Чат для админ-уведомлений', 'int', -1002433849803),
+        Setting('link.bot_username', 'Юзернейм бота (для реф. ссылок)', 'str', 'rsconnect_bot'),
+        Setting('link.offer', 'Публичная оферта', 'str',
+                'https://telegra.ph/Polzovatelskoe-soglashenie-Publichnaya-oferta-RS-VPN-07-02'),
+        Setting('link.privacy', 'Политика конфиденциальности', 'str',
+                'https://telegra.ph/Politika-konfidencialnosti-RS-VPN-07-02'),
     )),
 
     Group('texts', '📝 Тексты', (

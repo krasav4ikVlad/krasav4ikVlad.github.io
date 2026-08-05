@@ -1,27 +1,48 @@
-"""Подключение к Mongo и все коллекции в одном месте.
+"""Имена коллекций и подключение к Mongo.
 
-Имена коллекций — константы, а не строки по коду. В старом loader.py у трёх
-коллекций в конце имени был пробел ('promo_codes '), и это невозможно было
-заметить, потому что строки писались в разных файлах.
+Имена — константы, а не строки по коду. В текущем loader.py у четырёх
+коллекций в конце имени стоит пробел:
+
+    support_quick_replies = db['support_quick_replies ']
+    churn_surveys         = db['churn_surveys ']
+    promo_codes           = db['promo_codes ']
+    promo_usages          = db['promo_usages ']
+
+Это рабочие коллекции с боевыми данными, просто названы с опечаткой. Заметить
+её невозможно, пока строки разбросаны по файлам. Здесь имена собраны в одном
+месте, а миграция m0003 переносит данные в имена без пробела.
 """
 
 from __future__ import annotations
 
 USERS = 'users'
+SUBSCRIPTIONS = 'subscriptions'
 PLANS = 'plans'
+GIFTS = 'gifts'
+CARDLINK_BILLS = 'cardlink_bills'
+FINGERPRINTS = 'fingerprint_assignments'
+
 BOT_SETTINGS = 'bot_settings'
 SETTINGS_AUDIT = 'bot_settings_audit'
-PROMO_CODES = 'promo_codes'
-PROMO_USAGES = 'promo_usages'
+CONTENT_OVERRIDES = 'content_overrides'
+CAMPAIGN_RUNS = 'campaign_runs'
+MIGRATIONS = 'migrations'
+
 PAYMENTS = 'payments'
-PAYMENT_WEBHOOKS = 'payment_webhooks'
+PAYMENT_WEBHOOKS = 'payments_webhooks'
+
 QUICK_REPLIES = 'support_quick_replies'
 CHURN_SURVEYS = 'churn_surveys'
-GIFTS = 'gifts'
-CAMPAIGN_RUNS = 'campaign_runs'
-FINGERPRINTS = 'fingerprint_assignments'
-CONTENT_OVERRIDES = 'content_overrides'
-MIGRATIONS = 'migrations'
+PROMO_CODES = 'promo_codes'
+PROMO_USAGES = 'promo_usages'
+
+# Старые имена с пробелом на конце → новые. Используются только миграцией.
+LEGACY_RENAMES: dict[str, str] = {
+    'support_quick_replies ': QUICK_REPLIES,
+    'churn_surveys ': CHURN_SURVEYS,
+    'promo_codes ': PROMO_CODES,
+    'promo_usages ': PROMO_USAGES,
+}
 
 
 def create_client(uri: str):

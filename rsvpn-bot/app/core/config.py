@@ -6,8 +6,9 @@
   * в app/settings/ — бизнес-параметры (цены, проценты, тумблеры).
     Меняются из админки на лету.
 
-Никакого os.getenv по коду проекта: всё читается один раз здесь, дальше
-конфиг передаётся явно через контейнер зависимостей.
+Имена переменных совпадают с текущим config.py, чтобы перенос значений был
+копированием один в один. Значения GIFT_PRICES и GIFT_DAYS сюда НЕ переезжают:
+это бизнес-данные, им место в тарифах и настройках (админка их правит).
 """
 
 from __future__ import annotations
@@ -40,11 +41,15 @@ def load_env_file(path: str | Path = '.env') -> None:
         os.environ.setdefault(key, value)
 
 
-def _env(name: str, default: str | None = None, *, required: bool = False) -> str:
-    value = os.getenv(name, default)
-    if required and not value:
-        raise RuntimeError(f'Не задана переменная окружения {name}')
-    return value or ''
+def _env(*names: str, default: str = '', required: bool = False) -> str:
+    """Первое непустое значение из перечисленных переменных."""
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    if required:
+        raise RuntimeError(f'Не задана переменная окружения {names[0]}')
+    return default
 
 
 def _env_int(name: str, default: int) -> int:
@@ -55,28 +60,44 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _env_ids(name: str) -> tuple[int, ...]:
+def _env_ids(name: str, default: tuple[int, ...] = ()) -> tuple[int, ...]:
     raw = os.getenv(name, '')
-    return tuple(int(x) for x in raw.replace(' ', '').split(',') if x.lstrip('-').isdigit())
+    ids = tuple(int(x) for x in raw.replace(' ', '').split(',') if x.lstrip('-').isdigit())
+    return ids or default
 
 
 @dataclass(frozen=True)
 class VpnPanelConfig:
-    base_url: str
-    token: str
-    base_squad_id: str
+    """Remnawave: то, что сейчас берётся из API_URL / REMNAWAVE_TOKEN."""
+    base_url: str = ''
+    token: str = ''
+    core_token: str = ''
+    base_squad_id: str = ''
+    happ_rsa_public_key: str = ''
+    connect_base: str = 'https://connect.rsvps.tech/'
+
+
+@dataclass(frozen=True)
+class StatsConfig:
+    """Внешняя аналитика (API_URL_STATS / API_KEY_STATS)."""
+    url: str = ''
+    key: str = ''
 
 
 @dataclass(frozen=True)
 class PaymentsConfig:
-    """Ключи провайдеров. Пустой ключ = провайдер выключен на уровне инфраструктуры."""
+    """Ключи провайдеров. Пустой ключ = провайдер не поднимается вообще."""
     cardlink_token: str = ''
+    cardlink_shop_id: str = ''
     wata_token: str = ''
+    wata_token_visa: str = ''
     heleket_key: str = ''
+    heleket_merchant_id: str = ''
     severpay_key: str = ''
     severpay_web_key: str = ''
     tribute_key: str = ''
-    cloudpayments_key: str = ''
+    cloudpayments_public_id: str = ''
+    cloudpayments_secret: str = ''
 
 
 @dataclass(frozen=True)
@@ -85,8 +106,9 @@ class Config:
     mongo_uri: str
     mongo_db: str
     admin_ids: tuple[int, ...]
-    vpn: VpnPanelConfig
-    payments: PaymentsConfig
+    vpn: VpnPanelConfig = field(default_factory=VpnPanelConfig)
+    payments: PaymentsConfig = field(default_factory=PaymentsConfig)
+    stats: StatsConfig = field(default_factory=StatsConfig)
     log_level: str = 'INFO'
     timezone: str = 'Europe/Moscow'
     environment: str = 'production'
@@ -102,27 +124,39 @@ class Config:
     def from_env(cls) -> 'Config':
         load_env_file()
         return cls(
-            bot_token=_env('BOT_TOKEN', required=True),
-            mongo_uri=_env('MONGO_URI', 'mongodb://localhost:27017'),
-            mongo_db=_env('MONGO_DB', 'rsvpn'),
-            admin_ids=_env_ids('ADMIN_IDS'),
+            # API_TOKEN — имя из текущего config.py, BOT_TOKEN оставлен как синоним
+            bot_token=_env('API_TOKEN', 'BOT_TOKEN', required=True),
+            # TOKEN_DB — тоже имя из текущего config.py: это строка подключения
+            mongo_uri=_env('TOKEN_DB', 'MONGO_URI', default='mongodb://localhost:27017'),
+            mongo_db=_env('MONGO_DB', default='RS_2'),
+            admin_ids=_env_ids('ADMIN_IDS', default=(802421217, 1107871653)),
             vpn=VpnPanelConfig(
-                base_url=_env('VPN_PANEL_URL'),
-                token=_env('VPN_PANEL_TOKEN'),
-                base_squad_id=_env('VPN_BASE_SQUAD_ID'),
+                base_url=_env('API_URL'),
+                token=_env('REMNAWAVE_TOKEN'),
+                core_token=_env('API_TOKEN_CORE'),
+                base_squad_id=_env('VPN_BASE_SQUAD_ID',
+                                   default='727b7629-6c08-47dc-8741-33501be0e5b7'),
+                happ_rsa_public_key=_env('HAPP_RSA_PUBLIC_KEY'),
+                connect_base=_env('VPN_CONNECT_BASE', default='https://connect.rsvps.tech/'),
             ),
             payments=PaymentsConfig(
-                cardlink_token=_env('CARDLINK_TOKEN'),
-                wata_token=_env('WATA_TOKEN'),
+                cardlink_token=_env('CARDLINK_ACCESS_TOKEN'),
+                cardlink_shop_id=_env('CARDLINK_SHOP_ID'),
+                wata_token=_env('WATA_ACCESS_TOKEN'),
+                wata_token_visa=_env('WATA_ACCESS_TOKEN_VISA'),
                 heleket_key=_env('HELEKET_API_KEY'),
-                severpay_key=_env('SEVERPAY_API_KEY'),
-                severpay_web_key=_env('SEVERPAY_WEB_API_KEY'),
+                heleket_merchant_id=_env('HELEKET_MERCHANT_ID'),
+                severpay_key=_env('SEVER_API_KEY'),
+                severpay_web_key=_env('SEVER_WEB_API_KEY'),
+                # сейчас этот ключ записан прямо в FastApi.py — перенести и перевыпустить
                 tribute_key=_env('TRIBUTE_API_KEY'),
-                cloudpayments_key=_env('CLOUDPAYMENTS_KEY'),
+                cloudpayments_public_id=_env('CLOUDPAYMENTS_PUBLIC_ID'),
+                cloudpayments_secret=_env('CLOUDPAYMENTS_API_SECRET'),
             ),
-            log_level=_env('LOG_LEVEL', 'INFO'),
-            timezone=_env('TZ', 'Europe/Moscow'),
-            environment=_env('ENVIRONMENT', 'production'),
+            stats=StatsConfig(url=_env('API_URL_STATS'), key=_env('API_KEY_STATS')),
+            log_level=_env('LOG_LEVEL', default='INFO'),
+            timezone=_env('TZ', default='Europe/Moscow'),
+            environment=_env('ENVIRONMENT', default='production'),
             api_port=_env_int('API_PORT', 8000),
-            media_dir=_env('MEDIA_DIR', 'media'),
+            media_dir=_env('MEDIA_DIR', default='media'),
         )
