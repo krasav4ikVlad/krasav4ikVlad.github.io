@@ -27,6 +27,9 @@ def index_name(keys) -> str:
 class Repository:
     def __init__(self, collection):
         self.col = collection
+        # индексы, которые создать не удалось: миграция по ним понимает,
+        # что записывать её как выполненную ещё рано
+        self.failed_indexes: list[str] = []
 
     async def ensure_index(self, keys, unique: bool = False,
                            only_existing: bool = False, **kwargs) -> bool:
@@ -51,6 +54,8 @@ class Repository:
 
         try:
             await self.col.create_index(keys, unique=unique, **kwargs)
+            self.failed_indexes = [n for n in self.failed_indexes
+                                   if n != index_name(keys)]
             return True
         except Exception as exc:
             code = getattr(exc, 'code', None)
@@ -65,6 +70,8 @@ class Repository:
                 except Exception as retry:
                     code = getattr(retry, 'code', None)
                     exc = retry
+
+            self.failed_indexes.append(index_name(keys))
 
             if code == DUPLICATE_KEY:
                 log.error('индекс %s не создан: в коллекции %s остались дубли. '

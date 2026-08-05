@@ -64,8 +64,17 @@ async def main(args) -> int:
         print(f'    примеры _id: {", ".join(str(i) for i in report.missing_examples)}')
         print('    По значению это не дубли, но уникальному индексу они мешают:')
         print('    для него все отсутствующие значения одинаковы (null).')
-        print('    Индекс создаётся только по документам, где поле есть, —')
-        print('    просто повторите: python -m migrations.runner --only m0001')
+        print('    Индекс создаётся только по документам, где поле есть,')
+        print('    поэтому они не мешают. Посмотреть, что это такое:')
+        print(f'    python -m scripts.dedupe --show-missing')
+
+        if args.show_missing:
+            print()
+            docs = await service.col.find(
+                {args.field: {'$exists': False}}).to_list(length=20)
+            for doc in docs:
+                keys = [k for k in doc if k != '_id']
+                print(f"    _id={doc['_id']}  поля: {', '.join(keys) or '—'}")
     print()
 
     for group in report.risky[:args.limit]:
@@ -101,6 +110,8 @@ def cli() -> int:
     parser.add_argument('--apply', action='store_true', help='выполнить удаление')
     parser.add_argument('--force', action='store_true', help='удалять и спорные группы')
     parser.add_argument('--limit', type=int, default=10, help='сколько спорных групп показать')
+    parser.add_argument('--show-missing', action='store_true',
+                        help='показать документы, где поля нет')
     return asyncio.run(main(parser.parse_args()))
 
 

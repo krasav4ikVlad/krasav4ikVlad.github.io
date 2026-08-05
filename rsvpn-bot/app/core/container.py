@@ -99,8 +99,14 @@ class Container:
         texts.set_overrides({d['_id']: d.get('value', '') for d in docs if d.get('value')})
 
     # ── старт ───────────────────────────────────────────────────────────────
-    async def startup(self) -> None:
-        """Индексы, сиды, прогрев кэшей. Идемпотентно — можно вызывать всегда."""
+    async def startup(self, strict: bool = False) -> None:
+        """Индексы, сиды, прогрев кэшей. Идемпотентно — можно вызывать всегда.
+
+        strict=True — не проглатывать неудачу с индексами. Нужно миграции:
+        иначе она запишется как выполненная, хотя индекс не создан, и повторный
+        запуск скажет «уже применена». Боту наоборот важно подняться и работать,
+        поэтому у него strict=False.
+        """
         for repo in (self.users, self.plans, self.payments_repo):
             await repo.ensure_indexes()
         for service in (self.promo, self.survey):
@@ -109,7 +115,15 @@ class Container:
             await self.gifts.ensure_indexes()
         await self.plans.seed()
         await self.reload_texts()
-        log.info('контейнер готов: тарифов=%s', len(await self.plans.all(only_enabled=False)))
+
+        failed = [name for repo in (self.users, self.plans, self.payments_repo)
+                  for name in repo.failed_indexes]
+        if failed and strict:
+            raise RuntimeError('не созданы индексы: ' + ', '.join(failed))
+
+        log.info('контейнер готов: тарифов=%s%s',
+                 len(await self.plans.all(only_enabled=False)),
+                 f', проблемных индексов: {len(failed)}' if failed else '')
 
     @classmethod
     def build(cls, config: Config | None = None, db=None) -> 'Container':

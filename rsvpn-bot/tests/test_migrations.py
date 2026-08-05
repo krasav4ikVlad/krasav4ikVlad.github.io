@@ -1,5 +1,7 @@
 """Миграции данных: перенос коллекций с пробелом в имени."""
 
+import pytest
+
 from app.core.db import LEGACY_RENAMES
 from migrations import m0003_rename_legacy_collections as m0003
 
@@ -64,3 +66,33 @@ async def test_transactions_migration_needs_explicit_confirmation(container, mon
 
     doc = await container.db['users'].find_one({'_id': 1})
     assert doc['info']['transactions'][0]['amount'] == 100
+
+
+async def test_failed_index_keeps_migration_unapplied(container):
+    """Иначе повторный запуск скажет «уже применена», а индекса нет."""
+    from migrations import m0001_indexes as m0001
+
+    await container.db['users'].insert_one({'_id': 1, 'user_data': {'user_id': 5}})
+    await container.db['users'].insert_one({'_id': 2, 'user_data': {'user_id': 5}})
+
+    with pytest.raises(RuntimeError, match='не созданы индексы'):
+        await m0001.up(container)
+
+
+async def test_startup_does_not_raise_for_the_bot(container):
+    """Бот должен подняться даже с проблемным индексом — иначе он просто не работает."""
+    await container.db['users'].insert_one({'_id': 1, 'user_data': {'user_id': 5}})
+    await container.db['users'].insert_one({'_id': 2, 'user_data': {'user_id': 5}})
+
+    await container.startup()      # без strict — не бросает
+    assert container.users.failed_indexes
+
+
+async def test_redo_clears_the_applied_mark(container):
+    from migrations.runner import apply_all
+
+    await container.db['migrations'].insert_one({'_id': 'm0001_indexes'})
+
+    await apply_all(container, only=['m9999'], redo=['m0001'])
+
+    assert await container.db['migrations'].count_documents({'_id': 'm0001_indexes'}) == 0
