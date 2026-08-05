@@ -1,0 +1,13 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/workspace.xml
+.idea/usage.statistics.xml
+.idea/shelf/
+media/*.png
+!media/.gitkeep

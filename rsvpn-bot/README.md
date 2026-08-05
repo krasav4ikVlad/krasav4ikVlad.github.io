@@ -5,7 +5,19 @@
 
 Структура и правила — в [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Запуск
+## Запуск в PyCharm
+
+1. `File → Open` → выбрать папку **rsvpn-bot** (именно её, а не родительскую:
+   иначе импорты `app.*` не найдутся).
+2. `Settings → Project → Python Interpreter → Add → Virtualenv` (Python 3.11+).
+3. В терминале PyCharm: `pip install -e ".[dev]"`.
+4. Скопировать `.env.example` в `.env` и заполнить `BOT_TOKEN`, `ADMIN_IDS`,
+   `MONGO_URI`. Файл читается автоматически (`app/core/config.py`), плагин
+   EnvFile не нужен.
+5. Готовые конфигурации запуска лежат в `.run/`: **bot**, **api**, **tests** —
+   появятся в списке справа вверху сами.
+
+## Запуск из терминала
 
 ```bash
 cp .env.example .env      # заполнить BOT_TOKEN, ADMIN_IDS, MONGO_URI
