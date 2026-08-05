@@ -130,3 +130,49 @@ async def test_documents_without_the_field_are_skipped(db, dedupe):
 
     report = await dedupe.scan('user_data.user_id')
     assert report.groups == []
+
+
+class AggregatingCollection:
+    """Коллекция, умеющая aggregate — как настоящая Mongo."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.aggregate_calls = 0
+
+    def aggregate(self, pipeline, **kwargs):
+        self.aggregate_calls += 1
+        field = pipeline[0]['$group']['_id'].lstrip('$')
+
+        async def run():
+            counts: dict = {}
+            async for doc in self.inner.find({}):
+                from app.services.dedupe import pick
+                key = pick(doc, field)
+                if key is not None:
+                    counts[key] = counts.get(key, 0) + 1
+            for key, count in counts.items():
+                if count > 1:
+                    yield {'_id': key}
+
+        return run()
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+async def test_uses_server_side_grouping_when_available(db):
+    """На 200k документов выкачивать всё нельзя — группировка идёт в Mongo."""
+    from app.services.dedupe import DedupeService
+
+    await add(db, 'a1', 100)
+    await add(db, 'a2', 100)
+    await add(db, 'b1', 200)
+
+    collection = AggregatingCollection(db['users'])
+    service = DedupeService(collection, db['users_dupes_backup'])
+
+    report = await service.scan('user_data.user_id')
+
+    assert collection.aggregate_calls == 1
+    assert len(report.groups) == 1
+    assert report.groups[0].keep['_id'] == 'a1'

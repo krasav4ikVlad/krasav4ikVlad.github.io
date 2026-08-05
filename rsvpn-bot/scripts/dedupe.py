@@ -45,9 +45,13 @@ async def main(args) -> int:
     service = DedupeService(db[args.collection], db[backup_name])
 
     print(f'База: {config.mongo_db}, коллекция: {args.collection!r}, '
-          f'поле: {args.field}\n')
+          f'поле: {args.field}')
+    print('Ищу дубли — группировка идёт на сервере, документы не выкачиваются…\n')
 
-    report = await service.scan(args.field)
+    def progress(done, total=None):
+        print(f'   … обработано {done}' + (f' из {total}' if total else ''), flush=True)
+
+    report = await service.scan(args.field, progress=progress)
 
     print(f'Просмотрено документов: {report.scanned}')
     print(f'Групп с дублями:        {len(report.groups)}')
