@@ -116,6 +116,14 @@ SCHEMA: tuple[Group, ...] = (
         Setting('bypass.default_traffic_gb', 'Трафик по умолчанию', 'int', 1, unit=' Гб', min=1),
     )),
 
+    Group('renewal', '🔁 Автопродление', (
+        Setting('renewal.window_hours', 'За сколько часов продлевать', 'int', 24,
+                unit=' ч', min=1),
+        Setting('renewal.grace_hours', 'Сколько часов продлевать просроченные', 'int', 48,
+                unit=' ч', min=0,
+                hint='Если бот лежал, подписка не должна умереть при живом балансе'),
+    )),
+
     Group('expiry', '⏰ Напоминания об истечении', (
         Setting('expiry.notify_enabled', 'Напоминания включены', 'bool', True,
                 hint='Приходят вебхуками от панели, а не опросом базы'),

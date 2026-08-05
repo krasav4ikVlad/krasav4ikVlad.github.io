@@ -43,6 +43,8 @@ class Container:
     expiry: Any = None
     squads: Any = None
     lifeline: Any = None
+    renewal: Any = None
+    device_billing: Any = None
     entities: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -127,6 +129,12 @@ class Container:
         from app.services.expiry import ExpiryNotifier
         from app.services.lifeline import LifelineService
 
+        from app.services.devices import DeviceBillingService
+        from app.services.renewal import RenewalService
+
         self.lifeline = LifelineService(self.users, self.settings, self.vpn)
         self.expiry = ExpiryNotifier(self.users, self.settings, Sender(), bot,
                                      campaign_keyboards(), self.lifeline)
+        self.renewal = RenewalService(self.users, self.plans, self.settings, self.vpn,
+                                      self.topup, self.lifeline, self.expiry)
+        self.device_billing = DeviceBillingService(self.users, self.settings, self.vpn)

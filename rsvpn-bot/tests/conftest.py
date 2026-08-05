@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime
 
 import pytest
@@ -59,11 +60,19 @@ class FakeCollection:
     # ── чтение ──────────────────────────────────────────────────────────────
     @staticmethod
     def _get(doc, path):
+        """Как Mongo: 'arr.0' — индекс, 'arr.field' — значения поля у всех элементов."""
         current = doc
         for part in path.split('.'):
-            if not isinstance(current, dict):
+            if isinstance(current, list):
+                if part.isdigit():
+                    index = int(part)
+                    current = current[index] if index < len(current) else None
+                else:
+                    current = [x.get(part) for x in current if isinstance(x, dict)]
+            elif isinstance(current, dict):
+                current = current.get(part)
+            else:
                 return None
-            current = current.get(part)
         return current
 
     def _match(self, doc, query):
@@ -87,9 +96,49 @@ class FakeCollection:
                         return False
                     if op == '$nin' and value in expected:
                         return False
+                    if op == '$elemMatch':
+                        if not isinstance(value, list):
+                            return False
+                        if self._elem_index(value, expected) is None:
+                            return False
+            elif isinstance(value, list) and not isinstance(condition, list):
+                # равенство по полю массива: подходит, если совпал любой элемент
+                if condition not in value:
+                    return False
             elif value != condition:
                 return False
         return True
+
+    @staticmethod
+    def _elem_index(items, conditions) -> int | None:
+        """Индекс первого элемента, удовлетворяющего ВСЕМ условиям ($elemMatch)."""
+        for i, item in enumerate(items):
+            if isinstance(item, dict) and all(item.get(k) == v for k, v in conditions.items()):
+                return i
+        return None
+
+    def _positional_index(self, doc, query, array_path):
+        """Как настоящий Mongo выбирает элемент для оператора `$`.
+
+        При $elemMatch — первый элемент, подходящий под все условия сразу.
+        При отдельных условиях вида 'arr.field' — первый элемент, подошедший
+        под ПЕРВОЕ такое условие; остальные условия Mongo проверяет по массиву
+        целиком, поэтому они могут совпасть на других элементах. Именно на этом
+        и ломался старый код списания за устройства.
+        """
+        items = self._get(doc, array_path) or []
+        condition = query.get(array_path)
+        if isinstance(condition, dict) and '$elemMatch' in condition:
+            return self._elem_index(items, condition['$elemMatch'])
+
+        prefix = f'{array_path}.'
+        for key, expected in query.items():
+            if key.startswith(prefix):
+                field = key[len(prefix):]
+                for i, item in enumerate(items):
+                    if isinstance(item, dict) and item.get(field) == expected:
+                        return i
+        return None
 
     def find(self, query=None, projection=None):
         return FakeCursor([d for d in self.docs if self._match(d, query or {})])
@@ -103,7 +152,9 @@ class FakeCollection:
 
     # ── запись ──────────────────────────────────────────────────────────────
     async def insert_one(self, doc):
-        doc = dict(doc)
+        # как настоящая БД: коллекция владеет своими данными, а не ссылками
+        # на словари из теста (иначе правка документа меняет и ожидаемое значение)
+        doc = copy.deepcopy(doc)
         if '_id' not in doc:
             self._auto_id += 1
             doc['_id'] = self._auto_id
@@ -136,6 +187,12 @@ class FakeCollection:
             upserted = doc['_id']
 
         for key, value in (update.get('$set') or {}).items():
+            if '.$.' in key:
+                array_path, field = key.split('.$.', 1)
+                index = self._positional_index(doc, query, array_path)
+                if index is not None:
+                    (self._get(doc, array_path) or [])[index][field] = value
+                continue
             self._set_path(doc, key, value)
         for key, value in (update.get('$setOnInsert') or {}).items():
             if upserted is not None:

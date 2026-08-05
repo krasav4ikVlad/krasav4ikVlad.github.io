@@ -145,7 +145,7 @@ handlers → services → repositories → Mongo
 
 ## Что уже работает в скелете
 
-`pytest -q` → **96 passed**. Тесты идут на заглушках Mongo и Telegram
+`pytest -q` → **115 passed**. Тесты идут на заглушках Mongo и Telegram
 (`tests/conftest.py`), включая сценарии, которые иначе проверяются только на
 живых пользователях:
 
@@ -154,6 +154,8 @@ handlers → services → repositories → Mongo
 | `test_users_repo.py::test_double_click_cannot_go_negative` | второе нажатие «Купить» не уводит баланс в минус |
 | `test_campaigns.py::test_blocked_user_does_not_get_bonus_twice` | заблокировавший бота получает бонус один раз |
 | `test_campaigns.py::test_sends_only_inside_window` | окна отправки и ночная пауза |
+| `test_renewal.py::test_money_is_taken_before_the_panel` | панель упала — деньги вернулись |
+| `test_device_billing.py::test_charge_moves_the_right_package` | списание сдвигает дату своему пакету, а не соседнему |
 | `test_settings.py::test_percent_input_and_output` | 20 на вводе → 0.2 в базе → «20%» на экране |
 | `test_admin_panel.py` (5 шт.) | админка целиком через реальный `Dispatcher` |
 
@@ -179,8 +181,9 @@ Mongo превращал во вложенные документы; обмен 
    хендлер.
 6. ⬜ **Кампании.** Тексты — в `content/texts.py`, касания — в
    `campaigns/definitions.py`, старые три файла удаляются целиком.
-7. ⬜ **Биллинг-крон.** `utils.process_subscriptions` (≈290 строк) → четыре
-   шага в `scheduler/jobs.charge_subscriptions`.
+7. ✅ **Биллинг-крон.** `utils.process_subscriptions` (≈290 строк) разделён на
+   `services/renewal.py` (автопродление) и `services/devices.py` (плата за
+   доп. устройства); напоминания оттуда ушли в вебхуки.
 8. ⬜ **Миграция данных.** `m0002_transactions_format` приводит транзакции к
    одному формату, после чего исчезают все разборы «список или словарь».
 

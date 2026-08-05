@@ -21,20 +21,19 @@ async def run_campaigns(container, bot, engine) -> None:
 
 
 async def charge_subscriptions(container) -> None:
-    """Списание за подписку и устройства.
-
-    Переносится из utils.process_subscriptions (сейчас ~290 строк в одной
-    функции). Разбейте на: выборка истекающих → расчёт цены (domain/pricing)
-    → списание (users.charge) → продление в панели → уведомление.
+    """Автопродление и плата за доп. устройства.
 
     Напоминания об истечении сюда НЕ переносятся: их присылает панель
-    вебхуками (app/services/expiry.py). Здесь остаётся только списание —
-    и оно же страхует, если вебхук не дошёл.
+    вебхуками (app/services/expiry.py). Здесь только деньги — и эта же задача
+    страхует, если вебхук не дошёл.
     """
-    if not await container.settings.flag('features.autorenew_enabled'):
-        log.info('автопродление выключено в админке')
-        return
-    raise NotImplementedError
+    if container.renewal:
+        await container.renewal.run()
+    if container.device_billing:
+        report = await container.device_billing.run()
+        if report.charged or report.deactivated:
+            log.info('устройства: списано %s пакетов на %s₽, отключено %s',
+                     report.charged, report.amount, report.deactivated)
 
 
 async def reconcile_lifeline(container) -> None:
