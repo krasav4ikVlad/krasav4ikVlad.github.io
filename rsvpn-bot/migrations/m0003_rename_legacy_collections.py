@@ -19,6 +19,11 @@ log = logging.getLogger(__name__)
 
 
 async def up(container) -> None:
+    if container.config.legacy_collections:
+        # бот и так читает старые имена — копии создадут только путаницу
+        log.info('m0003 пропущена: LEGACY_COLLECTIONS=1, работаем на старых именах')
+        return
+
     for old_name, new_name in LEGACY_RENAMES.items():
         old = container.db[old_name]
         new = container.db[new_name]

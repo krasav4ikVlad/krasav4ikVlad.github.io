@@ -30,3 +30,37 @@ async def test_old_data_is_kept_for_rollback(container):
     assert await container.db['promo_usages '].count_documents({}) == 1
     assert set(LEGACY_RENAMES.values()) == {
         'support_quick_replies', 'churn_surveys', 'promo_codes', 'promo_usages'}
+
+
+# ── безопасность на живой базе ──────────────────────────────────────────────
+async def test_legacy_mode_skips_collection_copy(container, monkeypatch):
+    """С LEGACY_COLLECTIONS=1 бот и так читает старые имена — копии не нужны."""
+    import dataclasses
+
+    container.config = dataclasses.replace(container.config, legacy_collections=True)
+    await container.db['promo_codes '].insert_one({'_id': 'X', 'code': 'X'})
+
+    await m0003.up(container)
+
+    assert await container.db['promo_codes'].count_documents({}) == 0
+
+
+async def test_transactions_migration_needs_explicit_confirmation(container, monkeypatch):
+    """Она переписывает массив целиком — на работающих платежах это опасно."""
+    from migrations import m0002_transactions_format as m0002
+
+    monkeypatch.delenv('MIGRATE_FORCE', raising=False)
+    await container.db['users'].insert_one({
+        '_id': 1, 'user_data': {'user_id': 1},
+        'info': {'transactions': [[100, 'дата', 'Пополнение']]}})
+
+    await m0002.up(container)
+
+    doc = await container.db['users'].find_one({'_id': 1})
+    assert doc['info']['transactions'][0] == [100, 'дата', 'Пополнение']   # не тронуто
+
+    monkeypatch.setenv('MIGRATE_FORCE', '1')
+    await m0002.up(container)
+
+    doc = await container.db['users'].find_one({'_id': 1})
+    assert doc['info']['transactions'][0]['amount'] == 100
