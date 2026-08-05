@@ -71,16 +71,99 @@ def expired_segment(days_since_expire: float) -> str:
     return 'churned_dead'
 
 
-def trial_segment(hours_since_join: float, hours_left: float | None) -> str:
-    """Сегмент новичка на триале: по возрасту регистрации и остатку времени."""
-    if hours_left is not None and hours_left <= 2:
-        return 'new_trial_d3_hot'
-    if hours_left is not None and hours_left <= 6:
-        return 'new_trial_d2_hot'
-    if hours_since_join < 24:
+def trial_segment(days_since_join: int, hours_left: float | None) -> str:
+    """Сегмент новичка на триале: по дню регистрации и остатку времени."""
+    if days_since_join == 0:
         return 'new_trial_d0'
-    if hours_since_join < 48:
+    if days_since_join == 1:
         return 'new_trial_d1'
-    if hours_since_join < 60:
-        return 'new_trial_d2'
-    return 'new_trial_d3'
+    if days_since_join == 2:
+        return ('new_trial_d2_hot' if hours_left is not None and hours_left <= 6
+                else 'new_trial_d2')
+    return ('new_trial_d3_hot' if hours_left is not None and hours_left <= 2
+            else 'new_trial_d3')
+
+
+# ── расчёт сегмента ─────────────────────────────────────────────────────────
+AB_GROUPS = ('control', 'bonus_30', 'bonus_15')
+TRIAL_AB_GROUPS = ('trial_control', 'trial_bonus_30', 'trial_bonus_50')
+NEW_TRIAL_SEGMENTS = BY_GROUP.get('trial', ())
+
+
+def determine(user: dict, now, choose=None) -> dict:
+    """Сегмент пользователя и сопутствующие поля growth.*
+
+    Перенос из utils._determine_segment. Порядок правил сохранён: приоритет
+    сверху вниз, первый подошедший выигрывает. `choose` подменяется в тестах,
+    чтобы A/B-группа не была случайной.
+    """
+    import random
+
+    from app.core.time import parse_dt
+    from app.domain.transactions import topup_stats
+
+    choose = choose or random.choice
+    user_data = user.get('user_data') or {}
+    info = user.get('info') or {}
+    vpn = user.get('vpn') or {}
+
+    joined_at = parse_dt(user_data.get('date_joined'))
+    expire_at = parse_dt(vpn.get('expireAt'))
+    stats = topup_stats(info.get('transactions'))
+
+    has_sub = bool((vpn.get('shortUuid') or '').strip())
+    is_active = bool(has_sub and expire_at and expire_at > now)
+    has_topup = stats['has_topup']
+
+    days_since_join = max(0, (now - joined_at).days) if joined_at else None
+    days_to_expire = ((expire_at - now).total_seconds() / 86400) if is_active else None
+    hours_to_expire = days_to_expire * 24 if days_to_expire is not None else None
+    days_since_expired = ((now - expire_at).days
+                          if expire_at and expire_at <= now else None)
+
+    if is_active and has_topup and days_to_expire is not None and days_to_expire <= 3:
+        segment = 'expiring_3d'
+    elif is_active and not has_topup and (days_since_join is None or days_since_join > 3):
+        segment = 'active_no_topup'
+    elif is_active and stats['topups_count'] == 1:
+        segment = 'first_payment_active'
+    elif is_active and stats['topups_count'] >= 2:
+        segment = 'active_paid'
+    elif not is_active and has_topup and days_since_expired is not None:
+        segment = expired_segment(days_since_expired)
+    elif not has_topup:
+        if is_active and days_since_join is not None and days_since_join <= 3:
+            segment = trial_segment(days_since_join, hours_to_expire)
+        elif has_sub and days_since_expired is not None:
+            segment = 'trial'
+        else:
+            segment = 'inactive_no_sub'
+    else:
+        segment = 'inactive_no_sub'
+
+    # A/B-группа назначается один раз и дальше не меняется
+    growth = user.get('growth') or {}
+    ab_group = growth.get('ab_group')
+    if ab_group not in AB_GROUPS:
+        ab_group = choose(AB_GROUPS) if segment in NEW_TRIAL_SEGMENTS else None
+
+    trial_ab = growth.get('trial_ab_group')
+    if trial_ab not in TRIAL_AB_GROUPS:
+        trial_ab = choose(TRIAL_AB_GROUPS) if segment == 'trial' else None
+
+    return {
+        'segment': segment, 'segment_updated_at': now,
+        'ab_group': ab_group, 'trial_ab_group': trial_ab,
+        'has_sub': has_sub, 'is_active': is_active,
+        'joined_at': joined_at, 'expire_at': expire_at,
+        'days_since_join': days_since_join,
+        'days_to_expire': round(days_to_expire, 2) if days_to_expire is not None else None,
+        'hours_to_expire': round(hours_to_expire, 2) if hours_to_expire is not None else None,
+        'days_since_expired': days_since_expired,
+        'has_topup': has_topup,
+        'topups_count': stats['topups_count'],
+        'topups_total': stats['topups_total'],
+        'first_topup_at': stats['first_topup_at'],
+        'last_topup_at': stats['last_topup_at'],
+        'balance': int(info.get('balance', 0) or 0),
+    }

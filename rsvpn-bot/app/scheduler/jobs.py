@@ -46,5 +46,8 @@ async def reconcile_lifeline(container) -> None:
 
 
 async def update_segments(container) -> None:
-    """Пересчёт growth.segment по правилам из domain/segments.py."""
-    raise NotImplementedError
+    """Пересчёт growth.segment — без него кампании никого не найдут."""
+    from app.services.segments import SegmentService
+
+    report = await SegmentService(container.users, container.settings).run()
+    log.info('сегменты пересчитаны: %s', report.by_segment)

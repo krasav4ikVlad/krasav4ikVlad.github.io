@@ -54,8 +54,14 @@ async def main() -> int:
         names = await db.list_collection_names()
         legacy = [n for n in names if n != n.strip()]
         if legacy:
-            line(WARN, 'Коллекции с пробелом в имени', ', '.join(repr(n) for n in legacy))
-            print('     → выполните `make migrate`, данные перенесутся в правильные имена')
+            if config.legacy_collections:
+                line(OK, 'Режим старых имён коллекций',
+                     'включён — читаем те же коллекции, что старый бот')
+            else:
+                line(WARN, 'Коллекции с пробелом в имени',
+                     ', '.join(repr(n) for n in legacy))
+                print('     → либо `python -m migrations.runner` (перенос данных),')
+                print('     → либо LEGACY_COLLECTIONS=1 в .env (работать как старый бот)')
 
         plans = await db['plans'].count_documents({})
         line(OK if plans else WARN, 'Тарифы',

@@ -36,13 +36,24 @@ CHURN_SURVEYS = 'churn_surveys'
 PROMO_CODES = 'promo_codes'
 PROMO_USAGES = 'promo_usages'
 
-# Старые имена с пробелом на конце → новые. Используются только миграцией.
+# Старые имена с пробелом на конце → новые.
 LEGACY_RENAMES: dict[str, str] = {
     'support_quick_replies ': QUICK_REPLIES,
     'churn_surveys ': CHURN_SURVEYS,
     'promo_codes ': PROMO_CODES,
     'promo_usages ': PROMO_USAGES,
 }
+LEGACY_BY_NEW: dict[str, str] = {new: old for old, new in LEGACY_RENAMES.items()}
+
+
+def collection_name(name: str, legacy: bool = False) -> str:
+    """Имя коллекции с учётом режима совместимости.
+
+    legacy=True — бот читает и пишет туда же, куда старый (имена с пробелом).
+    Это позволяет запустить новый бот на боевой базе вообще без миграции:
+    промокоды, быстрые ответы и опросы остаются в тех же коллекциях.
+    """
+    return LEGACY_BY_NEW.get(name, name) if legacy else name
 
 
 def create_client(uri: str):

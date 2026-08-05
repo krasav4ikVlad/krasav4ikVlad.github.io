@@ -144,14 +144,14 @@ def build_entities(container) -> dict[str, EntityAdmin]:
         ),
         EntityAdmin(
             code='qr', title='🧩 Быстрые ответы поддержки',
-            collection=container.db[db_names.QUICK_REPLIES], id_field='key',
+            collection=container.collection(db_names.QUICK_REPLIES), id_field='key',
             fields=QUICK_REPLY_FIELDS, label=lambda x: x.get('title', '?'),
             toggle_field='active',
             id_hint='Отправьте ключ ответа (например: how_to_connect).',
         ),
         EntityAdmin(
             code='promo', title='🎁 Промокоды',
-            collection=container.db[db_names.PROMO_CODES], id_field='code',
+            collection=container.collection(db_names.PROMO_CODES), id_field='code',
             fields=PROMO_FIELDS,
             label=lambda p: (f'{p.get("code")} · {p.get("reward_value")} '
                              f'{"₽" if p.get("reward_type") == "balance" else "Гб"} '

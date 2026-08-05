@@ -121,6 +121,9 @@ class Config:
     api_host: str = '0.0.0.0'
     api_port: int = 8000
     media_dir: str = 'media'
+    # True — использовать старые имена коллекций (с пробелом), как в текущем боте.
+    # Тогда новый бот работает на боевой базе без миграции коллекций.
+    legacy_collections: bool = False
 
     @property
     def is_production(self) -> bool:
@@ -167,4 +170,6 @@ class Config:
             environment=_env('ENVIRONMENT', default='production'),
             api_port=_env_int('API_PORT', 8000),
             media_dir=_env('MEDIA_DIR', default='media'),
+            legacy_collections=_env('LEGACY_COLLECTIONS',
+                                    default='').lower() in ('1', 'true', 'yes'),
         )
