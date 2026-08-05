@@ -88,8 +88,7 @@ class Container:
         from motor.motor_asyncio import AsyncIOMotorClient
 
         from app.admin.entities import build_entities
-        from app.integrations.payments.cardlink import CardlinkProvider
-        from app.integrations.payments.registry import PaymentRegistry
+        from app.integrations.payments.registry import PaymentRegistry, build_providers
         from app.integrations.vpn.remnawave import RemnawaveClient
         from app.services.billing import BillingService
         from app.services.topup import TopupService
@@ -105,12 +104,9 @@ class Container:
 
         container.vpn = RemnawaveClient(
             config.vpn.base_url, config.vpn.token, http, config.vpn.base_squad_id)
-        container.payments = PaymentRegistry(
-            [CardlinkProvider(config.payments.cardlink_token, http=http)],
-            container.settings,
-        )
+        container.payments = PaymentRegistry(build_providers(config, http), container.settings)
         container.topup = TopupService(
-            container.users, container.payments_repo, container.settings)
+            container.users, container.payments_repo, container.settings, container=container)
         container.billing = BillingService(
             container.users, container.plans, container.settings,
             container.vpn, container.topup)

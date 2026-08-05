@@ -1,49 +1,51 @@
-"""Cardlink. Пример того, как выглядит провайдер целиком."""
+"""Cardlink. Пользователь определяется по счёту в cardlink_bills."""
 
 from __future__ import annotations
 
 import hashlib
 
-from app.integrations.payments.base import Invoice, PaymentProvider, WebhookEvent
+from app.core import db as names
+from app.integrations.payments.base import PaymentProvider, WebhookEvent
 
 
 class CardlinkProvider(PaymentProvider):
     code = 'cardlink'
     title = '💳 Карта РФ'
-    min_amount = 75
+    verified = False   # ⚠️ Cardlink не подписывает вебхук — см. заметку в webhooks.py
 
-    def __init__(self, token: str, shop_id: str = '', http=None, bills=None):
+    def __init__(self, token: str, shop_id: str = '', http=None):
         self._token = token
         self._shop_id = shop_id
-        self._http = http      # общий httpx.AsyncClient из контейнера
-        self._bills = bills    # коллекция для сопоставления payment_id → user_id
+        self._http = http
 
-    async def create_invoice(self, user_id: int, amount: int) -> Invoice:
-        # TODO: перенести сюда вызов API из utility/utils.create_payment_cardlink
-        raise NotImplementedError
-
-    def verify(self, body: bytes, headers: dict[str, str]) -> None:
-        # Cardlink подписывает не тело, а поля; проверка — в parse()
-        return None
-
-    def signature(self, amount: str, trs_id: str) -> str:
-        raw = f'{amount}:{trs_id}:{self._token}'
-        return hashlib.md5(raw.encode()).hexdigest().upper()
+    def payment_signature(self, amount: str, trs_id: str) -> str:
+        """Подпись для создания счёта (не для вебхука)."""
+        return hashlib.md5(f'{amount}:{trs_id}:{self._token}'.encode()).hexdigest().upper()
 
     def parse(self, payload: dict) -> WebhookEvent:
         status = (payload.get('Status') or '').strip().upper()
         trs_id = (payload.get('TrsId') or '').strip()
-        amount = (payload.get('Amount') or payload.get('OutSum') or '').strip()
+        amount_raw = (payload.get('Amount') or payload.get('OutSum') or '').strip()
 
-        if not trs_id or not amount:
+        if not trs_id or not amount_raw:
             return WebhookEvent.ignore('missing_fields')
         if status != 'SUCCESS':
             return WebhookEvent.ignore(f'status_{status.lower()}')
 
-        return WebhookEvent(
-            handled=True,
-            txid=trs_id,
-            user_id=None,          # у Cardlink id пользователя берётся из счёта в БД
-            amount=int(float(amount)),
-            raw=payload,
-        )
+        try:
+            amount = int(float(amount_raw))
+        except ValueError:
+            return WebhookEvent.ignore('bad_amount')
+
+        return WebhookEvent(handled=True, txid=trs_id, user_id=None,
+                            amount=amount, raw=payload)
+
+    async def resolve_user(self, event: WebhookEvent, container) -> int | None:
+        bill = await container.db[names.CARDLINK_BILLS].find_one(
+            {'provider': 'cardlink', 'payment_id': event.txid})
+        if not bill:
+            return None
+        await container.db[names.CARDLINK_BILLS].update_one(
+            {'_id': bill['_id']},
+            {'$set': {'status': 'success', 'credited_amount_rub': event.amount}})
+        return int(bill['user_id'])

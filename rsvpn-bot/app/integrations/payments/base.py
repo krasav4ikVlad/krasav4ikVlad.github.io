@@ -1,20 +1,22 @@
 """Общий контракт платёжных провайдеров.
 
-В старом FastApi.py шесть эндпоинтов повторяют одно и то же: распарсить,
-проверить подпись, достать user_id и сумму, вызвать пополнение. Отличия —
-только внутри этих четырёх шагов. Здесь они вынесены в интерфейс, а
-эндпоинт остаётся один (см. app/api/webhooks.py).
+В FastApi.py шесть эндпоинтов повторяют одно и то же: распарсить тело,
+проверить подпись, достать user_id и сумму, зачислить. Отличаются только эти
+четыре шага — они и вынесены в интерфейс, а эндпоинт остаётся один
+(app/api/webhooks.py).
+
+Отдельное поле verified показывает, проверяется ли подпись вообще. Сейчас у
+WATA и Cardlink проверки нет: кто угодно, зная адрес вебхука, может отправить
+«оплату». Здесь это хотя бы видно в коде, а не растворено в 900 строках.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
 
 
 @dataclass(frozen=True)
 class Invoice:
-    """Счёт на оплату, который показываем пользователю."""
     url: str
     payment_id: str
     amount: int
@@ -36,19 +38,24 @@ class WebhookEvent:
 
 
 class SignatureError(Exception):
-    """Подпись вебхука не сошлась — запрос отклоняем с 403."""
+    """Подпись вебхука не сошлась — запрос отклоняем."""
 
 
-class PaymentProvider(Protocol):
-    code: str
-    title: str
-    min_amount: int
+class PaymentProvider:
+    code: str = ''
+    title: str = ''
+    min_amount: int = 75
+    verified: bool = True      # проверяется ли подпись входящего вебхука
 
     async def create_invoice(self, user_id: int, amount: int) -> Invoice:
-        """Создать счёт. Ошибки провайдера — PaymentError из app.core.errors."""
+        raise NotImplementedError
 
-    def verify(self, body: bytes, headers: dict[str, str]) -> None:
-        """Проверить подпись. Бросает SignatureError, если не сошлась."""
+    def verify(self, body: bytes, headers: dict[str, str], payload: dict) -> None:
+        """Бросает SignatureError, если подпись не сошлась."""
 
     def parse(self, payload: dict) -> WebhookEvent:
-        """Достать из вебхука user_id, сумму и идемпотентный txid."""
+        raise NotImplementedError
+
+    async def resolve_user(self, event: WebhookEvent, container) -> int | None:
+        """Кому зачислять. Переопределяется, если id берётся не из вебхука."""
+        return event.user_id

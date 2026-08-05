@@ -98,6 +98,27 @@ SCHEMA: tuple[Group, ...] = (
         Setting('bonus.churn_survey_reward', 'Бонус за ответ в опросе оттока', 'int', 8, unit='₽', min=0),
     )),
 
+    Group('payouts', '💸 Вывод реферальных средств', (
+        Setting('payout.min_withdraw', 'Минимальная сумма вывода', 'int', 500, unit='₽', min=1),
+        Setting('payout.cooldown_hours', 'Пауза между заявками', 'int', 24, unit=' ч', min=0),
+        Setting('payout.min_card', 'Минимум на карту', 'int', 1000, unit='₽', min=0),
+        Setting('payout.min_sbp', 'Минимум по СБП', 'int', 500, unit='₽', min=0),
+        Setting('payout.min_crypto_usd', 'Минимум в USDT', 'int', 50, unit='$', min=0),
+    )),
+
+    Group('lifeline', '🪢 Lifeline (сервер после истечения)', (
+        Setting('lifeline.enabled', 'Переводить истёкших на TG-сервер', 'bool', True),
+        Setting('lifeline.grace_days', 'Сколько дней держать', 'int', 3, unit=' дн.', min=1),
+        Setting('lifeline.squad_uuid', 'UUID сквада lifeline', 'str',
+                '36df3a14-75d1-4c9a-a933-212fd29a7806'),
+    )),
+
+    Group('survey', '📊 Опрос с бонусом', (
+        Setting('survey.enabled', 'Опрос включён', 'bool', True),
+        Setting('survey.bonus', 'Бонус за прохождение', 'int', 25, unit='₽', min=0),
+        Setting('survey.price_question_value', 'Цена в вопросе про подписку', 'int', 150, unit='₽'),
+    )),
+
     Group('campaigns', '📣 Кампании и рассылки', (
         Setting('campaign.new_trial_enabled', 'Кампания «новые триал»', 'bool', True),
         Setting('campaign.expired_enabled', 'Кампания «истёкшие»', 'bool', True),
@@ -121,6 +142,7 @@ SCHEMA: tuple[Group, ...] = (
         Setting('notify.topic_email', 'Тема: привязка почты', 'int', 24240),
         Setting('notify.topic_promo', 'Тема: промокоды', 'int', 24484),
         Setting('notify.topic_campaigns', 'Тема: отчёты кампаний', 'int', 470234),
+        Setting('notify.topic_payout', 'Тема: заявки на вывод', 'int', 279680),
         Setting('notify.enabled', 'Слать уведомления админам', 'bool', True),
     )),
 
