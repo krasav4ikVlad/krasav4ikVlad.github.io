@@ -49,6 +49,7 @@ class Container:
     gifts: Any = None
     payouts: Any = None
     survey: Any = None
+    devices: Any = None
     entities: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -160,3 +161,4 @@ class Container:
         self.renewal = RenewalService(self.users, self.plans, self.settings, self.vpn,
                                       self.topup, self.lifeline, self.expiry)
         self.device_billing = DeviceBillingService(self.users, self.settings, self.vpn)
+        self.devices = self.device_billing

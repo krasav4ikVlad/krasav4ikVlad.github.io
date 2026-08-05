@@ -29,18 +29,19 @@ def create_bot(container: Container) -> Bot:
 def create_dispatcher(container: Container, storage=None) -> Dispatcher:
     dp = Dispatcher(storage=storage or MemoryStorage())
 
-    # порядок важен: сначала ошибки (внешний слой), потом зависимости,
-    # затем троттлинг и техработы, и только потом загрузка пользователя
-    middlewares = (
+    # Внешние middleware отрабатывают ДО фильтров — иначе фильтр Feature()
+    # не увидит settings и пропустит выключенный раздел внутрь хендлера.
+    outer = (
         ErrorsMiddleware(),
         DependenciesMiddleware(container),
         ThrottleMiddleware(),
         MaintenanceMiddleware(container.settings, container.config.admin_ids),
         UserMiddleware(container.users),
     )
-    for middleware in middlewares:
-        dp.message.middleware(middleware)
-        dp.callback_query.middleware(middleware)
+    for middleware in outer:
+        dp.message.outer_middleware(middleware)
+        dp.callback_query.outer_middleware(middleware)
+    dp.inline_query.outer_middleware(DependenciesMiddleware(container))
 
     dp.include_router(admin_panel.create_router(container.config.admin_ids))
     register(dp)

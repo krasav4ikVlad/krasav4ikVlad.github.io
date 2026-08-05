@@ -116,6 +116,7 @@ SCHEMA: tuple[Group, ...] = (
         Setting('bypass.external_squad_uuid', 'Внешний сквад ByPass', 'str',
                 'dd4fd59f-415a-4fab-8af7-afde9db099bc'),
         Setting('bypass.default_traffic_gb', 'Трафик по умолчанию', 'int', 1, unit=' Гб', min=1),
+        Setting('bypass.price_per_gb', 'Цена за гигабайт', 'int', 5, unit='₽', min=0),
     )),
 
     Group('renewal', '🔁 Автопродление', (
@@ -198,6 +199,8 @@ SCHEMA: tuple[Group, ...] = (
         Setting('link.web_cabinet', 'Личный кабинет', 'str', 'https://console.rscore.app/'),
         Setting('link.tribute', 'Tribute (карты)', 'str', 'https://t.me/tribute/app?startapp=dNvx'),
         Setting('link.bot_username', 'Юзернейм бота (для реф. ссылок)', 'str', 'rsconnect_bot'),
+        Setting('link.ref_aliases', 'Именные реф. ссылки', 'str', '',
+                hint='имя:user_id через запятую, например blog:123456'),
         Setting('link.offer', 'Публичная оферта', 'str',
                 'https://telegra.ph/Polzovatelskoe-soglashenie-Publichnaya-oferta-RS-VPN-07-02'),
         Setting('link.privacy', 'Политика конфиденциальности', 'str',

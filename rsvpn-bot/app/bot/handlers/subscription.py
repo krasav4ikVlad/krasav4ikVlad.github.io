@@ -16,26 +16,26 @@ from app.bot.filters.feature import Feature
 from app.bot.keyboards.common import footer
 from app.bot.keyboards.subscription import plans_keyboard
 from app.bot.screens.base import Screen, render
+from app.bot.screens.profile import profile_caption, subscription_block
 from app.content import texts
 from app.core.errors import NotEnoughBalance
+from app.core.time import now, parse_dt
+from app.domain.pricing import subscription_price
 
-router = Router(name='subscription')
 
-
-@router.callback_query(Menu.filter(F.screen == 'subscription'))
-async def show_plans(call: types.CallbackQuery, c, user: dict, settings):
+async def show_plans(event, c, user: dict, settings):
     builder = await plans_keyboard(c.plans, c.users.pick(user, 'info.balance', 0))
     await footer(builder, settings, back='profile')
 
-    await render(call, Screen(
-        text=texts.render('screen.subscription.empty'),
+    await render(event, Screen(
+        text=profile_caption(user) + texts.render('screen.subscription.empty'),
         markup=builder.as_markup(),
         image=c.media('subscription'),
     ))
-    await call.answer()
+    if isinstance(event, types.CallbackQuery):
+        await event.answer()
 
 
-@router.callback_query(Plan.filter(F.action == 'buy'), Feature('features.buy_enabled'))
 async def buy_plan(call: types.CallbackQuery, callback_data: Plan, c, settings):
     try:
         result = await c.billing.buy(call.from_user.id, callback_data.code)
@@ -53,18 +53,65 @@ async def buy_plan(call: types.CallbackQuery, callback_data: Plan, c, settings):
     await show_subscription(call, c, await c.users.get(call.from_user.id), settings)
 
 
-@router.callback_query(Menu.filter(F.screen == 'extend'), Feature('features.extend_enabled'))
 async def extend(call: types.CallbackQuery, c, settings):
     await c.billing.extend(call.from_user.id)
     await call.answer('Подписка продлена ✅')
     await show_subscription(call, c, await c.users.get(call.from_user.id), settings)
 
 
-@router.callback_query(Menu.filter(F.screen == 'my_subscription'))
-async def show_subscription(call: types.CallbackQuery, c, user: dict, settings):
-    """TODO: перенести экран из старого start.py (ветка `call.data.endswith(':sub')`).
+async def show_subscription(event, c, user: dict, settings):
+    """Экран действующей подписки."""
+    vpn = user.get('vpn') or {}
+    if not vpn.get('shortUuid'):
+        return await show_plans(event, c, user, settings)
 
-    Текст собирается через texts.render('screen.subscription.*'), клавиатура —
-    в keyboards/subscription.py. Ничего кроме сборки экрана здесь быть не должно.
+    price = await subscription_monthly_cost(c, user, settings)
+    connect_base = await settings.get('link.connect_base')
+    expire = parse_dt(vpn.get('expireAt'))
+
+    text = profile_caption(user) + subscription_block(user, price, connect_base)
+    if not expire or expire <= now():
+        text += f'<blockquote>{texts.render("screen.subscription.expired")}</blockquote>'
+
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(
+        text='🛡 Настроить VPN', url=f'{connect_base}{vpn["shortUuid"]}'))
+    if await settings.flag('features.extend_enabled'):
+        kb.row(types.InlineKeyboardButton(
+            text='🔁 Продлить подписку', callback_data=Menu(screen='extend').pack()))
+    if await settings.flag('features.bypass_enabled'):
+        kb.row(types.InlineKeyboardButton(
+            text='🚧 Белые списки', callback_data=Menu(screen='bypass').pack()))
+    if await settings.flag('features.devices_enabled'):
+        kb.row(types.InlineKeyboardButton(
+            text='📲 Менеджер устройств', callback_data=Menu(screen='devices').pack()))
+    if await settings.flag('features.change_period_enabled'):
+        kb.row(types.InlineKeyboardButton(
+            text='📅 Изменить длительность', callback_data=Menu(screen='subscription').pack()))
+    await footer(kb, settings, back='profile')
+
+    await render(event, Screen(text=text, markup=kb.as_markup(),
+                               image=c.media('subscription_active')))
+
+
+async def subscription_monthly_cost(c, user: dict, settings) -> int:
+    """Сколько спишется при следующем продлении: тариф + доп. устройства."""
+    plan = await c.plans.by_days((user.get('vpn') or {}).get('period') or 0)
+    rules = await c.topup.rules()
+    return subscription_price(int(plan['price']) if plan else 0,
+                              int((user.get('vpn') or {}).get('hwidDeviceLimit') or 0), rules)
+
+
+def create_router() -> Router:
+    """Собирает роутер раздела.
+
+    Фабрика, а не модульный синглтон: Router подключается только к одному
+    Dispatcher, поэтому синглтон ломает тесты и любой сценарий со вторым ботом.
+    Заодно карта «событие → хендлер» видна одним списком.
     """
-    raise NotImplementedError
+    router = Router(name='subscription')
+    router.callback_query.register(show_plans, Menu.filter(F.screen == 'subscription'))
+    router.callback_query.register(buy_plan, Plan.filter(F.action == 'buy'), Feature('features.buy_enabled'))
+    router.callback_query.register(extend, Menu.filter(F.screen == 'extend'), Feature('features.extend_enabled'))
+    router.callback_query.register(show_subscription, Menu.filter(F.screen == 'my_subscription'))
+    return router

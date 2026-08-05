@@ -24,7 +24,9 @@ import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
-from app.core.errors import VpnPanelError
+from uuid import uuid4
+
+from app.core.errors import NotEnoughBalance, VpnPanelError
 from app.core.time import now, parse_dt
 
 log = logging.getLogger(__name__)
@@ -46,6 +48,58 @@ class DeviceBillingService:
         self.settings = settings
         self.vpn = vpn
         self.notifier = notifier
+
+    async def add(self, user_id: int, amount: int) -> int:
+        """Купить пакет доп. устройств. Возвращает новый лимит.
+
+        Порядок тот же, что и в продлении: сначала деньги, потом панель,
+        при отказе панели — возврат.
+        """
+        if amount <= 0:
+            raise ValueError('количество должно быть больше нуля')
+
+        price_each = await self.settings.int('price.device_extra')
+        total = amount * price_each
+
+        user = await self.users.get(user_id, {'vpn': 1})
+        current = int(self.users.pick(user or {}, 'vpn.hwidDeviceLimit',
+                                      await self.settings.int('price.devices_free_limit')))
+        new_limit = current + amount
+
+        if not await self.users.charge(user_id, total, f'Доп. устройства: {amount} шт.'):
+            balance = int(self.users.pick(user or {}, 'info.balance', 0) or 0)
+            raise NotEnoughBalance(need=total, have=balance)
+
+        uuid = self.users.pick(user or {}, 'vpn.uuid')
+        try:
+            if uuid:
+                await self.vpn.update_subscription(uuid, device_limit=new_limit)
+        except VpnPanelError:
+            await self.users.credit(user_id, total, 'Возврат за доп. устройства')
+            raise
+
+        package = {
+            'id': uuid4().hex[:12], 'amount': amount, 'pricePerDevice': price_each,
+            'active': True, 'createdAt': now(),
+            'nextChargeAt': now() + timedelta(days=CHARGE_PERIOD_DAYS),
+        }
+        await self.users.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$push': {'vpn.extraDevices': package},
+             '$set': {'vpn.hwidDeviceLimit': new_limit}},
+        )
+        log.info('%s купил %s доп. устройств за %s₽', user_id, amount, total)
+        return new_limit
+
+    async def unbind(self, user_id: int, hwid: str) -> bool:
+        """Отвязать устройство от обеих подписок — основной и ByPass."""
+        user = await self.users.get(user_id, {'vpn.uuid': 1, 'vpn.bypass_uuid': 1})
+        removed = False
+        for field in ('vpn.uuid', 'vpn.bypass_uuid'):
+            uuid = self.users.pick(user or {}, field)
+            if uuid and await self.vpn.delete_device(uuid, hwid):
+                removed = True
+        return removed
 
     async def run(self) -> DeviceBillingReport:
         report = DeviceBillingReport()

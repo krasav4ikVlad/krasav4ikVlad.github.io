@@ -137,3 +137,57 @@ async def test_feature_toggle_stops_billing(db, user_factory, billing):
 
     report = await service.run()
     assert report.charged == 0
+
+
+# ── покупка и отвязка ───────────────────────────────────────────────────────
+async def test_buying_devices_charges_and_raises_limit(db, user_factory, billing):
+    service, vpn = billing
+    await user_factory(**{'info.balance': 300, 'vpn.uuid': 'u-1', 'vpn.hwidDeviceLimit': 2})
+
+    new_limit = await service.add(1, 2)
+
+    assert new_limit == 4 and vpn.calls[-1]['device_limit'] == 4
+    user = await db['users'].find_one({'user_data.user_id': 1})
+    assert user['info']['balance'] == 150
+    assert user['vpn']['hwidDeviceLimit'] == 4
+    assert user['vpn']['extraDevices'][0]['amount'] == 2
+
+
+async def test_buying_without_money_is_refused(db, user_factory, billing):
+    from app.core.errors import NotEnoughBalance
+    service, vpn = billing
+    await user_factory(**{'info.balance': 10, 'vpn.uuid': 'u-1'})
+
+    with pytest.raises(NotEnoughBalance):
+        await service.add(1, 2)
+
+    user = await db['users'].find_one({'user_data.user_id': 1})
+    assert user['info']['balance'] == 10 and vpn.calls == []
+
+
+async def test_panel_failure_returns_money(db, user_factory, billing):
+    service, _ = billing
+    service.vpn = FakeVpn(fail=True)
+    await user_factory(**{'info.balance': 300, 'vpn.uuid': 'u-1'})
+
+    with pytest.raises(VpnPanelError):
+        await service.add(1, 2)
+
+    user = await db['users'].find_one({'user_data.user_id': 1})
+    assert user['info']['balance'] == 300
+    assert not user['vpn'].get('extraDevices')
+
+
+async def test_unbind_removes_device_from_both_profiles(db, user_factory, billing):
+    service, vpn = billing
+    vpn.deleted = []
+
+    async def delete_device(uuid, hwid):
+        vpn.deleted.append((uuid, hwid))
+        return True
+
+    vpn.delete_device = delete_device
+    await user_factory(**{'vpn.uuid': 'main', 'vpn.bypass_uuid': 'bypass'})
+
+    assert await service.unbind(1, 'hwid-1') is True
+    assert vpn.deleted == [('main', 'hwid-1'), ('bypass', 'hwid-1')]

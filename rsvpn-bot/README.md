@@ -74,6 +74,22 @@ EXPIRATION_NOTIFICATIONS=-72,-24,-12,-6,-3,-1,24   # часы: минус — д
 * списание с баланса осталось в планировщике: вебхук может не дойти,
   а деньги должны списаться в любом случае.
 
+## Что уже перенесено из старого бота
+
+| Раздел | Куда |
+|---|---|
+| `process_subscriptions` (напоминания) | вебхуки панели, `services/expiry.py` |
+| `process_subscriptions` (списания) | `services/renewal.py`, `services/devices.py` |
+| 6 вебхуков в `FastApi.py` | один эндпоинт + `integrations/payments/*` |
+| HTTP к панели из `utils.py` | `integrations/vpn/remnawave.py` |
+| `lifeline.py` | `services/lifeline.py` |
+| `redeem_promo_for_user` | `services/promo.py` |
+| `process_gift_activation` + `gifts.json` | `services/gifts.py` (данные в Mongo) |
+| `payout_system.py` | `services/payouts.py` + `bot/handlers/referrals.py` |
+| `survey_bonus.py` | `services/survey.py` |
+| экраны `start.py` | `bot/handlers/*` + `bot/screens/*` |
+| 3 файла кампаний | `campaigns/engine.py` + `campaigns/definitions.py` |
+
 ## Админка
 
 `/admin` в боте:

@@ -145,7 +145,7 @@ handlers → services → repositories → Mongo
 
 ## Что уже работает в скелете
 
-`pytest -q` → **149 passed**. Тесты идут на заглушках Mongo и Telegram
+`pytest -q` → **164 passed**. Тесты идут на заглушках Mongo и Telegram
 (`tests/conftest.py`), включая сценарии, которые иначе проверяются только на
 живых пользователях:
 
@@ -156,6 +156,8 @@ handlers → services → repositories → Mongo
 | `test_campaigns.py::test_sends_only_inside_window` | окна отправки и ночная пауза |
 | `test_renewal.py::test_money_is_taken_before_the_panel` | панель упала — деньги вернулись |
 | `test_device_billing.py::test_charge_moves_the_right_package` | списание сдвигает дату своему пакету, а не соседнему |
+| `test_bot_flow.py::test_buying_plan_charges_and_creates_subscription` | покупка через настоящий Dispatcher |
+| `test_gifts.py::test_link_works_only_once` | подарочная ссылка не активируется дважды |
 | `test_settings.py::test_percent_input_and_output` | 20 на вводе → 0.2 в базе → «20%» на экране |
 | `test_admin_panel.py` (5 шт.) | админка целиком через реальный `Dispatcher` |
 
@@ -176,9 +178,9 @@ Mongo превращал во вложенные документы; обмен 
    вебхуками панели вместо обхода базы раз в 15 минут.
 4. ✅ **Панель.** `integrations/vpn/remnawave.py` + `services/squads.py` +
    `services/lifeline.py`: все HTTP-вызовы и раскладка сквадов в одном месте.
-5. ⬜ **Экраны.** По разделу за деплой: `subscription` → `devices` →
-   `payments` → остальное. Пока раздел не перенесён, его обслуживает старый
-   хендлер.
+5. ✅ **Экраны.** Разделы разнесены по файлам `bot/handlers/*`, каждый — роутер
+   через `create_router()`. Логики в них нет: только сборка экрана и вызов
+   сервиса.
 6. ⬜ **Кампании.** Тексты — в `content/texts.py`, касания — в
    `campaigns/definitions.py`, старые три файла удаляются целиком.
 7. ✅ **Биллинг-крон.** `utils.process_subscriptions` (≈290 строк) разделён на
