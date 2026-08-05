@@ -21,11 +21,15 @@ async def run_campaigns(container, bot, engine) -> None:
 
 
 async def charge_subscriptions(container) -> None:
-    """Ежедневное списание за подписку и устройства.
+    """Списание за подписку и устройства.
 
     Переносится из utils.process_subscriptions (сейчас ~290 строк в одной
     функции). Разбейте на: выборка истекающих → расчёт цены (domain/pricing)
     → списание (users.charge) → продление в панели → уведомление.
+
+    Напоминания об истечении сюда НЕ переносятся: их присылает панель
+    вебхуками (app/services/expiry.py). Здесь остаётся только списание —
+    и оно же страхует, если вебхук не дошёл.
     """
     if not await container.settings.flag('features.autorenew_enabled'):
         log.info('автопродление выключено в админке')

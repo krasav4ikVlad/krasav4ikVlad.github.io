@@ -40,6 +40,7 @@ class Container:
     billing: Any = None
     notifier: Any = None
     analytics: Any = None
+    expiry: Any = None
     entities: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -112,3 +113,12 @@ class Container:
             container.vpn, container.topup)
         container.entities = build_entities(container)
         return container
+
+    def attach_bot(self, bot) -> None:
+        """Сервисы, которым нужен Bot: вебхуки шлют сообщения пользователям."""
+        from app.bot.keyboards.common import campaign_keyboards
+        from app.campaigns.sender import Sender
+        from app.services.expiry import ExpiryNotifier
+
+        self.expiry = ExpiryNotifier(self.users, self.settings, Sender(), bot,
+                                     campaign_keyboards())

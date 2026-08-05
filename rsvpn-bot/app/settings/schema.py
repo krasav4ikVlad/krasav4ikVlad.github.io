@@ -98,6 +98,21 @@ SCHEMA: tuple[Group, ...] = (
         Setting('bonus.churn_survey_reward', 'Бонус за ответ в опросе оттока', 'int', 8, unit='₽', min=0),
     )),
 
+    Group('expiry', '⏰ Напоминания об истечении', (
+        Setting('expiry.notify_enabled', 'Напоминания включены', 'bool', True,
+                hint='Приходят вебхуками от панели, а не опросом базы'),
+        Setting('expiry.send_3d', 'За 3 дня', 'bool', True),
+        Setting('expiry.send_2d', 'За 2 дня', 'bool', False),
+        Setting('expiry.send_1d', 'За сутки', 'bool', True),
+        Setting('expiry.send_12h', 'За 12 часов', 'bool', True),
+        Setting('expiry.send_6h', 'За 6 часов', 'bool', True),
+        Setting('expiry.send_3h', 'За 3 часа', 'bool', True),
+        Setting('expiry.send_1h', 'За час', 'bool', True),
+        Setting('expiry.send_expired', 'В момент истечения', 'bool', True),
+        Setting('expiry.send_expired_24h', 'Через сутки после', 'bool', True),
+        Setting('expiry.send_expired_72h', 'Через трое суток после', 'bool', False),
+    )),
+
     Group('payouts', '💸 Вывод реферальных средств', (
         Setting('payout.min_withdraw', 'Минимальная сумма вывода', 'int', 500, unit='₽', min=1),
         Setting('payout.cooldown_hours', 'Пауза между заявками', 'int', 24, unit=' ч', min=0),

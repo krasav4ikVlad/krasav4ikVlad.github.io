@@ -149,6 +149,15 @@ class FakeCollection:
             else:
                 items = items + [value]
             self._set_path(doc, key, items)
+        for key, _ in (update.get('$unset') or {}).items():
+            parts = key.split('.')
+            target = doc
+            for part in parts[:-1]:
+                target = target.get(part) if isinstance(target, dict) else None
+                if target is None:
+                    break
+            if isinstance(target, dict):
+                target.pop(parts[-1], None)
         for key, value in (update.get('$addToSet') or {}).items():
             items = self._get(doc, key) or []
             if value not in items:
