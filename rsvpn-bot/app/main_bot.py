@@ -21,6 +21,26 @@ COMMANDS = [
 ]
 
 
+def print_startup_banner(config) -> None:
+    """Сводка режима работы. Печатается до старта, чтобы опасное сочетание
+    настроек было видно сразу, а не после первого списания."""
+    panel = 'ИЗМЕНЯЕТ ДАННЫЕ' if not config.vpn.dry_run else 'только чтение (dry-run)'
+    scheduler = 'ВКЛЮЧЁН' if config.scheduler_enabled else 'выключен'
+
+    log.info('─' * 60)
+    log.info('База:         %s%s', config.mongo_db,
+             '  (старые имена коллекций)' if config.legacy_collections else '')
+    log.info('Панель:       %s', panel)
+    log.info('Планировщик:  %s', scheduler)
+    log.info('Админы:       %s', ', '.join(map(str, config.admin_ids)) or '—')
+    log.info('─' * 60)
+
+    if config.scheduler_enabled and not config.vpn.dry_run:
+        log.warning('Планировщик будет списывать деньги и продлевать подписки '
+                    'в панели. Убедитесь, что старый бот этого больше не делает — '
+                    'иначе списания пойдут дважды.')
+
+
 async def main() -> None:
     config = Config.from_env()
     setup_logging(config.log_level)
@@ -30,9 +50,15 @@ async def main() -> None:
 
     bot = create_bot(container)
     dp = create_dispatcher(container)
+    print_startup_banner(config)
 
-    scheduler = create_scheduler(container, bot)
-    scheduler.start()
+    scheduler = None
+    if config.scheduler_enabled:
+        scheduler = create_scheduler(container, bot)
+        scheduler.start()
+    else:
+        log.warning('планировщик выключен (SCHEDULER_ENABLED=0): '
+                    'списаний и кампаний не будет')
 
     await bot.set_my_commands(COMMANDS)
     await bot.delete_webhook(drop_pending_updates=False)
@@ -40,7 +66,8 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, container=container)
     finally:
-        scheduler.shutdown(wait=False)
+        if scheduler:
+            scheduler.shutdown(wait=False)
         await bot.session.close()
 
 

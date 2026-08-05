@@ -121,6 +121,19 @@ async def main() -> int:
              'подпись проверяется' if provider.verified
              else 'вебхук без подписи — принимается любой запрос')
 
+    print('\n── Режим работы ─────────────────────────────────────────────')
+    line(OK if config.vpn.dry_run else WARN, 'Панель',
+         'только чтение (dry-run)' if config.vpn.dry_run else 'запросы на изменение уходят')
+    line(OK, 'Коллекции',
+         'старые имена, как у текущего бота' if config.legacy_collections else 'новые имена')
+
+    if config.scheduler_enabled:
+        line(WARN, 'Планировщик', 'включён — будет списывать деньги и слать кампании')
+        print('     → пока работает старый бот, поставьте SCHEDULER_ENABLED=0,')
+        print('       иначе списания и рассылки пойдут дважды')
+    else:
+        line(OK, 'Планировщик', 'выключен — списаний и рассылок не будет')
+
     print(f'\n{"─" * 62}')
     if problems:
         print(f'{FAIL} Проблем, мешающих запуску: {problems}')

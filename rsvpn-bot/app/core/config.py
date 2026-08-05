@@ -124,6 +124,9 @@ class Config:
     # True — использовать старые имена коллекций (с пробелом), как в текущем боте.
     # Тогда новый бот работает на боевой базе без миграции коллекций.
     legacy_collections: bool = False
+    # Планировщик списывает деньги и рассылает кампании. При работе рядом с
+    # действующим ботом он должен быть включён РОВНО в одном из них.
+    scheduler_enabled: bool = True
 
     @property
     def is_production(self) -> bool:
@@ -172,4 +175,6 @@ class Config:
             media_dir=_env('MEDIA_DIR', default='media'),
             legacy_collections=_env('LEGACY_COLLECTIONS',
                                     default='').lower() in ('1', 'true', 'yes'),
+            scheduler_enabled=_env('SCHEDULER_ENABLED',
+                                   default='1').lower() not in ('0', 'false', 'no'),
         )

@@ -39,3 +39,27 @@ def test_percent_input_and_output():
 def test_bounds_are_enforced():
     ok, _, error = parse_value(INDEX['pay.min_topup'], '0')
     assert not ok and error
+
+
+# ── режимы запуска ──────────────────────────────────────────────────────────
+def test_scheduler_can_be_switched_off_by_env(monkeypatch):
+    """Пока работает старый бот, планировщик нового должен молчать."""
+    from app.core.config import Config
+
+    for value, expected in (('0', False), ('false', False), ('no', False),
+                            ('1', True), ('', True)):
+        monkeypatch.setenv('API_TOKEN', '1:TEST')
+        monkeypatch.setenv('SCHEDULER_ENABLED', value)
+        assert Config.from_env().scheduler_enabled is expected, value
+
+
+def test_dangerous_combination_is_visible(monkeypatch):
+    monkeypatch.setenv('API_TOKEN', '1:TEST')
+    monkeypatch.setenv('PANEL_DRY_RUN', '0')
+    monkeypatch.setenv('SCHEDULER_ENABLED', '1')
+
+    from app.core.config import Config
+    config = Config.from_env()
+
+    # именно это сочетание меняет боевые данные
+    assert config.vpn.dry_run is False and config.scheduler_enabled is True
