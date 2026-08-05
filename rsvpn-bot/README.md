@@ -6,6 +6,7 @@
 Структура и правила — в [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Перенос со старого бота и настройка — в [SETUP.md](SETUP.md).
+Что изменилось между версиями архива — в [CHANGES.md](CHANGES.md).
 
 ## Запуск в PyCharm
 
