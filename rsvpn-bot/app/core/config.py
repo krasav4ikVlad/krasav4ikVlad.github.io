@@ -71,6 +71,8 @@ class VpnPanelConfig:
     """Remnawave: то, что сейчас берётся из API_URL / REMNAWAVE_TOKEN."""
     base_url: str = ''
     token: str = ''
+    # токен старого core-API (не Remnawave). В боте не используется — обе
+    # функции, которые его читали, не вызываются. Оставлен для совместимости.
     core_token: str = ''
     base_squad_id: str = ''
     happ_rsa_public_key: str = ''
