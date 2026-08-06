@@ -178,19 +178,73 @@ async def test_panel_failure_returns_money(db, user_factory, billing):
     assert not user['vpn'].get('extraDevices')
 
 
-async def test_unbind_removes_device_from_both_profiles(db, user_factory, billing):
-    service, vpn = billing
+def with_devices(vpn, by_uuid: dict[str, list[dict]]):
+    """Устройства живут только в панели — вот она."""
     vpn.deleted = []
+
+    async def devices(uuid):
+        return by_uuid.get(uuid, [])
 
     async def delete_device(uuid, hwid):
         vpn.deleted.append((uuid, hwid))
         return True
 
+    vpn.devices = devices
     vpn.delete_device = delete_device
+    return vpn
+
+
+async def test_unbind_goes_only_to_the_subscription_that_has_the_device(db, user_factory,
+                                                                        billing):
+    """Раньше удаление слалось в обе подписки, и «чужая» отвечала 404 A204 —
+    в логах это выглядело ошибкой при каждой успешной отвязке."""
+    service, vpn = billing
+    with_devices(vpn, {'main': [{'hwid': 'hwid-1'}], 'bypass': [{'hwid': 'hwid-2'}]})
     await user_factory(**{'vpn.uuid': 'main', 'vpn.bypass_uuid': 'bypass'})
 
-    assert await service.unbind(1, 'hwid-1') is True
-    assert vpn.deleted == [('main', 'hwid-1'), ('bypass', 'hwid-1')]
+    assert await service.unbind(1, 'hwid-2') is True
+    assert vpn.deleted == [('bypass', 'hwid-2')]
+
+
+async def test_unbind_all_covers_both_subscriptions(db, user_factory, billing):
+    service, vpn = billing
+    with_devices(vpn, {'main': [{'hwid': 'a'}, {'hwid': 'b'}], 'bypass': [{'hwid': 'c'}]})
+    await user_factory(**{'vpn.uuid': 'main', 'vpn.bypass_uuid': 'bypass'})
+
+    assert await service.unbind_all(1) == 3
+    assert vpn.deleted == [('main', 'a'), ('main', 'b'), ('bypass', 'c')]
+
+
+async def test_unbind_all_does_not_touch_the_limit(db, user_factory, billing):
+    """Освобождаются слоты, а не отменяется оплата за устройства."""
+    service, vpn = billing
+    with_devices(vpn, {'main': [{'hwid': 'a'}]})
+    await user_factory(**{'vpn.uuid': 'main', 'vpn.hwidDeviceLimit': 5})
+
+    await service.unbind_all(1)
+
+    user = await db['users'].find_one({'user_data.user_id': 1})
+    assert user['vpn']['hwidDeviceLimit'] == 5
+
+
+async def test_unbind_all_without_devices_is_harmless(db, user_factory, billing):
+    service, vpn = billing
+    with_devices(vpn, {})
+    await user_factory(**{'vpn.uuid': 'main'})
+
+    assert await service.unbind_all(1) == 0
+
+
+async def test_unreachable_panel_does_not_break_the_list(db, user_factory, billing):
+    service, vpn = billing
+
+    async def devices(uuid):
+        raise VpnPanelError('панель молчит')
+
+    vpn.devices = devices
+    await user_factory(**{'vpn.uuid': 'main'})
+
+    assert await service.bound(1) == []
 
 
 # ── боевые данные: лимит и пакеты часто расходятся ──────────────────────────

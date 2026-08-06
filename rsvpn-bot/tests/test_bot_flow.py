@@ -96,7 +96,6 @@ async def env(container):
     from app.integrations.payments.heleket import HeleketProvider
     from app.integrations.payments.registry import PaymentRegistry
     from app.integrations.vpn.links import LinkEncryptor
-    from app.services.notifier import Notifier
     from app.services.billing import BillingService
     from app.services.devices import DeviceBillingService
     from app.services.gifts import GiftService
@@ -116,7 +115,10 @@ async def env(container):
 
     session = RecordingSession()
     bot = Bot(token='1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', session=session)
-    container.notifier = Notifier(bot, container.settings, container.users)
+    # как в main_bot: без attach_bot остаются пустыми devices, renewal,
+    # expiry, lifeline и notifier — тесты должны идти по той же сборке
+    container.attach_bot(bot)
+    assert container.missing_services() == []
 
     dp = Dispatcher()
     for middleware in (ErrorsMiddleware(), DependenciesMiddleware(container),
@@ -751,3 +753,131 @@ async def test_inline_gifts_answer_unknown_query_with_a_button(env):
     await dp.feed_update(bot, inline_query('такого тарифа нет'))
 
     assert session.results == []
+
+
+# ── продление ───────────────────────────────────────────────────────────────
+async def test_extend_patches_the_subscription_instead_of_creating_a_new_one(env):
+    """Раньше продление вызывало buy() → POST /api/users, и панель отвечала
+    «User short UUID already exists»: shortUuid считается от user_id."""
+    dp, bot, session, c = env
+    created, patched = [], []
+
+    async def create_subscription(user_id, days):
+        from datetime import timedelta
+        from app.core.time import now
+        created.append(user_id)
+        return {'uuid': 'u-new', 'shortUuid': 's-new',
+                'expireAt': now() + timedelta(days=days), 'createdAt': now()}
+
+    async def update_subscription(uuid, **kw):
+        patched.append((uuid, kw))
+        return {}
+
+    c.vpn.create_subscription = create_subscription
+    c.vpn.update_subscription = update_subscription
+
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    created.clear()
+
+    await dp.feed_update(bot, callback(Menu(screen='extend').pack()))
+
+    assert created == [], 'продление не должно создавать новую подписку'
+    assert patched and patched[0][0] == 'u-new'
+    assert 'expire_at' in patched[0][1]
+
+
+async def test_extend_moves_both_the_subscription_and_bypass(env):
+    dp, bot, session, c = env
+    patched = []
+
+    async def update_subscription(uuid, **kw):
+        patched.append(uuid)
+        return {}
+
+    c.vpn.update_subscription = update_subscription
+
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
+    patched.clear()
+
+    await dp.feed_update(bot, callback(Menu(screen='extend').pack()))
+
+    assert patched == ['u-new', 'u-bypass']
+    user = await c.users.get(5)
+    assert user['vpn']['expireAt'] == user['vpn']['bypass_expireAt']
+
+
+async def test_extend_adds_the_period_to_the_current_date(env):
+    dp, bot, session, c = env
+    from datetime import timedelta
+    c.vpn.update_subscription = lambda uuid, **kw: __import__('asyncio').sleep(0, result={})
+
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    before = (await c.users.get(5))['vpn']['expireAt']
+
+    await dp.feed_update(bot, callback(Menu(screen='extend').pack()))
+
+    after = (await c.users.get(5))['vpn']['expireAt']
+    assert after - before == timedelta(days=30)
+
+
+async def test_extend_without_money_does_not_touch_the_subscription(env):
+    dp, bot, session, c = env
+    patched = []
+    c.vpn.update_subscription = lambda uuid, **kw: patched.append(uuid) or \
+        __import__('asyncio').sleep(0, result={})
+
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await c.users.col.update_one({'user_data.user_id': 5}, {'$set': {'info.balance': 10}})
+    patched.clear()
+
+    await dp.feed_update(bot, callback(Menu(screen='extend').pack()))
+
+    assert patched == []
+    assert (await c.users.get(5))['info']['balance'] == 10
+
+
+# ── отвязка всех устройств ──────────────────────────────────────────────────
+async def test_unbind_all_asks_before_doing_it(env):
+    from app.bot.callbacks import Devices
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+
+    removed = []
+    c.vpn.devices = lambda uuid: __import__('asyncio').sleep(
+        0, result=[{'hwid': 'a'}, {'hwid': 'b'}])
+    c.vpn.delete_device = lambda uuid, hwid: removed.append(hwid) or \
+        __import__('asyncio').sleep(0, result=True)
+
+    await dp.feed_update(bot, callback(Devices(action='unbind_all').pack()))
+
+    assert 'Отвязать все' in session.last_text
+    assert removed == [], 'до подтверждения ничего отвязывать нельзя'
+
+    await dp.feed_update(bot, callback(Devices(action='unbind_all_ok').pack()))
+    assert removed == ['a', 'b']
+
+
+async def test_extend_without_money_offers_a_top_up(env):
+    """Всплывающий текст — тупик: из него некуда идти пополнять."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await c.users.col.update_one({'user_data.user_id': 5}, {'$set': {'info.balance': 10}})
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='extend').pack()))
+
+    assert 'не хватает 140' in session.last_text.lower()

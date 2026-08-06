@@ -78,13 +78,7 @@ async def buy_plan(call: types.CallbackQuery, callback_data: Plan, c, settings):
     try:
         result = await c.billing.buy(call.from_user.id, callback_data.code)
     except NotEnoughBalance as exc:
-        builder = await footer(InlineKeyboardBuilder(), settings, back='payments')
-        await render(call, Screen(
-            text=texts.render('screen.balance.not_enough', missing=exc.need - exc.have),
-            markup=builder.as_markup(),
-            image=c.media('no_funds'),
-        ))
-        await call.answer()
+        await not_enough(call, c, settings, exc)
         return
 
     await call.answer(f'Подписка «{result["plan"]["title"]}» активирована ✅')
@@ -92,9 +86,26 @@ async def buy_plan(call: types.CallbackQuery, callback_data: Plan, c, settings):
 
 
 async def extend(call: types.CallbackQuery, c, settings):
-    await c.billing.extend(call.from_user.id)
+    try:
+        await c.billing.extend(call.from_user.id)
+    except NotEnoughBalance as exc:
+        # тот же экран, что и при покупке: с кнопкой пополнения, а не
+        # всплывающим текстом, из которого некуда идти
+        await not_enough(call, c, settings, exc)
+        return
+
     await call.answer('Подписка продлена ✅')
     await show_subscription(call, c, await c.users.get(call.from_user.id), settings)
+
+
+async def not_enough(call: types.CallbackQuery, c, settings, exc: NotEnoughBalance):
+    builder = await footer(InlineKeyboardBuilder(), settings, back='payments')
+    await render(call, Screen(
+        text=texts.render('screen.balance.not_enough', missing=exc.need - exc.have),
+        markup=builder.as_markup(),
+        image=c.media('no_funds'),
+    ))
+    await call.answer()
 
 
 async def show_subscription(event, c, user: dict, settings):

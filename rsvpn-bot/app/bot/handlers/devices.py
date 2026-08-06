@@ -91,13 +91,9 @@ def device_token(hwid: str) -> str:
     return hashlib.sha1(hwid.encode()).hexdigest()[:16]
 
 
-async def list_devices(call: types.CallbackQuery, c, user: dict, settings):
-    uuid = c.users.pick(user, 'vpn.uuid')
-    try:
-        devices = await c.vpn.devices(uuid)
-    except VpnPanelError:
-        await call.answer('Не удалось загрузить устройства', show_alert=True)
-        return
+async def list_devices(call: types.CallbackQuery, c, user: dict, settings, note: str = ''):
+    """Список привязанных устройств. Источник — только панель, не база."""
+    devices = [device for _, device in await c.devices.bound(call.from_user.id)]
 
     kb = InlineKeyboardBuilder()
     for device in devices[:30]:
@@ -106,26 +102,29 @@ async def list_devices(call: types.CallbackQuery, c, user: dict, settings):
         kb.row(types.InlineKeyboardButton(
             text=f'🗑 {title}',
             callback_data=Devices(action='unbind', value=device_token(hwid)).pack()))
+    if devices:
+        kb.row(types.InlineKeyboardButton(
+            text=f'🧹 Отвязать все ({len(devices)})',
+            callback_data=Devices(action='unbind_all').pack()))
     await footer(kb, settings, back='devices')
 
-    text = ('<b>📲 Ваши устройства</b>\n\nНажмите, чтобы отвязать. Отвязка освобождает '
-            'слот, лимит при этом не меняется.') if devices else \
-           '<b>📲 Устройства</b>\n\nПодключённых устройств пока нет.'
+    if note:
+        text = f'<b>📲 Ваши устройства</b>\n\n{note}'
+    elif devices:
+        text = ('<b>📲 Ваши устройства</b>\n\nНажмите, чтобы отвязать. Отвязка освобождает '
+                'слот, лимит при этом не меняется.')
+    else:
+        text = '<b>📲 Устройства</b>\n\nПодключённых устройств пока нет.'
+
     await render(call, Screen(text=text, markup=kb.as_markup(),
                               image=c.media('devices_list')))
     await call.answer()
 
 
 async def unbind(call: types.CallbackQuery, callback_data: Devices, c, user: dict, settings):
-    uuid = c.users.pick(user, 'vpn.uuid')
-    try:
-        devices = await c.vpn.devices(uuid)
-    except VpnPanelError:
-        await call.answer('Панель не ответила, попробуйте позже.', show_alert=True)
-        return
-
-    hwid = next((d.get('hwid', '') for d in devices
-                 if device_token(d.get('hwid', '')) == callback_data.value), None)
+    hwid = next((device.get('hwid', '')
+                 for _, device in await c.devices.bound(call.from_user.id)
+                 if device_token(device.get('hwid', '')) == callback_data.value), None)
     if hwid is None:
         await call.answer('Это устройство уже отвязано', show_alert=True)
         await list_devices(call, c, user, settings)
@@ -135,6 +134,39 @@ async def unbind(call: types.CallbackQuery, callback_data: Devices, c, user: dic
     await call.answer('Устройство отвязано ✅' if removed else 'Не удалось отвязать',
                       show_alert=not removed)
     await list_devices(call, c, await c.users.get(call.from_user.id), settings)
+
+
+async def ask_unbind_all(call: types.CallbackQuery, c, user: dict, settings):
+    """Подтверждение: отвязка всех устройств — не то, что делают случайно."""
+    count = len(await c.devices.bound(call.from_user.id))
+    if not count:
+        await call.answer('Привязанных устройств нет', show_alert=True)
+        return
+
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(
+        text=f'🧹 Да, отвязать все ({count})',
+        callback_data=Devices(action='unbind_all_ok').pack()))
+    kb.row(types.InlineKeyboardButton(
+        text='⬅️ Отмена', callback_data=Devices(action='list').pack()))
+
+    await render(call, Screen(
+        text=('<b>🧹 Отвязать все устройства</b>\n\n'
+              f'Будет отвязано устройств: <code>{count}</code>.\n\n'
+              '<blockquote>Лимит устройств не изменится — освободятся слоты. '
+              'Каждое устройство привяжется заново при следующем подключении, '
+              'настраивать VPN заново не нужно.</blockquote>'),
+        markup=kb.as_markup(), image=c.media('devices_list')))
+    await call.answer()
+
+
+async def unbind_all(call: types.CallbackQuery, c, user: dict, settings):
+    removed = await c.devices.unbind_all(call.from_user.id)
+    await call.answer(f'Отвязано устройств: {removed} ✅' if removed
+                      else 'Не удалось отвязать', show_alert=not removed)
+    await list_devices(call, c, await c.users.get(call.from_user.id), settings,
+                       note=f'Отвязано устройств: <code>{removed}</code>. '
+                            'Слоты свободны — подключайтесь заново с любых устройств.')
 
 
 def create_router() -> Router:
@@ -147,4 +179,6 @@ def create_router() -> Router:
     router.callback_query.register(remove_devices, Devices.filter(F.action == 'remove'), feature)
     router.callback_query.register(list_devices, Devices.filter(F.action == 'list'))
     router.callback_query.register(unbind, Devices.filter(F.action == 'unbind'))
+    router.callback_query.register(ask_unbind_all, Devices.filter(F.action == 'unbind_all'))
+    router.callback_query.register(unbind_all, Devices.filter(F.action == 'unbind_all_ok'))
     return router

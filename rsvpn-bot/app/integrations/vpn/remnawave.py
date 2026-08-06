@@ -170,11 +170,23 @@ class RemnawaveClient:
         return (data or {}).get('devices') or []
 
     async def delete_device(self, uuid: str, hwid: str) -> bool:
+        """Отвязать устройство. «Уже нет» считается успехом.
+
+        Панель отвечает 404 A204 «HWID device not found», если устройство
+        отвязали параллельно или список на экране устарел. Цель — чтобы
+        устройства не было, и она достигнута: ошибкой это не является.
+        """
         try:
             await self._request('POST', '/api/hwid/devices/delete',
                                 json={'userUuid': uuid, 'hwid': hwid})
             return True
         except VpnPanelError as exc:
+            # A204 — код именно этого случая. По одному слову «not found»
+            # судить нельзя: так же выглядит 404 на неверный путь, и его
+            # молчаливое «успешно» скрыло бы поломку интеграции.
+            if 'A204' in str(exc) or 'HWID device not found' in str(exc):
+                log.debug('устройство %s у %s уже отвязано', hwid, uuid)
+                return True
             log.warning('не удалось отвязать устройство %s у %s: %s', hwid, uuid, exc)
             return False
 

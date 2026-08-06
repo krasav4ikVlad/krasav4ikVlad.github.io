@@ -155,14 +155,53 @@ class DeviceBillingService:
         log.info('%s уменьшил лимит на %s, стало %s', user_id, amount, new_limit)
         return new_limit
 
-    async def unbind(self, user_id: int, hwid: str) -> bool:
-        """Отвязать устройство от обеих подписок — основной и ByPass."""
+    async def subscriptions(self, user_id: int) -> list[str]:
+        """UUID подписок пользователя в панели: основная и ByPass."""
         user = await self.users.get(user_id, {'vpn.uuid': 1, 'vpn.bypass_uuid': 1})
-        removed = False
-        for field in ('vpn.uuid', 'vpn.bypass_uuid'):
-            uuid = self.users.pick(user or {}, field)
-            if uuid and await self.vpn.delete_device(uuid, hwid):
-                removed = True
+        return [uuid for uuid in (self.users.pick(user or {}, 'vpn.uuid'),
+                                  self.users.pick(user or {}, 'vpn.bypass_uuid')) if uuid]
+
+    async def bound(self, user_id: int) -> list[tuple[str, dict]]:
+        """Привязанные устройства парами (uuid подписки, устройство).
+
+        Список живёт только в Remnawave — в документе пользователя устройств
+        нет и не должно быть. Пара нужна, чтобы отвязывать каждое у той
+        подписки, к которой оно на самом деле привязано.
+        """
+        found: list[tuple[str, dict]] = []
+        for uuid in await self.subscriptions(user_id):
+            try:
+                for device in await self.vpn.devices(uuid):
+                    found.append((uuid, device))
+            except VpnPanelError as exc:
+                log.warning('устройства %s не получены: %s', uuid, exc)
+        return found
+
+    async def unbind(self, user_id: int, hwid: str) -> bool:
+        """Отвязать одно устройство у той подписки, где оно числится.
+
+        Раньше удаление отправлялось в обе подписки подряд, и на «чужой»
+        панель отвечала 404 A204 — в логах это выглядело как ошибка при
+        каждой успешной отвязке.
+        """
+        for uuid, device in await self.bound(user_id):
+            if device.get('hwid') == hwid:
+                return await self.vpn.delete_device(uuid, hwid)
+        return False
+
+    async def unbind_all(self, user_id: int) -> int:
+        """Отвязать все устройства сразу. Возвращает, сколько снято.
+
+        Лимит не трогаем: человек освобождает слоты, а не отказывается от
+        оплаченных устройств.
+        """
+        removed = 0
+        for uuid, device in await self.bound(user_id):
+            hwid = device.get('hwid')
+            if hwid and await self.vpn.delete_device(uuid, hwid):
+                removed += 1
+
+        log.info('у %s отвязано устройств: %s', user_id, removed)
         return removed
 
     async def run(self) -> DeviceBillingReport:

@@ -263,6 +263,9 @@ class Container:
         self.renewal = RenewalService(self.users, self.plans, self.settings, self.vpn,
                                       self.topup, self.lifeline, self.expiry,
                                       notifier=self.notifier)
+        # ручное продление идёт тем же путём, что и автоматическое
+        if self.billing is not None:
+            self.billing.renewal = self.renewal
         self.device_billing = DeviceBillingService(self.users, self.settings, self.vpn,
                                                    notifier=self.notifier)
         self.devices = self.device_billing

@@ -8,19 +8,23 @@ from __future__ import annotations
 
 import logging
 
-from app.core.errors import FeatureDisabled, NotEnoughBalance, PlanUnavailable
+from app.core.errors import (FeatureDisabled, NotEnoughBalance, PlanUnavailable,
+                             VpnPanelError)
+from app.core.time import now, parse_dt
 
 log = logging.getLogger(__name__)
 
 
 class BillingService:
-    def __init__(self, users, plans, settings, vpn, topup, notifier=None):
+    def __init__(self, users, plans, settings, vpn, topup, notifier=None, renewal=None):
         self.users = users
         self.plans = plans
         self.settings = settings
         self.vpn = vpn
         self.topup = topup
         self.notifier = notifier
+        # общий сценарий продления: проставляется в Container.attach_bot
+        self.renewal = renewal
 
     async def buy(self, user_id: int, plan_code: str) -> dict:
         if not await self.settings.flag('features.buy_enabled'):
@@ -70,13 +74,46 @@ class BillingService:
         return {'plan': plan, 'price': price, 'subscription': subscription}
 
     async def extend(self, user_id: int) -> dict:
-        """Продление. Тумблер features.extend_enabled выключает его целиком."""
+        """Продление действующей подписки. Новая НЕ создаётся.
+
+        Раньше здесь вызывался buy(), то есть POST /api/users, и панель
+        отвечала «User short UUID already exists»: shortUuid считается от
+        user_id и у второй подписки совпадает с первой. Продление — это
+        сдвиг expireAt у существующей записи, у основной и у ByPass сразу.
+
+        Логика общая с автопродлением (RenewalService.renew): один сценарий —
+        одно место, иначе ручное и автоматическое продление разъедутся.
+        """
         if not await self.settings.flag('features.extend_enabled'):
             raise FeatureDisabled
 
         user = await self.users.get(user_id)
-        plan = await self.plans.by_days(self.users.pick(user or {}, 'vpn.period', 0))
+        vpn = (user or {}).get('vpn') or {}
+
+        # подписки ещё нет — продлевать нечего, это первая покупка
+        if not vpn.get('uuid'):
+            plan = await self.plans.by_days(vpn.get('period') or 0)
+            if not plan:
+                raise PlanUnavailable
+            return await self.buy(user_id, plan['code'])
+
+        plan = await self.plans.by_days(vpn.get('period') or 0)
         if not plan:
             raise PlanUnavailable
 
-        return await self.buy(user_id, plan['code'])
+        if self.renewal is None:
+            raise VpnPanelError('сервис продления не собран')
+
+        expires = parse_dt(vpn.get('expireAt')) or now()
+        status = await self.renewal.renew(user, expires)
+
+        if status == 'no_funds':
+            balance = int(self.users.pick(user or {}, 'info.balance', 0) or 0)
+            raise NotEnoughBalance(need=int(plan['price']), have=balance)
+        if status == 'unknown_plan':
+            raise PlanUnavailable
+        if status != 'renewed':
+            raise VpnPanelError(status)
+
+        return {'plan': plan, 'price': int(plan['price']),
+                'subscription': ((await self.users.get(user_id)) or {}).get('vpn', {})}
