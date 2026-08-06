@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from aiogram import Dispatcher
 
-from app.bot.handlers import (bypass, devices, fallback, gifts, payments, profile,
-                              promo, referrals, start, subscription, support)
+from app.bot.handlers import (bypass, common, devices, fallback, gifts, payments,
+                              payouts, profile, promo, referrals, start, subscription,
+                              support)
 
-SECTIONS = (start, profile, subscription, devices, bypass, payments,
-            referrals, gifts, promo, support, fallback)
+SECTIONS = (common, start, profile, subscription, devices, bypass, payments,
+            referrals, payouts, gifts, promo, support, fallback)
 
 
 def register(dp: Dispatcher) -> None:

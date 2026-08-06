@@ -13,11 +13,16 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 
 from app.core.time import hours_since, now
+from app.domain import payout_methods as methods
 
 log = logging.getLogger(__name__)
+
+# Больше способов человеку не нужно, а бесконечный список ломает клавиатуру
+MAX_METHODS = 5
 
 REJECT_REASONS = {
     'data': 'неправильно указаны реквизиты (номер карты/телефона или банк).',
@@ -34,6 +39,7 @@ class PayoutRequest:
     amount: int = 0
     wait_hours: float = 0.0
     method: str = ''
+    method_details: str = ''  # готовая карточка реквизитов для админ-чата
 
 
 class PayoutService:
@@ -75,14 +81,111 @@ class PayoutService:
         if claimed.modified_count != 1:
             return PayoutRequest(False, 'pending', amount=amount)
 
-        return PayoutRequest(True, amount=amount,
-                             method=stats.get('payout_selected', 'bot_balance'))
+        selected = stats.get('payout_selected') or methods.BOT_BALANCE
+        return PayoutRequest(True, amount=amount, method=selected,
+                             method_details=self.describe(stats, selected))
 
-    async def cancel_request(self, user_id: int) -> None:
-        """Снять метку — например, если заявку не удалось отправить админам."""
+    # ── способы вывода (реквизиты) ──────────────────────────────────────────
+    #
+    # Хранятся в info.ref_stats.method — там же, где их искал старый бот,
+    # поэтому уже добавленные реквизиты видны сразу, без миграции.
+    async def methods(self, user_id: int) -> list[dict]:
+        user = await self.users.get(user_id, {'info.ref_stats.method': 1})
+        saved = self.users.pick(user or {}, 'info.ref_stats.method', []) or []
+        return [m for m in saved if isinstance(m, dict) and m.get('id')]
+
+    async def draft(self, user_id: int) -> dict:
+        user = await self.users.get(user_id, {'info.ref_stats.method_draft': 1})
+        saved = self.users.pick(user or {}, 'info.ref_stats.method_draft')
+        return saved if isinstance(saved, dict) and saved.get('type') else methods.new_draft()
+
+    async def save_draft(self, user_id: int, draft: dict) -> None:
         await self.users.col.update_one(
             {'user_data.user_id': user_id},
-            {'$set': {'info.ref_stats.pending_payout_active': False}})
+            {'$set': {'info.ref_stats.method_draft': draft}})
+
+    async def set_draft_type(self, user_id: int, type_code: str) -> dict:
+        """Смена типа обнуляет поля: у СБП и карты они разные."""
+        if type_code not in methods.BY_CODE:
+            type_code = methods.DEFAULT_TYPE
+        draft = methods.new_draft(type_code)
+        await self.save_draft(user_id, draft)
+        return draft
+
+    async def set_draft_field(self, user_id: int, field: str, value: str) -> dict:
+        draft = await self.draft(user_id)
+        if field in {f.code for f in methods.fields_of(draft.get('type', ''))}:
+            draft.setdefault('data', {})[field] = value.strip()
+            await self.save_draft(user_id, draft)
+        return draft
+
+    async def clear_draft(self, user_id: int) -> dict:
+        current = await self.draft(user_id)
+        draft = methods.new_draft(current.get('type') or methods.DEFAULT_TYPE)
+        await self.save_draft(user_id, draft)
+        return draft
+
+    async def add_method(self, user_id: int) -> tuple[bool, str]:
+        """Сохранить черновик как способ выплаты. (успех, причина отказа)."""
+        draft = await self.draft(user_id)
+        if not methods.is_ready(draft):
+            missing = ', '.join(f.title for f in methods.missing_fields(draft))
+            return False, f'Не заполнено: {missing}'
+
+        if len(await self.methods(user_id)) >= MAX_METHODS:
+            return False, f'Больше {MAX_METHODS} способов не сохранить — удалите лишний.'
+
+        method = {'id': uuid.uuid4().hex[:12], 'type': draft['type'],
+                  'data': dict(draft.get('data') or {}), 'created_at': now()}
+        await self.users.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$push': {'info.ref_stats.method': method},
+             '$set': {'info.ref_stats.method_draft': methods.new_draft(draft['type']),
+                      'info.ref_stats.payout_selected': method['id']}})
+        return True, ''
+
+    async def delete_method(self, user_id: int, method_id: str) -> bool:
+        remaining = [m for m in await self.methods(user_id) if m.get('id') != method_id]
+        result = await self.users.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$set': {'info.ref_stats.method': remaining}})
+
+        # выбран был удалённый способ — иначе заявка уехала бы «в никуда»
+        user = await self.users.get(user_id, {'info.ref_stats.payout_selected': 1})
+        if self.users.pick(user or {}, 'info.ref_stats.payout_selected') == method_id:
+            await self.select_method(user_id, methods.BOT_BALANCE)
+        return result.modified_count == 1
+
+    async def select_method(self, user_id: int, method_id: str) -> str:
+        """Выбрать способ для следующей заявки. Неизвестный — на баланс бота."""
+        if method_id != methods.BOT_BALANCE:
+            known = {m['id'] for m in await self.methods(user_id)}
+            if method_id not in known:
+                method_id = methods.BOT_BALANCE
+
+        await self.users.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$set': {'info.ref_stats.payout_selected': method_id}})
+        return method_id
+
+    def describe(self, stats: dict, selected: str, mask: bool = False) -> str:
+        """Карточка выбранного способа. По умолчанию без маски — для админа."""
+        if not selected or selected == methods.BOT_BALANCE:
+            return methods.BOT_BALANCE_TITLE
+        found = methods.find(stats.get('method'), selected)
+        return methods.format_details(found, mask=mask) if found else methods.BOT_BALANCE_TITLE
+
+    async def cancel_request(self, user_id: int) -> None:
+        """Полный откат заявки — например, если она не дошла до админов.
+
+        Вместе с меткой снимается и отметка времени: она ставится при захвате
+        и запускает суточную паузу. Оставить её здесь значит заблокировать
+        человека на сутки за заявку, которой не было.
+        """
+        await self.users.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$set': {'info.ref_stats.pending_payout_active': False},
+             '$unset': {'info.ref_stats.last_payout_request_at': ''}})
 
     # ── решения администратора ──────────────────────────────────────────────
     async def to_balance(self, user_id: int, admin_id: int) -> int:

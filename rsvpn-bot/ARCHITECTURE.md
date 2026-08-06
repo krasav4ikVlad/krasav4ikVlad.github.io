@@ -29,6 +29,7 @@ rsvpn-bot/
 │   │
 │   ├── domain/                  # чистая логика: ни БД, ни aiogram, ни await
 │   │   ├── pricing.py           # вся денежная арифметика
+│   │   ├── payout_methods.py    # типы реквизитов таблицей + маскирование карты
 │   │   └── segments.py          # границы сегментов пользователей в одной таблице
 │   │
 │   ├── repositories/            # единственные, кто знает структуру документов
@@ -41,10 +42,13 @@ rsvpn-bot/
 │   │   ├── billing.py           # покупка, продление
 │   │   ├── topup.py             # единственный путь зачисления денег
 │   │   ├── devices.py           # доп. устройства (перенести из utils)
+│   │   ├── notifier.py          # единственный отправитель в админ-чат
+│   │   ├── payouts.py           # реквизиты + заявки на вывод
 │   │   ├── promo.py, gifts.py, referrals.py, analytics.py
 │   │
 │   ├── integrations/            # всё, что ходит наружу
 │   │   ├── vpn/remnawave.py     # единственное место с HTTP к панели
+│   │   ├── vpn/links.py         # шифрованные ссылки Happ / INCY
 │   │   └── payments/
 │   │       ├── base.py          # контракт: create_invoice / verify / parse
 │   │       ├── registry.py      # реестр + тумблеры провайдеров
@@ -65,7 +69,8 @@ rsvpn-bot/
 │   │   ├── screens/             # текст + клавиатура + картинка, одна отрисовка
 │   │   └── handlers/            # по разделу на файл, тонкие
 │   │       ├── start.py profile.py subscription.py devices.py bypass.py
-│   │       ├── payments.py referrals.py gifts.py promo.py support.py
+│   │       ├── payments.py referrals.py payouts.py gifts.py promo.py support.py
+│   │       ├── common.py        # кнопка «удалить сообщение» и прочая мелочь
 │   │       ├── fallback.py      # всегда последним
 │   │       └── __init__.py      # карта роутеров и порядок подключения
 │   │
@@ -73,6 +78,7 @@ rsvpn-bot/
 │   │   ├── panel.py             # 18 хендлеров на всё; фабрика create_router()
 │   │   ├── entities.py          # универсальный CRUD: тарифы, ответы, промо, тексты
 │   │   ├── stats.py             # статистика (одна реализация)
+│   │   ├── payouts.py           # решения по заявкам на вывод
 │   │   └── broadcast.py         # ручные рассылки поверх того же движка
 │   │
 │   ├── campaigns/               # автоворонки
@@ -92,7 +98,7 @@ rsvpn-bot/
 │   ├── m0001_indexes.py
 │   └── m0002_transactions_format.py
 ├── scripts/seed_demo.py
-├── tests/                       # 27 тестов, идут без Mongo и без Telegram
+├── tests/                       # 261 тест, идут без Mongo и без Telegram
 │   ├── conftest.py              # заглушки Mongo и Bot API
 │   ├── test_pricing.py test_settings.py test_users_repo.py
 │   ├── test_campaigns.py test_texts.py test_admin_panel.py
@@ -145,7 +151,7 @@ handlers → services → repositories → Mongo
 
 ## Что уже работает в скелете
 
-`pytest -q` → **164 passed**. Тесты идут на заглушках Mongo и Telegram
+`pytest -q` → **261 passed**. Тесты идут на заглушках Mongo и Telegram
 (`tests/conftest.py`), включая сценарии, которые иначе проверяются только на
 живых пользователях:
 

@@ -17,6 +17,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.bot.callbacks import Menu, Payment
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
+from app.bot.screens.pricing import price_line_for
+from app.bot.screens.profile import profile_caption
 from app.core.errors import PaymentError
 
 log = logging.getLogger(__name__)
@@ -28,7 +30,41 @@ class TopUp(StatesGroup):
     amount = State()
 
 
-async def choose_provider(call: types.CallbackQuery, c, settings, state: FSMContext):
+async def bonus_line(c, user: dict, settings) -> str:
+    """«При пополнении сегодня +30% сверху».
+
+    Бонус начисляется в TopupService и без этой строки остаётся невидимым:
+    деньги мы отдаём, а на решение пополнить это никак не влияет.
+    Условие здесь то же самое, что и при начислении, — иначе экран пообещает
+    то, чего человек не получит.
+    """
+    from app.services.topup import AB_BONUS_GROUPS
+
+    growth = user.get('growth') or {}
+    if growth.get('ab_group') not in AB_BONUS_GROUPS:
+        return ''
+    if not str(growth.get('segment') or '').startswith('new_trial'):
+        return ''
+
+    percent = round(await settings.rate('bonus.ab_new_trial_rate') * 100)
+    if percent <= 0:
+        return ''
+    return (f'\n<blockquote>🎁 При пополнении сегодня вы получите '
+            f'<b>+{percent}% сверху</b> — предложение для новых пользователей.</blockquote>')
+
+
+async def topup_caption(c, user: dict, settings, title: str = '💰 Пополнение баланса',
+                        tail: str = '') -> str:
+    """Шапка экранов пополнения: кто, сколько на балансе, сколько стоит подписка."""
+    price = (await price_line_for(c, user) if c.users.pick(user, 'vpn.shortUuid')
+             else '<code>Подписка не оформлена</code>')
+    return (profile_caption(user, title)
+            + f'<b>💸 Плата за подписку:</b> {price}\n\n'
+            + tail + await bonus_line(c, user, settings))
+
+
+async def choose_provider(call: types.CallbackQuery, c, user: dict, settings,
+                          state: FSMContext):
     await state.clear()
     kb = InlineKeyboardBuilder()
 
@@ -38,13 +74,14 @@ async def choose_provider(call: types.CallbackQuery, c, settings, state: FSMCont
 
     await footer(kb, settings, back='profile')
     await render(call, Screen(
-        text='<b>💰 Пополнение баланса</b>\n\nВыберите способ оплаты:',
+        text=await topup_caption(c, user, settings,
+                                 tail='<blockquote>💰 Выберите способ оплаты.</blockquote>'),
         markup=kb.as_markup(), image=c.media('payment')))
     await call.answer()
 
 
-async def choose_amount(call: types.CallbackQuery, callback_data: Payment, c, settings,
-                        state: FSMContext):
+async def choose_amount(call: types.CallbackQuery, callback_data: Payment, c, user: dict,
+                        settings, state: FSMContext):
     provider = c.payments.get(callback_data.provider)
     if not provider:
         await call.answer('Способ недоступен', show_alert=True)
@@ -67,8 +104,10 @@ async def choose_amount(call: types.CallbackQuery, callback_data: Payment, c, se
     await state.update_data(provider=provider.code, minimum=minimum)
 
     await render(call, Screen(
-        text=(f'<b>{provider.title}</b>\n\nВыберите сумму кнопкой или отправьте свою '
-              f'сообщением.\nМинимум: <b>{minimum}₽</b>'),
+        text=await topup_caption(
+            c, user, settings, title=f'💰 {provider.title}',
+            tail=(f'<blockquote>💰 Выберите сумму кнопкой или отправьте свою сообщением.\n'
+                  f'Минимальная сумма пополнения — {minimum}₽.</blockquote>')),
         markup=kb.as_markup(), image=c.media('payment')))
     await call.answer()
 

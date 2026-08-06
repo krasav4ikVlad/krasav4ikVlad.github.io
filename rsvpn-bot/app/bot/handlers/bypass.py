@@ -14,6 +14,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Menu
 from app.bot.filters.feature import Feature
+from app.bot.handlers.common import close_button
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import profile_caption
@@ -136,6 +137,8 @@ async def send_link(call: types.CallbackQuery, callback_data: Menu, c, user: dic
     else:
         await c.users.set_vpn(call.from_user.id, {'preferred_client': app})
 
+    kb = InlineKeyboardBuilder()
+    kb.row(close_button())
     await call.message.answer(
         f'🔗 <b>Ваша ссылка для подключения ByPass ({app_name}):</b>\n\n'
         f'<code>{link}</code>\n\n'
@@ -143,7 +146,8 @@ async def send_link(call: types.CallbackQuery, callback_data: Menu, c, user: dic
         f'1️⃣ Откройте приложение <b>{app_name}</b>\n'
         f'2️⃣ Нажмите <b>+</b> или <b>Добавить подписку</b>\n'
         f'3️⃣ Вставьте скопированную ссылку\n'
-        f'4️⃣ Нажмите <b>Подключить</b></blockquote>')
+        f'4️⃣ Нажмите <b>Подключить</b></blockquote>',
+        reply_markup=kb.as_markup())
     await call.answer()
 
 

@@ -82,8 +82,12 @@ class FakeCryptoHttp:
 
 @pytest.fixture
 async def env(container):
+    from app.admin import panel as admin_panel
     from app.bot.handlers import register
+    from app.integrations.payments.heleket import HeleketProvider
+    from app.integrations.payments.registry import PaymentRegistry
     from app.integrations.vpn.links import LinkEncryptor
+    from app.services.notifier import Notifier
     from app.services.billing import BillingService
     from app.services.devices import DeviceBillingService
     from app.services.gifts import GiftService
@@ -98,15 +102,21 @@ async def env(container):
     container.gifts = GiftService(container.users, container.db['gifts'], container.plans,
                                   container.settings, container.vpn)
     container.links = LinkEncryptor(FakeCryptoHttp())
+    container.payments = PaymentRegistry(
+        [HeleketProvider('key', 'merchant', FakeCryptoHttp())], container.settings)
 
     session = RecordingSession()
     bot = Bot(token='1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', session=session)
+    container.notifier = Notifier(bot, container.settings, container.users)
 
     dp = Dispatcher()
     for middleware in (ErrorsMiddleware(), DependenciesMiddleware(container),
                        UserMiddleware(container.users)):
         dp.message.outer_middleware(middleware)
         dp.callback_query.outer_middleware(middleware)
+    # админом делаем самого тестового пользователя: так проверяются и кнопки
+    # под заявкой на вывод, и фильтр «только админ» на реальном роутере
+    dp.include_router(admin_panel.create_router((TG_USER.id,)))
     register(dp)
 
     yield dp, bot, session, container
@@ -342,3 +352,220 @@ async def test_bypass_unknown_package_is_not_charged(env):
     await dp.feed_update(bot, callback(Menu(screen='bypass_buy', arg='7').pack()))
 
     assert (await c.users.get(5))['info']['balance'] == balance_before
+
+
+# ── вывод реферального баланса ──────────────────────────────────────────────
+async def add_sbp_method(dp, bot, uid=5):
+    """Проходит экраны добавления реквизитов так же, как это делает человек."""
+    from app.bot.callbacks import Payout
+
+    await dp.feed_update(bot, callback(Payout(action='add').pack()))
+    await dp.feed_update(bot, callback(Payout(action='type', value='sbp').pack()))
+    for field, value in (('fio', 'Иванов Иван Иванович'),
+                         ('phone', '+79001234567'),
+                         ('bank', 'Сбербанк')):
+        await dp.feed_update(bot, callback(Payout(action='field', value=field).pack()))
+        await dp.feed_update(bot, message(value))
+    await dp.feed_update(bot, callback(Payout(action='save').pack()))
+
+
+async def test_payout_method_is_added_field_by_field(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    await add_sbp_method(dp, bot)
+
+    methods = await c.payouts.methods(5)
+    assert len(methods) == 1
+    assert methods[0]['data'] == {'fio': 'Иванов Иван Иванович',
+                                  'phone': '+79001234567', 'bank': 'Сбербанк'}
+
+
+async def test_payout_screen_hides_the_full_card_number(env):
+    """Экран может попасть на скриншот — полный номер там не нужен."""
+    from app.bot.callbacks import Payout
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    await dp.feed_update(bot, callback(Payout(action='add').pack()))
+    await dp.feed_update(bot, callback(Payout(action='type', value='mir').pack()))
+    for field, value in (('fio', 'Иванов Иван'), ('card', '2200123412341234')):
+        await dp.feed_update(bot, callback(Payout(action='field', value=field).pack()))
+        await dp.feed_update(bot, message(value))
+    await dp.feed_update(bot, callback(Payout(action='save').pack()))
+
+    method_id = (await c.payouts.methods(5))[0]['id']
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Payout(action='view', value=method_id).pack()))
+
+    assert '220012******1234' in session.last_text
+    assert '2200123412341234' not in session.last_text
+
+
+async def test_payout_request_reaches_admins_with_the_requisites(env):
+    """Раньше заявка не уходила никуда: notifier в контейнере был None."""
+    from app.bot.callbacks import Payout
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'info.ref_stats.withdrawable': 900}})
+    await add_sbp_method(dp, bot)
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Payout(action='order').pack()))
+
+    card = next((text for _, text in session.calls if 'Заявка на вывод' in text), '')
+    assert card, 'заявка не ушла в админ-чат'
+    assert '900₽' in card
+    assert '+79001234567' in card and 'Сбербанк' in card
+    assert (await c.users.get(5))['info']['ref_stats']['pending_payout_active'] is True
+
+
+async def test_payout_request_below_minimum_is_not_claimed(env):
+    from app.bot.callbacks import Payout
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'info.ref_stats.withdrawable': 100}})
+
+    await dp.feed_update(bot, callback(Payout(action='order').pack()))
+
+    stats = (await c.users.get(5))['info']['ref_stats']
+    assert not stats.get('pending_payout_active')
+
+
+async def test_payout_to_balance_moves_the_money_and_closes_the_request(env):
+    """Кнопка админа под заявкой: сервис это умел, но вызвать было неоткуда."""
+    from app.bot.callbacks import Payout, PayoutAdmin
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'info.ref_stats.withdrawable': 900}})
+    await dp.feed_update(bot, callback(Payout(action='order').pack()))
+
+    await dp.feed_update(bot, callback(
+        PayoutAdmin(action='balance', user_id=5).pack()))
+
+    user = await c.users.get(5)
+    assert user['info']['ref_stats']['withdrawable'] == 0
+    assert user['info']['balance'] == 918                 # 18 стартовых + 900
+    assert user['info']['ref_stats']['pending_payout_active'] is False
+
+
+async def test_payout_rejection_keeps_the_money(env):
+    from app.bot.callbacks import Payout, PayoutAdmin
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'info.ref_stats.withdrawable': 900}})
+    await dp.feed_update(bot, callback(Payout(action='order').pack()))
+
+    await dp.feed_update(bot, callback(
+        PayoutAdmin(action='reject', user_id=5, reason='data').pack()))
+
+    stats = (await c.users.get(5))['info']['ref_stats']
+    assert stats['withdrawable'] == 900                   # отказ — не изъятие
+    assert stats['pending_payout_active'] is False
+
+
+# ── экран пополнения ────────────────────────────────────────────────────────
+async def test_topup_screen_shows_the_bonus_that_is_actually_credited(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'growth.ab_group': 'bonus_30'}})
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='payments').pack()))
+
+    assert '+30% сверху' in session.last_text
+    assert 'Плата за подписку' in session.last_text
+
+
+async def test_topup_screen_promises_nothing_without_the_bonus(env):
+    """Обещать бонус тому, кому его не начислят, — хуже, чем не обещать."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'growth.ab_group': 'control'}})
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='payments').pack()))
+
+    assert 'сверху' not in session.last_text
+
+
+async def test_topup_bonus_is_not_promised_after_it_was_used(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'growth.ab_group': 'used'}})
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='payments').pack()))
+
+    assert 'сверху' not in session.last_text
+
+
+async def test_close_button_deletes_the_message(env):
+    """Сообщения со ссылками копятся в чате — их должно быть чем убрать."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    session.calls.clear()
+
+    await dp.feed_update(bot, callback(Menu(screen='close').pack()))
+
+    assert any(name == 'DeleteMessage' for name, _ in session.calls)
+
+
+# ── рассылка из админки ─────────────────────────────────────────────────────
+async def test_broadcast_asks_audience_then_text_then_confirms(env):
+    from app.bot.callbacks import Admin as Adm
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    await dp.feed_update(bot, callback(Adm(act='broadcast').pack()))
+    assert 'Кому отправляем' in session.last_text
+
+    await dp.feed_update(bot, callback(Adm(act='bcseg', a='all').pack()))
+    assert 'Отправьте текст' in session.last_text
+
+    await dp.feed_update(bot, message('Привет, это рассылка'))
+    assert 'Так увидят получатели' in session.last_text
+
+
+async def test_broadcast_refuses_an_empty_message(env):
+    from app.bot.callbacks import Admin as Adm
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await dp.feed_update(bot, callback(Adm(act='broadcast').pack()))
+    await dp.feed_update(bot, callback(Adm(act='bcseg', a='all').pack()))
+
+    await dp.feed_update(bot, message('   '))
+    assert 'Пустое сообщение' in session.last_text
+
+
+async def test_broadcast_reaches_only_the_chosen_segment(env):
+    from app.admin.broadcast import _query, _run
+
+    dp, bot, session, c = env
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    for user_id, segment in ((11, 'expired_3d'), (12, 'expired_7d'), (13, 'active_paid')):
+        await c.users.create({'user_data': {'user_id': user_id},
+                              'growth': {'segment': segment}})
+
+    session.calls.clear()
+    msg = Message(message_id=9, date=datetime.now(), chat=CHAT, text='отчёт',
+                  from_user=TG_USER).as_(bot)
+    await _run(c, bot, msg, _query('expired'), 'Возвращайтесь!')
+
+    delivered = [text for name, text in session.calls if text == 'Возвращайтесь!']
+    assert len(delivered) == 2                       # 11 и 12, но не 13
+    assert 'Доставлено: <code>2</code>' in session.last_text

@@ -13,6 +13,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from app.admin import broadcast
+from app.admin import payouts as admin_payouts
 from app.admin.entities import EntityAdmin
 from app.admin.stats import build_stats_text
 from app.bot.callbacks import Admin as Adm
@@ -396,4 +398,8 @@ def create_router(admin_ids) -> Router:
     router.message.register(entity_new_input, AdminEdit.entity_new_id)
     router.callback_query.register(entity_delete_ask, Adm.filter(F.act == 'edel'))
     router.callback_query.register(entity_delete, Adm.filter(F.act == 'edelok'))
+
+    # разделы в своих файлах: панель не должна расти на каждую новую функцию
+    broadcast.register(router)
+    admin_payouts.register(router)
     return router

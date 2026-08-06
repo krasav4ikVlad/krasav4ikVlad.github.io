@@ -35,6 +35,20 @@ class Promo(CallbackData, prefix='promo'):
     action: str
 
 
+class Payout(CallbackData, prefix='po'):
+    """Способы вывода: список, черновик, выбор, заявка."""
+    action: str          # methods | add | type | field | clear | save | view | delete
+                         # | menu | pick | order
+    value: str = ''
+
+
+class PayoutAdmin(CallbackData, prefix='poa'):
+    """Решение по заявке — кнопки под карточкой в админ-чате."""
+    action: str          # balance | paid | reject | reject_ask
+    user_id: int
+    reason: str = ''
+
+
 class Admin(CallbackData, prefix='adm'):
     act: str
     a: str = ''

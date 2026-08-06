@@ -216,14 +216,24 @@ class Container:
         from app.campaigns.sender import Sender
         from app.services.expiry import ExpiryNotifier
         from app.services.lifeline import LifelineService
+        from app.services.notifier import Notifier
 
         from app.services.devices import DeviceBillingService
         from app.services.renewal import RenewalService
+
+        # Notifier раздаётся сервисам явно: без него все админ-уведомления
+        # (регистрации, пополнения, заявки на вывод) молча никуда не уходят
+        self.notifier = Notifier(bot, self.settings, self.users)
+        for service in (self.topup, self.billing, self.gifts, self.payouts):
+            if service is not None:
+                service.notifier = self.notifier
 
         self.lifeline = LifelineService(self.users, self.settings, self.vpn)
         self.expiry = ExpiryNotifier(self.users, self.settings, Sender(), bot,
                                      campaign_keyboards(), self.lifeline)
         self.renewal = RenewalService(self.users, self.plans, self.settings, self.vpn,
-                                      self.topup, self.lifeline, self.expiry)
-        self.device_billing = DeviceBillingService(self.users, self.settings, self.vpn)
+                                      self.topup, self.lifeline, self.expiry,
+                                      notifier=self.notifier)
+        self.device_billing = DeviceBillingService(self.users, self.settings, self.vpn,
+                                                   notifier=self.notifier)
         self.devices = self.device_billing

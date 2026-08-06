@@ -155,6 +155,9 @@ SCHEMA: tuple[Group, ...] = (
         Setting('payout.min_card', 'Минимум на карту', 'int', 1000, unit='₽', min=0),
         Setting('payout.min_sbp', 'Минимум по СБП', 'int', 500, unit='₽', min=0),
         Setting('payout.min_crypto_usd', 'Минимум в USDT', 'int', 50, unit='$', min=0),
+        Setting('payout.note', 'Подпись на экране вывода', 'text',
+                'Выберите способ вывода и нажмите «Заказать вывод». '
+                'Минимум по СБП: 500₽, по картам МИР: 1000₽, в USDT: 50$.'),
     )),
 
     Group('lifeline', '🪢 Lifeline (сервер после истечения)', (
