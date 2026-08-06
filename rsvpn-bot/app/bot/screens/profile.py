@@ -78,8 +78,18 @@ def devices_block(user: dict, price: str, connect_base: str) -> str:
 
 
 def gifts_block(gifts: dict, labels: dict[str, str]) -> str:
-    """«1 День: 22 шт.» — человеческие названия вместо кодов тарифов."""
+    """«1 месяц: 22 шт.» — человеческие названия вместо кодов тарифов.
+
+    Нулевые остатки не показываются: ключ в документе остаётся навсегда после
+    того, как подарок потратили, и строка «1 месяц: 0 шт.» выглядела как
+    доступный подарок, которого нет.
+    """
     lines = []
     for code, count in (gifts or {}).items():
-        lines.append(f'{labels.get(code, code)}: {int(count or 0)} шт.')
+        try:
+            amount = int(count or 0)
+        except (TypeError, ValueError):
+            continue
+        if amount > 0:
+            lines.append(f'{labels.get(code, code)}: {amount} шт.')
     return '\n'.join(lines) if lines else 'Пока нет'

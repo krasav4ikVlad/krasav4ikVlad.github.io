@@ -159,3 +159,29 @@ async def test_legacy_gift_code_still_works(db, user_factory, gifts):
     result = await service.activate(gift_id, '3years', 1, 2)
 
     assert result.ok and result.days == 1095
+
+
+# ── витрина остатков ────────────────────────────────────────────────────────
+def test_spent_gifts_are_not_shown_as_available():
+    """Ключ остаётся в документе после траты подарка — но «0 шт.» на экране
+    читается как доступный подарок, которого нет."""
+    from app.bot.screens.profile import gifts_block
+
+    block = gifts_block({'1day': 22, '1month': 0},
+                        {'1day': 'Ежедневная', '1month': '1 месяц'})
+
+    assert block == 'Ежедневная: 22 шт.'
+
+
+def test_all_zero_gifts_read_as_empty():
+    from app.bot.screens.profile import gifts_block
+
+    assert gifts_block({'1month': 0, '3month': 0}, {}) == 'Пока нет'
+    assert gifts_block({}, {}) == 'Пока нет'
+
+
+def test_broken_counter_does_not_break_the_screen():
+    from app.bot.screens.profile import gifts_block
+
+    assert gifts_block({'1day': None, '1month': 'три', '3month': 2},
+                       {'3month': '3 месяца'}) == '3 месяца: 2 шт.'
