@@ -9,6 +9,7 @@ render() умеет и редактировать сообщение, и отп�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from aiogram import types
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -18,20 +19,42 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 class Screen:
     text: str
     markup: types.InlineKeyboardMarkup | None = None
-    image: str | None = None
+    # Photo из app/content/media.py: знает и путь к файлу, и его file_id
+    image: Any = None
+
+
+async def stop_spinner(event: types.CallbackQuery) -> None:
+    """Погасить «часики» на кнопке до того, как соберётся экран.
+
+    Telegram крутит индикатор, пока не придёт answerCallbackQuery, — то есть
+    ровно всё время, что бот готовит и отправляет сообщение. Ответить сразу
+    стоит один короткий запрос, зато нажатие ощущается мгновенным.
+
+    Ошибки глушим: обработчик мог ответить сам (например, всплывающим
+    текстом), и повторный ответ Telegram отклоняет — это не сбой сценария.
+    """
+    try:
+        await event.answer()
+    except Exception:
+        pass
 
 
 async def render(event: types.Message | types.CallbackQuery, screen: Screen):
     """Показать экран: правкой текущего сообщения (callback) или новым (message)."""
+    photo = screen.image
+
     if isinstance(event, types.CallbackQuery):
+        await stop_spinner(event)
         message = event.message
-        if screen.image:
+        if photo:
             try:
-                return await message.bot.edit_message_media(
+                result = await message.bot.edit_message_media(
                     chat_id=message.chat.id, message_id=message.message_id,
-                    media=types.InputMediaPhoto(
-                        media=types.FSInputFile(screen.image), caption=screen.text),
+                    media=types.InputMediaPhoto(media=photo.as_input(),
+                                                caption=screen.text),
                     reply_markup=screen.markup)
+                await photo.remember(result)
+                return result
             except Exception:
                 pass
         try:
@@ -43,10 +66,12 @@ async def render(event: types.Message | types.CallbackQuery, screen: Screen):
             return await message.answer(screen.text, reply_markup=screen.markup,
                                         disable_web_page_preview=True)
 
-    if screen.image:
+    if photo:
         try:
-            return await event.answer_photo(types.FSInputFile(screen.image),
-                                            caption=screen.text, reply_markup=screen.markup)
+            result = await event.answer_photo(photo.as_input(), caption=screen.text,
+                                              reply_markup=screen.markup)
+            await photo.remember(result)
+            return result
         except Exception:
             pass
     return await event.answer(screen.text, reply_markup=screen.markup,

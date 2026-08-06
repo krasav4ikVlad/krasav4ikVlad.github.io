@@ -155,7 +155,7 @@ async def main() -> int:
     container = Container(config=config, db=db)
     found, missing = [], []
     for key in SCREEN_IMAGES:
-        path = container.media(key)
+        path = container.media_path(key)
         if path:
             found.append(f'{key} → {os.path.basename(path)}')
         else:

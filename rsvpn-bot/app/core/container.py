@@ -32,6 +32,7 @@ class Container:
     plans: PlansRepository = field(init=False)
     payments_repo: PaymentsRepository = field(init=False)
     settings: SettingsService = field(init=False)
+    media_cache: Any = field(init=False)
 
     # заполняются в build(): требуют http-клиента и бота
     vpn: Any = None
@@ -68,6 +69,9 @@ class Container:
         self.settings = SettingsService(
             self.db[names.BOT_SETTINGS], self.db[names.SETTINGS_AUDIT])
 
+        from app.content.media import MediaCache
+        self.media_cache = MediaCache(self.db[names.MEDIA_CACHE])
+
         # сервисы без внешних зависимостей доступны сразу, в том числе в тестах
         self.promo = PromoService(self.users, self.collection(names.PROMO_CODES),
                                   self.collection(names.PROMO_USAGES), self.settings)
@@ -103,7 +107,7 @@ class Container:
         'error': ('new_error',),
     }
 
-    def media(self, key: str) -> str | None:
+    def media_path(self, key: str) -> str | None:
         """Путь к картинке экрана. Нет файла — экран отправится текстом.
 
         Ищутся: media/<ключ>.<png|jpg|jpeg|webp>, затем имена из старого
@@ -116,6 +120,20 @@ class Container:
                 if path.exists():
                     return str(path)
         return None
+
+    def media(self, key: str):
+        """Картинка экрана для Screen(image=...).
+
+        Возвращает Photo, а не путь: он умеет отдать уже загруженный в Telegram
+        file_id вместо файла. Без этого бот заливал PNG заново на каждое
+        нажатие кнопки — отсюда и пауза перед обновлением сообщения.
+        """
+        from app.content.media import Photo, file_token
+
+        path = self.media_path(key)
+        if not path:
+            return None
+        return Photo(path=path, token=file_token(path), cache=self.media_cache)
 
     # ── контент ─────────────────────────────────────────────────────────────
     async def notify(self, bot, topic_key: str, text: str) -> None:
@@ -153,6 +171,7 @@ class Container:
             await self.gifts.ensure_indexes()
         await self.plans.seed()
         await self.reload_texts()
+        await self.media_cache.load()
         if self.payments is not None:
             await self.payments.configure()
 
@@ -209,6 +228,16 @@ class Container:
         container.promo.vpn = container.vpn
         container.entities = build_entities(container)
         return container
+
+    # Сервисы, без которых бот работает только наполовину: без них падают
+    # хендлеры устройств, молчат админ-уведомления и вхолостую крутится
+    # планировщик. Собраны списком, чтобы забытый attach_bot был виден при
+    # старте, а не всплывал ошибкой в чате через неделю.
+    REQUIRED_AFTER_ATTACH = ('devices', 'device_billing', 'renewal',
+                             'expiry', 'lifeline', 'notifier')
+
+    def missing_services(self) -> list[str]:
+        return [name for name in self.REQUIRED_AFTER_ATTACH if getattr(self, name) is None]
 
     def attach_bot(self, bot) -> None:
         """Сервисы, которым нужен Bot: вебхуки шлют сообщения пользователям."""

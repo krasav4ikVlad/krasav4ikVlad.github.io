@@ -71,13 +71,13 @@ def test_media_accepts_any_common_extension(container, tmp_path):
 
     container.config = dataclasses.replace(container.config, media_dir=str(tmp_path))
 
-    assert container.media('profile') is None
+    assert container.media_path('profile') is None
 
     (tmp_path / 'profile.jpg').write_bytes(b'x')
-    assert container.media('profile').endswith('profile.jpg')
+    assert container.media_path('profile').endswith('profile.jpg')
 
     (tmp_path / 'profile.png').write_bytes(b'x')
-    assert container.media('profile').endswith('profile.png')   # png приоритетнее
+    assert container.media_path('profile').endswith('profile.png')   # png приоритетнее
 
 
 def test_media_accepts_old_project_filenames(container, tmp_path):
@@ -89,9 +89,9 @@ def test_media_accepts_old_project_filenames(container, tmp_path):
     (tmp_path / 'new_type_sub.png').write_bytes(b'x')
     (tmp_path / 'new_your_bypass_sub.png').write_bytes(b'x')
 
-    assert container.media('subscription').endswith('new_type_sub.png')
-    assert container.media('bypass').endswith('new_your_bypass_sub.png')
-    assert container.media('profile') is None
+    assert container.media_path('subscription').endswith('new_type_sub.png')
+    assert container.media_path('bypass').endswith('new_your_bypass_sub.png')
+    assert container.media_path('profile') is None
 
 
 def test_new_name_wins_over_the_old_one(container, tmp_path):
@@ -101,4 +101,4 @@ def test_new_name_wins_over_the_old_one(container, tmp_path):
     (tmp_path / 'new_profile.png').write_bytes(b'x')
     (tmp_path / 'profile.png').write_bytes(b'x')
 
-    assert container.media('profile').endswith('profile.png')
+    assert container.media_path('profile').endswith('profile.png')

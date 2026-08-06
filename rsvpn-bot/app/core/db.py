@@ -25,6 +25,8 @@ FINGERPRINTS = 'fingerprint_assignments'
 BOT_SETTINGS = 'bot_settings'
 SETTINGS_AUDIT = 'bot_settings_audit'
 CONTENT_OVERRIDES = 'content_overrides'
+# file_id картинок, уже загруженных в Telegram: см. app/content/media.py
+MEDIA_CACHE = 'media_cache'
 CAMPAIGN_RUNS = 'campaign_runs'
 MIGRATIONS = 'migrations'
 

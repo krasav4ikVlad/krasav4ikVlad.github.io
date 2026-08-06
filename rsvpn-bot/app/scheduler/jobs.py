@@ -27,18 +27,27 @@ async def charge_subscriptions(container) -> None:
     вебхуками (app/services/expiry.py). Здесь только деньги — и эта же задача
     страхует, если вебхук не дошёл.
     """
+    # Пропуск логируем громко: раньше незаполненный сервис означал, что
+    # автопродление и плата за устройства молча не работают вообще, и по
+    # логам это выглядело как «задача отработала».
     if container.renewal:
         await container.renewal.run()
+    else:
+        log.warning('автопродление пропущено: сервис renewal не собран')
+
     if container.device_billing:
         report = await container.device_billing.run()
         if report.charged or report.deactivated:
             log.info('устройства: списано %s пакетов на %s₽, отключено %s',
                      report.charged, report.amount, report.deactivated)
+    else:
+        log.warning('плата за устройства пропущена: сервис не собран')
 
 
 async def reconcile_lifeline(container) -> None:
     """Вернуть тех, кто продлился, но остался на запасном сервере."""
     if not container.lifeline:
+        log.warning('lifeline не собран — возврат подписок пропущен')
         return
     restored = await container.lifeline.reconcile()
     if restored:

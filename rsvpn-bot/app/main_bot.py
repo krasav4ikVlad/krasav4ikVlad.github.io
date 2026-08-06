@@ -49,6 +49,14 @@ async def main() -> None:
     await container.startup()
 
     bot = create_bot(container)
+    # Без этого devices, renewal, expiry, lifeline и notifier остаются None:
+    # менеджер устройств падает на нажатии, админ-уведомления не уходят,
+    # а планировщик тихо ничего не делает — его задачи проверяют сервис на None.
+    container.attach_bot(bot)
+    if container.missing_services():
+        raise RuntimeError('не собраны сервисы: '
+                           + ', '.join(container.missing_services()))
+
     dp = create_dispatcher(container)
     print_startup_banner(config)
 
