@@ -185,3 +185,36 @@ def test_broken_counter_does_not_break_the_screen():
 
     assert gifts_block({'1day': None, '1month': 'три', '3month': 2},
                        {'3month': '3 месяца'}) == '3 месяца: 2 шт.'
+
+
+# ── цена подарка ────────────────────────────────────────────────────────────
+async def test_gift_costs_exactly_the_plan_price(db, user_factory, gifts):
+    """Подарок — это тот же тариф. Отдельной цены у него нет и быть не должно:
+    настройка price.gift_3years дублировала бы цену из «Тарифов»."""
+    service = gifts if not isinstance(gifts, tuple) else gifts[0]
+    await user_factory(**{'info.balance': 5000})          # даритель
+    await user_factory()                                  # получатель
+
+    plan = await service.plans.get('3year')
+    gift_id = await service.create(1, '3year')
+    await service.activate(gift_id, '3year', from_user_id=1, to_user_id=2)
+
+    sender = await db['users'].find_one({'user_data.user_id': 1})
+    assert plan['price'] == 3000
+    assert sender['info']['balance'] == 5000 - plan['price']
+
+
+async def test_changing_the_plan_price_changes_the_gift_price(db, user_factory, gifts):
+    """Цена правится в одном месте — в тарифах, и подарок следует за ней."""
+    service = gifts if not isinstance(gifts, tuple) else gifts[0]
+    await service.plans.col.update_one({'code': '3year'}, {'$set': {'price': 2500}})
+    service.plans.invalidate()
+
+    await user_factory(**{'info.balance': 5000})
+    await user_factory()
+
+    gift_id = await service.create(1, '3year')
+    await service.activate(gift_id, '3year', from_user_id=1, to_user_id=2)
+
+    sender = await db['users'].find_one({'user_data.user_id': 1})
+    assert sender['info']['balance'] == 2500

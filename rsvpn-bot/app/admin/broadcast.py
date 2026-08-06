@@ -89,7 +89,9 @@ async def segment_list(call: types.CallbackQuery, state: FSMContext, c, settings
 
     kb = InlineKeyboardBuilder()
     for segment in SEGMENTS:
-        kb.row(_btn(segment.title, 'bcseg', f'one:{segment.code}'))
+        # код сегмента едет в отдельном поле: двоеточие — разделитель
+        # callback_data у aiogram, и «one:new_trial_d0» роняет pack()
+        kb.row(_btn(segment.title, 'bcseg', segment.code, 'one'))
     kb.row(_btn('⬅️ Назад', 'broadcast'))
 
     await call.message.edit_text('<b>💬 Рассылка</b>\n\nВыберите сегмент:',
@@ -100,12 +102,12 @@ async def segment_list(call: types.CallbackQuery, state: FSMContext, c, settings
 # ── текст ───────────────────────────────────────────────────────────────────
 async def ask_text(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
                    c, settings) -> None:
-    audience = callback_data.a
-    total = (await c.users.col.count_documents({'growth.segment': audience.split(':', 1)[1]})
-             if audience.startswith('one:') else await _count(c, audience))
+    audience, one = callback_data.a, callback_data.b == 'one'
+    total = (await c.users.col.count_documents({'growth.segment': audience})
+             if one else await _count(c, audience))
 
     await state.set_state(Broadcast.text)
-    await state.update_data(audience=audience, total=total)
+    await state.update_data(audience=audience, one=one, total=total)
 
     kb = InlineKeyboardBuilder()
     kb.row(_btn('⬅️ Отмена', 'broadcast'))
@@ -153,8 +155,7 @@ async def start_sending(call: types.CallbackQuery, state: FSMContext, c, setting
 
     await state.clear()
     audience = data.get('audience', 'all')
-    query = ({'growth.segment': audience.split(':', 1)[1]}
-             if audience.startswith('one:') else _query(audience))
+    query = ({'growth.segment': audience} if data.get('one') else _query(audience))
 
     await call.message.edit_text(
         f'<b>💬 Рассылка запущена</b>\n\nПолучателей: <code>{data.get("total", 0)}</code>\n'

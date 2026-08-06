@@ -20,6 +20,7 @@ class RecordingSession(BaseSession):
     def __init__(self):
         super().__init__()
         self.calls: list[tuple[str, str]] = []
+        self.markups: list = []
 
     async def close(self):
         pass
@@ -30,10 +31,17 @@ class RecordingSession(BaseSession):
     async def make_request(self, bot, method, timeout=None):
         name = type(method).__name__
         self.calls.append((name, getattr(method, 'text', '') or ''))
+        if getattr(method, 'reply_markup', None) is not None:
+            self.markups.append(method.reply_markup)
         if name == 'AnswerCallbackQuery':
             return True
         return Message(message_id=999, date=datetime.now(), chat=CHAT,
                        text=getattr(method, 'text', '') or '', from_user=ADMIN)
+
+    @property
+    def last_text(self) -> str:
+        """Последний непустой текст: ответ на callback приходит пустым."""
+        return next((text for _, text in reversed(self.calls) if text), '')
 
 
 @pytest.fixture
@@ -71,7 +79,7 @@ def message(text: str) -> Update:
 async def test_admin_opens_and_shows_stats(admin_env):
     dp, bot, session, _ = admin_env
     await dp.feed_update(bot, message('/admin'))
-    assert 'Админ-панель' in session.calls[-1][1]
+    assert 'Админ-панель' in session.last_text
 
 
 async def test_toggle_feature_from_panel(admin_env):
@@ -112,3 +120,63 @@ async def test_non_admin_is_ignored(admin_env):
     before = len(session.calls)
     await dp.feed_update(bot, update)
     assert len(session.calls) == before
+
+
+# ── обход всей админки ──────────────────────────────────────────────────────
+#
+# Кнопка «⬅️ Назад» в настройках вела в admin_main, а тот вызывал
+# build_stats_text() и main_kb() вообще без аргументов — выход в /admin падал
+# с TypeError. Ни один тест этого не ловил: они проверяли отдельные действия,
+# но никогда не проходили меню целиком.
+#
+# Поэтому здесь не ещё один точечный тест, а обход: жмём каждую кнопку,
+# до которой можно дойти, и требуем, чтобы ни одна не упала.
+
+def callback_targets(markup) -> list[str]:
+    return [button.callback_data
+            for row in (getattr(markup, 'inline_keyboard', None) or [])
+            for button in row
+            if button.callback_data]
+
+
+async def test_every_button_in_the_panel_leads_somewhere(admin_env):
+    dp, bot, session, container = admin_env
+
+    await dp.feed_update(bot, message('/admin'))
+    queue = callback_targets(session.markups[-1])
+    seen, clicked = set(queue), 0
+
+    while queue and clicked < 200:
+        data = queue.pop(0)
+        clicked += 1
+
+        session.markups.clear()
+        # падение хендлера прорастёт сюда: ErrorsMiddleware в этой сборке нет
+        await dp.feed_update(bot, callback(data))
+
+        for target in (callback_targets(session.markups[-1]) if session.markups else []):
+            if target not in seen:
+                seen.add(target)
+                queue.append(target)
+
+    assert clicked > 20, f'обход прошёл всего {clicked} кнопок — меню не раскрылось'
+
+
+async def test_back_from_settings_returns_to_the_panel(admin_env):
+    """Ровно тот путь, который был сломан: настройки → назад → /admin."""
+    dp, bot, session, container = admin_env
+
+    await dp.feed_update(bot, callback(Adm(act='sets').pack()))
+    assert 'Настройки бота' in session.last_text
+
+    await dp.feed_update(bot, callback(Adm(act='main').pack()))
+    assert 'Админ-панель' in session.last_text
+
+
+async def test_back_from_a_settings_group_returns_to_the_list(admin_env):
+    dp, bot, session, container = admin_env
+
+    await dp.feed_update(bot, callback(Adm(act='grp', a='pricing').pack()))
+    await dp.feed_update(bot, callback(Adm(act='sets').pack()))
+
+    assert 'Настройки бота' in session.last_text

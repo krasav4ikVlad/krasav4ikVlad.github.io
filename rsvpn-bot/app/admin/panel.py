@@ -64,8 +64,9 @@ async def admin_command(message: types.Message, state: FSMContext, c) -> None:
 
 
 async def admin_main(call: types.CallbackQuery, state: FSMContext, c, settings) -> None:
+    """Возврат в корень админки — то же, что /admin."""
     await state.clear()
-    await edit(call, await build_stats_text(), main_kb())
+    await edit(call, await build_stats_text(c.users, c.config.admin_ids), main_kb(c))
 
 
 # ── настройки: группы ───────────────────────────────────────────────────────
