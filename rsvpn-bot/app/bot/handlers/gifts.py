@@ -46,8 +46,14 @@ async def gifts_menu(call: types.CallbackQuery, c, user: dict, settings):
 
 
 async def inline_gifts(query: types.InlineQuery, c, settings):
+    """Витрина подарков при упоминании бота в чужом чате.
+
+    Пустой ответ Telegram показывает как «ничего не найдено» — то есть
+    выключённые подарки и отсутствие тарифов выглядят ровно так же, как
+    сломанный бот. Поэтому вместо пустоты отдаём кнопку с объяснением.
+    """
     if not await settings.flag('features.gifts_enabled'):
-        await query.answer([], cache_time=1)
+        await _nothing(query, 'Подарки временно отключены')
         return
 
     username = await settings.get('link.bot_username')
@@ -76,7 +82,18 @@ async def inline_gifts(query: types.InlineQuery, c, settings):
             reply_markup=kb.as_markup(),
         ))
 
+    if not results:
+        await _nothing(query, 'Подходящих тарифов нет')
+        return
+
     await query.answer(results, cache_time=1, is_personal=True)
+
+
+async def _nothing(query: types.InlineQuery, reason: str) -> None:
+    """Ответ «показывать нечего» с кнопкой в бота вместо молчания."""
+    await query.answer(
+        [], cache_time=1, is_personal=True,
+        button=types.InlineQueryResultsButton(text=reason, start_parameter='gifts'))
 
 
 def create_router() -> Router:

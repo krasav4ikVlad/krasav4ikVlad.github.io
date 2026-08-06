@@ -729,3 +729,25 @@ async def test_inline_gifts_reuse_the_pending_gift(env):
 
     created = [g for g in c.db['gifts'].docs if g['plan_code'] == '1month']
     assert len(created) == 1
+
+
+async def test_inline_gifts_explain_themselves_instead_of_staying_silent(env):
+    """Пустой ответ Telegram рисует как «ничего не найдено» — не отличить от поломки."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.settings.set('features.gifts_enabled', False)
+
+    session.calls.clear()
+    await dp.feed_update(bot, inline_query(''))
+
+    assert any(name == 'AnswerInlineQuery' for name, _ in session.calls)
+
+
+async def test_inline_gifts_answer_unknown_query_with_a_button(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    session.results.clear()
+    await dp.feed_update(bot, inline_query('такого тарифа нет'))
+
+    assert session.results == []
