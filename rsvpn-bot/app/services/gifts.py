@@ -59,6 +59,17 @@ class GiftService:
         })
         return gift_id
 
+    async def pending(self, from_user_id: int, plan_code: str) -> str:
+        """Id непринятого подарка: есть такой — переиспользуем, нет — создаём.
+
+        Нужно инлайн-режиму: Telegram запрашивает варианты на каждое нажатие
+        клавиши, и создание нового документа на каждый запрос засоряло бы базу
+        десятками мёртвых подарков на один отправленный.
+        """
+        found = await self.gifts.find_one({
+            'from_user_id': from_user_id, 'plan_code': plan_code, 'is_accepted': False})
+        return found['gift_id'] if found else await self.create(from_user_id, plan_code)
+
     async def activate(self, gift_id: str, plan_code: str,
                        from_user_id: int, to_user_id: int) -> GiftResult:
         if not await self.settings.flag('features.gifts_enabled'):

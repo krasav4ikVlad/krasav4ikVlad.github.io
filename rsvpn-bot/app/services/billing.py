@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 
 from app.core.errors import FeatureDisabled, NotEnoughBalance, PlanUnavailable
-from app.domain.pricing import subscription_price
 
 log = logging.getLogger(__name__)
 
@@ -33,10 +32,9 @@ class BillingService:
 
         user = await self.users.get(user_id)
         balance = self.users.pick(user or {}, 'info.balance', 0)
-        rules = await self.topup.rules()
-        price = subscription_price(plan['price'],
-                                   self.users.pick(user or {}, 'vpn.hwidDeviceLimit', 0),
-                                   rules)
+        # Только цена тарифа: доп. устройства оплачиваются своими пакетами
+        # в DeviceBillingService, у них отдельный тридцатидневный цикл.
+        price = int(plan['price'])
 
         if balance < price:
             raise NotEnoughBalance(need=price, have=balance)

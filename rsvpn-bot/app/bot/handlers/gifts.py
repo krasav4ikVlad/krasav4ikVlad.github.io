@@ -59,7 +59,7 @@ async def inline_gifts(query: types.InlineQuery, c, settings):
         if wanted and wanted not in (plan['code'].lower(), plan['title'].lower()):
             continue
 
-        gift_id = await c.gifts.create(query.from_user.id, plan['code'])
+        gift_id = await c.gifts.pending(query.from_user.id, plan['code'])
         kb = InlineKeyboardBuilder()
         kb.row(types.InlineKeyboardButton(
             text='🎁 Принять подарок',

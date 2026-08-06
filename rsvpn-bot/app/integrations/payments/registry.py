@@ -34,7 +34,15 @@ def build_providers(config, http=None, bills=None) -> list[PaymentProvider]:
         (keys.severpay_web_key, lambda: SeverPayProvider(keys.severpay_web_key,
                                                          'severpay_web', http,
                                                          title='⚡️ СБП (запасной)')),
-        (keys.tribute_key, lambda: TributeProvider(keys.tribute_key, http)),
+        # Один и тот же мини-апп Tribute закрывает и российские, и зарубежные
+        # карты — в меню это две кнопки, как и было в старом боте. Вебхуки
+        # приходят на код tribute, вторая запись нужна только ради кнопки.
+        # адрес мини-аппа проставит configure() из настройки link.tribute
+        (keys.tribute_key, lambda: TributeProvider(keys.tribute_key, http,
+                                                   title='💳 Карта РФ')),
+        (keys.tribute_key, lambda: TributeProvider(keys.tribute_key, http,
+                                                   code='tribute_eu',
+                                                   title='🌐 Карта иностранная')),
         (keys.cloudpayments_secret, lambda: CloudPaymentsProvider(
             keys.cloudpayments_public_id, keys.cloudpayments_secret, http)),
     ]
@@ -55,11 +63,16 @@ class PaymentRegistry:
         callback = str(await self._settings.get('pay.callback_base'))
         merchant = await self._settings.int('pay.severpay_mid')
 
+        tribute = str(await self._settings.get('link.tribute'))
+
         for provider in self._providers.values():
             provider.success_url = success
             provider.callback_base = callback
             if provider.code.startswith('severpay') and merchant:
                 provider._merchant_id = merchant
+            # ссылку на мини-апп меняют из админки, а не пересборкой контейнера
+            if provider.direct_url and tribute:
+                provider.direct_url = tribute
 
     def get(self, code: str) -> PaymentProvider | None:
         return self._providers.get(code)

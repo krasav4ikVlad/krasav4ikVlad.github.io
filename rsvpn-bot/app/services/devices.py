@@ -118,21 +118,31 @@ class DeviceBillingService:
 
     async def remove(self, user_id: int, amount: int) -> int:
         """Уменьшить лимит. Снимаем с пакета, у которого ближайшее списание —
-        так человек дольше пользуется уже оплаченным."""
+        так человек дольше пользуется уже оплаченным.
+
+        Опорная величина — сам лимит, а не сумма пакетов. В боевой базе они
+        часто расходятся: лимит подняли из панели вручную, пакет купили в
+        старом боте, документ правили руками. Считать лимит как
+        «база + сумма пакетов» здесь нельзя двояко: при пустом списке пакетов
+        кнопка вообще ничего не делала (лимит 17 так и оставался 17), а при
+        неполном списке лимит обрушивался до суммы пакетов — человек платил
+        за восемь устройств и получал три.
+        """
         if amount <= 0:
             raise ValueError('количество должно быть больше нуля')
 
         user = await self.users.get(user_id, {'vpn': 1})
         vpn = (user or {}).get('vpn') or {}
-        packages = list(vpn.get('extraDevices') or [])
         base_limit = await self.settings.int('price.devices_free_limit')
+        current = int(vpn.get('hwidDeviceLimit') or base_limit)
 
-        updated, removed = remove_from_nearest_charge(packages, amount)
-        if not removed:
-            return int(vpn.get('hwidDeviceLimit') or base_limit)
+        # ниже бесплатного лимита не опускаемся
+        amount = min(amount, max(0, current - base_limit))
+        if amount <= 0:
+            return current
 
-        new_limit = base_limit + sum(int(p.get('amount', 0) or 0)
-                                     for p in updated if p.get('active', True))
+        new_limit = current - amount
+        updated, _ = remove_from_nearest_charge(list(vpn.get('extraDevices') or []), amount)
 
         uuid = vpn.get('uuid')
         if uuid:
@@ -142,7 +152,7 @@ class DeviceBillingService:
             {'user_data.user_id': user_id},
             {'$set': {'vpn.extraDevices': updated, 'vpn.hwidDeviceLimit': new_limit}})
 
-        log.info('%s уменьшил лимит на %s, стало %s', user_id, removed, new_limit)
+        log.info('%s уменьшил лимит на %s, стало %s', user_id, amount, new_limit)
         return new_limit
 
     async def unbind(self, user_id: int, hwid: str) -> bool:

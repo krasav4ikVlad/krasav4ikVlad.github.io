@@ -30,11 +30,18 @@ def period_label(days: int) -> str:
 
 
 def price_line(plan_price: int, days: int, devices_price: int) -> str:
-    """«150₽ за месяц + 1125₽/мес за устройства»."""
-    text = f'<code>{plan_price}₽ за {period_label(days)}</code>'
+    """«150₽ за месяц» плюс, если есть, отдельная строка про устройства.
+
+    Раньше это была одна строка «150₽ за месяц + 1125₽/мес за устройства»:
+    два <code>-блока с текстом между ними рвали фразу, а на телефоне она ещё
+    и переносилась посередине. Складывать их в одно число тоже нельзя —
+    это разные циклы: тариф списывается раз в период, устройства всегда
+    раз в 30 дней, и на дневном тарифе сумма была бы бессмыслицей.
+    """
+    line = f'<code>{plan_price}₽ за {period_label(days)}</code>'
     if devices_price:
-        text += f' + <code>{devices_price}₽/мес</code> за устройства'
-    return text
+        line += f'\n<b>💳 Плата за устройства:</b> <code>{devices_price}₽ в месяц</code>'
+    return line
 
 
 def subscription_block(user: dict, price: str, connect_base: str) -> str:

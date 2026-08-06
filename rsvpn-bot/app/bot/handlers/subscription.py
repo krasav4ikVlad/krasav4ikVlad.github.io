@@ -17,7 +17,7 @@ from app.bot.keyboards.common import footer
 from app.bot.keyboards.subscription import plans_keyboard
 from app.bot.screens.base import Screen, render
 from app.bot.screens.pricing import price_line_for
-from app.bot.screens.profile import profile_caption, subscription_block
+from app.bot.screens.profile import period_label, profile_caption, subscription_block
 from app.content import texts
 from app.core.errors import NotEnoughBalance
 from app.core.time import now, parse_dt
@@ -34,6 +34,44 @@ async def show_plans(event, c, user: dict, settings):
     ))
     if isinstance(event, types.CallbackQuery):
         await event.answer()
+
+
+async def change_period(event, c, user: dict, settings, note: str = ''):
+    """Выбор длительности для действующей подписки.
+
+    Отдельный экран, а не тот же список тарифов: здесь ничего не покупается,
+    поэтому ни баланс не проверяется, ни деньги не списываются.
+    """
+    vpn = user.get('vpn') or {}
+    current = await c.plans.by_days(vpn.get('period') or 0)
+    kb = await plans_keyboard(c.plans, 0, action='change',
+                              current=(current or {}).get('code', ''))
+    await footer(kb, settings, back='my_subscription')
+
+    text = (profile_caption(user, '📅 Длительность подписки')
+            + f'<b>📅 Сейчас продлевается на:</b> '
+              f'<code>{period_label(vpn.get("period") or 0)}</code>\n\n'
+            + f'<blockquote>{note or texts.render("screen.subscription.change_period")}</blockquote>')
+
+    await render(event, Screen(text=text, markup=kb.as_markup(),
+                               image=c.media('duration')))
+    if isinstance(event, types.CallbackQuery):
+        await event.answer()
+
+
+async def set_period(call: types.CallbackQuery, callback_data: Plan, c, user: dict, settings):
+    """Меняет только период. Списание произойдёт при следующем продлении."""
+    plan = await c.plans.get(callback_data.code)
+    if not plan or not plan.get('enabled', True):
+        await call.answer('Этот тариф сейчас недоступен', show_alert=True)
+        return
+
+    await c.users.set_vpn(call.from_user.id, {'period': int(plan['days'])})
+    await call.answer(f'Длительность: {plan["title"]} ✅')
+    await change_period(call, c, await c.users.get(call.from_user.id), settings,
+                        note=f'Готово. При следующем продлении подписка продлится '
+                             f'на {period_label(int(plan["days"]))} за {plan["price"]}₽. '
+                             f'Текущая дата окончания не меняется.')
 
 
 async def buy_plan(call: types.CallbackQuery, callback_data: Plan, c, settings):
@@ -87,7 +125,7 @@ async def show_subscription(event, c, user: dict, settings):
             text='📲 Менеджер устройств', callback_data=Menu(screen='devices').pack()))
     if await settings.flag('features.change_period_enabled'):
         kb.row(types.InlineKeyboardButton(
-            text='📅 Изменить длительность', callback_data=Menu(screen='subscription').pack()))
+            text='📅 Изменить длительность', callback_data=Menu(screen='period').pack()))
     await footer(kb, settings, back='profile')
 
     await render(event, Screen(text=text, markup=kb.as_markup(),
@@ -103,6 +141,8 @@ def create_router() -> Router:
     """
     router = Router(name='subscription')
     router.callback_query.register(show_plans, Menu.filter(F.screen == 'subscription'))
+    router.callback_query.register(change_period, Menu.filter(F.screen == 'period'), Feature('features.change_period_enabled'))
+    router.callback_query.register(set_period, Plan.filter(F.action == 'change'), Feature('features.change_period_enabled'))
     router.callback_query.register(buy_plan, Plan.filter(F.action == 'buy'), Feature('features.buy_enabled'))
     router.callback_query.register(extend, Menu.filter(F.screen == 'extend'), Feature('features.extend_enabled'))
     router.callback_query.register(show_subscription, Menu.filter(F.screen == 'my_subscription'))

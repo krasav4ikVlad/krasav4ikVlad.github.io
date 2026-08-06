@@ -28,7 +28,6 @@ from datetime import timedelta
 
 from app.core.errors import VpnPanelError
 from app.core.time import now, parse_dt
-from app.domain.pricing import subscription_price
 
 log = logging.getLogger(__name__)
 
@@ -110,8 +109,10 @@ class RenewalService:
         if not plan:
             return 'unknown_plan'
 
-        rules = await self.topup.rules()
-        price = subscription_price(plan['price'], int(vpn.get('hwidDeviceLimit') or 0), rules)
+        # Только цена тарифа. Плату за доп. устройства берёт DeviceBillingService
+        # раз в 30 дней со своих пакетов — прибавлять её здесь значит списать
+        # за устройства дважды, а на дневном тарифе ещё и каждый день.
+        price = int(plan['price'])
 
         # 1. Деньги. Проверка баланса живёт внутри запроса, поэтому параллельная
         #    покупка не может увести баланс в минус, а её результат — потеряться.

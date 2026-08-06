@@ -20,6 +20,8 @@ class RecordingSession(BaseSession):
     def __init__(self):
         super().__init__()
         self.calls: list[tuple[str, str]] = []
+        self.markups: list = []
+        self.results: list = []
 
     async def close(self):
         pass
@@ -31,6 +33,8 @@ class RecordingSession(BaseSession):
         name = type(method).__name__
         text = getattr(method, 'text', None) or getattr(method, 'caption', '') or ''
         self.calls.append((name, text))
+        self.markups.append(getattr(method, 'reply_markup', None))
+        self.results.extend(getattr(method, 'results', None) or [])
         if name == 'AnswerCallbackQuery':
             return True
         return Message(message_id=1, date=datetime.now(), chat=CHAT, text=text,
@@ -39,6 +43,11 @@ class RecordingSession(BaseSession):
     @property
     def last_text(self) -> str:
         return next((text for _, text in reversed(self.calls) if text), '')
+
+    def buttons(self) -> list:
+        """Все кнопки последней отправленной клавиатуры."""
+        markup = next((m for m in reversed(self.markups) if m is not None), None)
+        return [b for row in (getattr(markup, 'inline_keyboard', None) or []) for b in row]
 
 
 class FakeVpn:
@@ -114,6 +123,10 @@ async def env(container):
                        UserMiddleware(container.users)):
         dp.message.outer_middleware(middleware)
         dp.callback_query.outer_middleware(middleware)
+    # как в factory.create_dispatcher: инлайн-режиму нужны свои middleware,
+    # иначе хендлер подарков падает на отсутствии зависимостей
+    dp.inline_query.outer_middleware(ErrorsMiddleware())
+    dp.inline_query.outer_middleware(DependenciesMiddleware(container))
     # админом делаем самого тестового пользователя: так проверяются и кнопки
     # под заявкой на вывод, и фильтр «только админ» на реальном роутере
     dp.include_router(admin_panel.create_router((TG_USER.id,)))
@@ -569,3 +582,150 @@ async def test_broadcast_reaches_only_the_chosen_segment(env):
     delivered = [text for name, text in session.calls if text == 'Возвращайтесь!']
     assert len(delivered) == 2                       # 11 и 12, но не 13
     assert 'Доставлено: <code>2</code>' in session.last_text
+
+
+# ── смена длительности ──────────────────────────────────────────────────────
+async def test_changing_period_does_not_charge_anything(env):
+    """Меняется только период: списание произойдёт при следующем продлении."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1day').pack()))
+
+    balance_before = (await c.users.get(5))['info']['balance']
+    expire_before = (await c.users.get(5))['vpn']['expireAt']
+
+    await dp.feed_update(bot, callback(Plan(action='change', code='1month').pack()))
+
+    user = await c.users.get(5)
+    assert user['vpn']['period'] == 30
+    assert user['info']['balance'] == balance_before      # деньги не тронуты
+    assert user['vpn']['expireAt'] == expire_before       # дата тоже
+
+
+async def test_period_can_be_changed_without_money_on_the_balance(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1day').pack()))
+    await c.users.col.update_one({'user_data.user_id': 5}, {'$set': {'info.balance': 0}})
+
+    await dp.feed_update(bot, callback(Plan(action='change', code='3month').pack()))
+
+    assert (await c.users.get(5))['vpn']['period'] == 90
+
+
+async def test_unbind_survives_leaving_the_screen(env):
+    """Раньше hwid лежал в состоянии диалога и терялся при переходе в профиль."""
+    from app.bot.callbacks import Devices
+    from app.bot.handlers.devices import device_token
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+
+    unbound = []
+
+    async def devices(uuid):
+        return [d for d in [{'hwid': 'HW-очень-длинный-идентификатор-устройства',
+                             'deviceModel': 'iPhone'}]
+                if d['hwid'] not in unbound]
+
+    async def delete_device(uuid, hwid):
+        unbound.append(hwid)
+        return True
+
+    c.vpn.devices = devices
+    c.vpn.delete_device = delete_device
+
+    await dp.feed_update(bot, callback(Devices(action='list').pack()))
+    await dp.feed_update(bot, callback(Menu(screen='profile').pack()))   # ушёл и вернулся
+
+    token = device_token('HW-очень-длинный-идентификатор-устройства')
+    await dp.feed_update(bot, callback(Devices(action='unbind', value=token).pack()))
+
+    assert unbound == ['HW-очень-длинный-идентификатор-устройства']
+
+
+def test_device_token_fits_into_a_callback():
+    """У Telegram на всё поле 64 байта — именно на этом ломалась отвязка."""
+    from app.bot.callbacks import Devices
+    from app.bot.handlers.devices import device_token
+
+    packed = Devices(action='unbind', value=device_token('x' * 300)).pack()
+    assert len(packed.encode()) <= 64
+
+
+# ── платёжные методы ────────────────────────────────────────────────────────
+async def test_tribute_button_leads_straight_to_the_mini_app(env):
+    """У Tribute сумма выбирается в его интерфейсе — наш экран суммы лишний."""
+    from app.integrations.payments.registry import PaymentRegistry
+    from app.integrations.payments.tribute import TributeProvider
+
+    dp, bot, session, c = env
+    c.payments = PaymentRegistry(
+        [TributeProvider('key', title='💳 Карта РФ'),
+         TributeProvider('key', code='tribute_eu', title='🌐 Карта иностранная')],
+        c.settings)
+    await dp.feed_update(bot, message('/start'))
+
+    session.markups.clear()
+    await dp.feed_update(bot, callback(Menu(screen='payments').pack()))
+
+    tribute = [b for b in session.buttons() if 'Карта' in b.text]
+    assert len(tribute) == 2, 'обе карточные кнопки должны быть на экране'
+    assert all(b.url == 'https://t.me/tribute/app?startapp=dNvx' for b in tribute)
+    assert all(b.callback_data is None for b in tribute)
+
+
+async def test_other_providers_still_ask_for_the_amount(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    session.markups.clear()
+    await dp.feed_update(bot, callback(Menu(screen='payments').pack()))
+
+    crypto = next(b for b in session.buttons() if 'Криптовалюта' in b.text)
+    assert crypto.url is None and crypto.callback_data
+
+
+# ── подарки в инлайн-режиме ─────────────────────────────────────────────────
+def inline_query(text: str = '') -> Update:
+    from aiogram.types import InlineQuery
+    return Update(update_id=8, inline_query=InlineQuery(
+        id='iq', from_user=TG_USER, query=text, offset=''))
+
+
+async def test_inline_gifts_offer_all_plans_without_a_query(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    session.results.clear()
+    await dp.feed_update(bot, inline_query(''))
+
+    assert len(session.results) == len(await c.plans.all())
+    assert all('Подарить' in r.title for r in session.results)
+
+
+async def test_inline_gifts_filter_by_the_chosen_plan(env):
+    """Кнопка «Подарить» подставляет код тарифа через switch_inline_query."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    session.results.clear()
+    await dp.feed_update(bot, inline_query('1month'))
+
+    assert len(session.results) == 1
+
+
+async def test_inline_gifts_reuse_the_pending_gift(env):
+    """Telegram шлёт запрос на каждое нажатие клавиши — база не должна пухнуть."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    for _ in range(5):
+        await dp.feed_update(bot, inline_query('1month'))
+
+    created = [g for g in c.db['gifts'].docs if g['plan_code'] == '1month']
+    assert len(created) == 1

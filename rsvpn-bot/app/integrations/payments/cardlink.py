@@ -10,7 +10,7 @@ from app.integrations.payments.base import Invoice, PaymentProvider, WebhookEven
 
 class CardlinkProvider(PaymentProvider):
     code = 'cardlink'
-    title = '💳 Карта РФ'
+    title = '⚡️ СБП'
     verified = False   # ⚠️ Cardlink не подписывает вебхук — см. заметку в webhooks.py
 
     def __init__(self, token: str, shop_id: str = '', http=None, bills=None):

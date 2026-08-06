@@ -69,8 +69,13 @@ async def choose_provider(call: types.CallbackQuery, c, user: dict, settings,
     kb = InlineKeyboardBuilder()
 
     for provider in await c.payments.available():
-        kb.row(types.InlineKeyboardButton(
-            text=provider.title, callback_data=Payment(provider=provider.code).pack()))
+        # у Tribute оплата целиком в его мини-аппе: он сам спрашивает сумму,
+        # поэтому кнопка ведёт наружу, а не в наш экран выбора суммы
+        kb.row(types.InlineKeyboardButton(text=provider.title, url=provider.direct_url)
+               if provider.direct_url else
+               types.InlineKeyboardButton(
+                   text=provider.title,
+                   callback_data=Payment(provider=provider.code).pack()))
 
     await footer(kb, settings, back='profile')
     await render(call, Screen(

@@ -67,11 +67,17 @@ SCHEMA: tuple[Group, ...] = (
 
     Group('payments', '💳 Платёжные методы', (
         # ключ строится как pay.<код провайдера>_enabled — см. PaymentRegistry
-        Setting('pay.cardlink_enabled', 'Cardlink (карты РФ)', 'bool', True),
-        Setting('pay.wata_enabled', 'WATA (СБП)', 'bool', True),
+        # Значения по умолчанию отражают то, что реально подключено:
+        # СБП — Cardlink, карты — Tribute, крипта — Heleket. Остальные выключены,
+        # чтобы случайно найденный в .env ключ не добавил кнопку в меню.
+        Setting('pay.cardlink_enabled', 'Cardlink (СБП)', 'bool', True),
         Setting('pay.heleket_enabled', 'Heleket (крипта)', 'bool', True),
-        Setting('pay.severpay_enabled', 'SeverPay', 'bool', True),
-        Setting('pay.tribute_enabled', 'Tribute (иностранные карты)', 'bool', True),
+        Setting('pay.tribute_enabled', 'Tribute (карта РФ)', 'bool', True),
+        Setting('pay.tribute_eu_enabled', 'Tribute (карта иностранная)', 'bool', True),
+        Setting('pay.wata_enabled', 'WATA (СБП)', 'bool', False),
+        Setting('pay.severpay_enabled', 'SeverPay', 'bool', False),
+        Setting('pay.severpay_web_enabled', 'SeverPay (запасной)', 'bool', False),
+        Setting('pay.cards_ru_enabled', 'CloudPayments', 'bool', False),
         Setting('pay.min_topup', 'Минимальное пополнение', 'int', 75, unit='₽', min=1),
         Setting('pay.min_topup_sbp', 'Минимум для СБП / загран. карт', 'int', 100, unit='₽', min=1),
         Setting('pay.success_url', 'Куда возвращать после оплаты', 'str',

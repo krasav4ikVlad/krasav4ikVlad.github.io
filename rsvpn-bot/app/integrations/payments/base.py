@@ -47,6 +47,11 @@ class PaymentProvider:
     min_amount: int = 75
     verified: bool = True      # проверяется ли подпись входящего вебхука
 
+    # Готовая ссылка на оплату (мини-апп Tribute). Если задана, бот не
+    # спрашивает сумму и не выставляет счёт: кнопка ведёт прямо в интерфейс
+    # провайдера, где человек сам выбирает сумму, а мы узнаём её из вебхука.
+    direct_url: str = ''
+
     # общие настройки, проставляются реестром при сборке
     success_url: str = 'https://t.me/rsconnect_bot'
     callback_base: str = 'https://webhook.rsvps.tech'

@@ -191,3 +191,39 @@ async def test_unbind_removes_device_from_both_profiles(db, user_factory, billin
 
     assert await service.unbind(1, 'hwid-1') is True
     assert vpn.deleted == [('main', 'hwid-1'), ('bypass', 'hwid-1')]
+
+
+# ── боевые данные: лимит и пакеты часто расходятся ──────────────────────────
+async def test_limit_drops_even_without_packages(db, user_factory, billing):
+    """Лимит подняли из панели, пакетов в документе нет — кнопка обязана работать.
+
+    Раньше новый лимит считался как «база + сумма пакетов»: при пустом списке
+    лимит 17 так и оставался 17, и человек не мог его уменьшить вообще.
+    """
+    service, vpn = billing
+    await user_factory(**{'vpn.uuid': 'u-1', 'vpn.hwidDeviceLimit': 17})
+
+    assert await service.remove(1, 1) == 16
+    user = await db['users'].find_one({'user_data.user_id': 1})
+    assert user['vpn']['hwidDeviceLimit'] == 16
+
+
+async def test_limit_is_not_reset_to_the_sum_of_packages(db, user_factory, billing):
+    """Пакеты неполные — лимит уменьшается на единицу, а не обрушивается.
+
+    Иначе человек, купивший восемь устройств, после одного нажатия получал три.
+    """
+    service, vpn = billing
+    await user_factory(**{
+        'vpn.uuid': 'u-1', 'vpn.hwidDeviceLimit': 10,
+        'vpn.extraDevices': [{'id': 'p1', 'amount': 2, 'active': True,
+                              'pricePerDevice': 75, 'nextChargeAt': None}]})
+
+    assert await service.remove(1, 1) == 9
+
+
+async def test_limit_never_goes_below_the_free_one(db, user_factory, billing):
+    service, vpn = billing
+    await user_factory(**{'vpn.uuid': 'u-1', 'vpn.hwidDeviceLimit': 3})
+
+    assert await service.remove(1, 10) == 2      # бесплатных 2

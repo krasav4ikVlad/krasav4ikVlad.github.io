@@ -22,15 +22,20 @@ class TributeProvider(PaymentProvider):
     code = 'tribute'
     title = '🌐 Карта иностранная'
 
-    def __init__(self, api_key: str, http=None, app_url: str = ''):
+    def __init__(self, api_key: str, http=None, app_url: str = '',
+                 code: str = '', title: str = ''):
         self._key = api_key
         self._http = http
-        self._app_url = app_url or 'https://t.me/tribute/app?startapp=dNvx'
+        self.direct_url = app_url or 'https://t.me/tribute/app?startapp=dNvx'
+        if code:
+            self.code = code
+        if title:
+            self.title = title
 
     async def create_invoice(self, user_id: int, amount: int) -> Invoice:
-        """У Tribute счёт не выставляется: пользователь платит в мини-аппе,
-        а сумму мы узнаём из вебхука."""
-        return Invoice(url=self._app_url, payment_id='', amount=amount)
+        """У Tribute счёт не выставляется: человек платит в мини-аппе,
+        сам выбирает там сумму, а мы узнаём её из вебхука."""
+        return Invoice(url=self.direct_url, payment_id='', amount=amount)
 
     def verify(self, body: bytes, headers: dict[str, str], payload: dict) -> None:
         signature = (headers.get('trbt-signature') or '').strip()

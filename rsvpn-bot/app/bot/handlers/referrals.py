@@ -9,21 +9,30 @@ from app.bot.callbacks import Menu
 from app.bot.filters.feature import Feature
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
+from app.bot.screens.profile import profile_caption
+from app.domain.referrals import referral_stats
 
 
 async def referrals(call: types.CallbackQuery, c, user: dict, settings):
-    stats = c.users.pick(user, 'info.ref_stats', {}) or {}
+    stats = referral_stats(c.users.pick(user, 'info.ref_stats', {}))
     percent = round(await settings.rate('bonus.ref_rate') * 100)
     username = await settings.get('link.bot_username')
 
     text = (
-        '<b>🫂 Реферальная программа</b>\n\n'
-        f'<b>Ваша ссылка:</b>\n<code>https://t.me/{username}?start=ref_{call.from_user.id}</code>\n\n'
-        f'<b>Друзей:</b> <code>{len(stats.get("referrals") or [])}</code>\n'
-        f'<b>Из них платящих:</b> <code>{len(stats.get("paying_referrals") or [])}</code>\n'
-        f'<b>Заработано всего:</b> <code>{stats.get("earned_total", 0)}₽</code>\n'
-        f'<b>Доступно к выводу:</b> <code>{stats.get("withdrawable", 0)}₽</code>\n\n'
-        f'<blockquote>Вы получаете {percent}% с каждого пополнения приглашённого друга.</blockquote>'
+        profile_caption(user, '🫂 Реферальная программа')
+        + f'<b>🔗 Ваша ссылка:</b>\n'
+          f'<code>https://t.me/{username}?start=ref_{call.from_user.id}</code>\n\n'
+        + '<b>📊 Статистика:</b>\n'
+          f'— 🫂 Приглашено друзей: <code>{stats.invited}</code>\n'
+          f'— 🗣 Активных: <code>{stats.active}</code> '
+          f'(<code>{stats.active_percent}%</code>)\n'
+          f'— 💰 Оплат от друзей: <code>{stats.payments}</code>\n'
+          f'— 💳 Средний чек: <code>{stats.average_payment} ₽</code>\n'
+          f'— 📈 Доход с 1 активного друга: <code>~{stats.per_active_friend} ₽</code>\n'
+          f'— 💸 Всего заработано: <code>{stats.earned} ₽</code>\n'
+          f'— 💱 Доступно к выводу: <code>{stats.withdrawable} ₽</code>\n\n'
+        + f'<blockquote>🫂 Вы получаете {percent}% с каждого пополнения '
+          f'приглашённого друга — без ограничения по времени и количеству.</blockquote>'
     )
 
     kb = InlineKeyboardBuilder()

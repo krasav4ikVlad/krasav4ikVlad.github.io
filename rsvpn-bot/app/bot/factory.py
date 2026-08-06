@@ -41,6 +41,10 @@ def create_dispatcher(container: Container, storage=None) -> Dispatcher:
     for middleware in outer:
         dp.message.outer_middleware(middleware)
         dp.callback_query.outer_middleware(middleware)
+    # Инлайн-режим — тоже обновление, и ему нужны и зависимости, и перехват
+    # ошибок: без ErrorsMiddleware падение хендлера выглядит для человека как
+    # «бот не отвечает на упоминание в чате», а в логах не остаётся ничего.
+    dp.inline_query.outer_middleware(ErrorsMiddleware())
     dp.inline_query.outer_middleware(DependenciesMiddleware(container))
 
     dp.include_router(admin_panel.create_router(container.config.admin_ids))

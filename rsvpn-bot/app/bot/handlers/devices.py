@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from aiogram import F, Router, types
-from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Devices, Menu
@@ -78,7 +79,19 @@ async def remove_devices(call: types.CallbackQuery, callback_data: Devices, c, u
     await manager(call, c, await c.users.get(call.from_user.id), settings)
 
 
-async def list_devices(call: types.CallbackQuery, state: FSMContext, c, user: dict, settings):
+def device_token(hwid: str) -> str:
+    """Короткий стабильный идентификатор устройства для кнопки.
+
+    Сам hwid в callback_data не помещается: у Telegram на всё поле 64 байта,
+    а hwid бывает длиннее. Раньше в кнопку ехал номер в списке, а сами hwid
+    лежали в состоянии диалога — и отвязка ломалась, стоило человеку зайти в
+    любой другой раздел: состояние очищалось, кнопка отвечала «список устарел».
+    Хэш ни от чего не зависит, поэтому кнопка работает всегда.
+    """
+    return hashlib.sha1(hwid.encode()).hexdigest()[:16]
+
+
+async def list_devices(call: types.CallbackQuery, c, user: dict, settings):
     uuid = c.users.pick(user, 'vpn.uuid')
     try:
         devices = await c.vpn.devices(uuid)
@@ -86,18 +99,13 @@ async def list_devices(call: types.CallbackQuery, state: FSMContext, c, user: di
         await call.answer('Не удалось загрузить устройства', show_alert=True)
         return
 
-    # hwid длиннее, чем влезает в callback_data (64 байта), поэтому в кнопке
-    # едет номер, а сами hwid лежат в состоянии диалога
-    hwids = [d.get('hwid', '') for d in devices]
-    await state.update_data(hwids=hwids)
-
     kb = InlineKeyboardBuilder()
-    for index, device in enumerate(devices[:30]):
-        title = (device.get('deviceModel') or device.get('platform')
-                 or device.get('hwid', '')[:12])
+    for device in devices[:30]:
+        hwid = device.get('hwid', '')
+        title = device.get('deviceModel') or device.get('platform') or hwid[:12]
         kb.row(types.InlineKeyboardButton(
             text=f'🗑 {title}',
-            callback_data=Devices(action='unbind', value=str(index)).pack()))
+            callback_data=Devices(action='unbind', value=device_token(hwid)).pack()))
     await footer(kb, settings, back='devices')
 
     text = ('<b>📲 Ваши устройства</b>\n\nНажмите, чтобы отвязать. Отвязка освобождает '
@@ -108,21 +116,25 @@ async def list_devices(call: types.CallbackQuery, state: FSMContext, c, user: di
     await call.answer()
 
 
-async def unbind(call: types.CallbackQuery, callback_data: Devices, state: FSMContext,
-                 c, user: dict, settings):
-    data = await state.get_data()
-    hwids = data.get('hwids') or []
-
+async def unbind(call: types.CallbackQuery, callback_data: Devices, c, user: dict, settings):
+    uuid = c.users.pick(user, 'vpn.uuid')
     try:
-        hwid = hwids[int(callback_data.value)]
-    except (ValueError, IndexError):
-        await call.answer('Список устарел, откройте его заново', show_alert=True)
+        devices = await c.vpn.devices(uuid)
+    except VpnPanelError:
+        await call.answer('Панель не ответила, попробуйте позже.', show_alert=True)
+        return
+
+    hwid = next((d.get('hwid', '') for d in devices
+                 if device_token(d.get('hwid', '')) == callback_data.value), None)
+    if hwid is None:
+        await call.answer('Это устройство уже отвязано', show_alert=True)
+        await list_devices(call, c, user, settings)
         return
 
     removed = await c.devices.unbind(call.from_user.id, hwid)
     await call.answer('Устройство отвязано ✅' if removed else 'Не удалось отвязать',
                       show_alert=not removed)
-    await list_devices(call, state, c, await c.users.get(call.from_user.id), settings)
+    await list_devices(call, c, await c.users.get(call.from_user.id), settings)
 
 
 def create_router() -> Router:

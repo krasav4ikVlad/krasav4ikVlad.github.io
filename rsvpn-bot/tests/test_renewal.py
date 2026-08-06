@@ -129,14 +129,20 @@ async def test_bypass_is_extended_only_when_it_exists(db, user_factory, renewal)
     assert [c['uuid'] for c in vpn.calls] == ['u-1', 'u-1', 'bp-1']
 
 
-async def test_devices_are_included_in_the_price(db, user_factory, renewal):
+async def test_devices_are_not_charged_twice(db, user_factory, renewal):
+    """Продление берёт только цену тарифа.
+
+    За доп. устройства платят их пакеты в DeviceBillingService, у которых свой
+    тридцатидневный цикл. Складывать одно с другим значит списывать за
+    устройства дважды в месяц, а на дневном тарифе — каждый день.
+    """
     service, vpn = renewal
     await make_subscriber(user_factory, balance=400, **{'vpn.hwidDeviceLimit': 4})
 
     await service.run()
 
     user = await db['users'].find_one({'user_data.user_id': 1})
-    assert user['info']['balance'] == 100          # 400 − (150 + 2×75)
+    assert user['info']['balance'] == 250          # 400 − 150, без 2×75
 
 
 async def test_autorenew_can_be_switched_off(db, user_factory, renewal):
