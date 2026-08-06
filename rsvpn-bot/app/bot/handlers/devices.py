@@ -3,51 +3,58 @@
 from __future__ import annotations
 
 from aiogram import F, Router, types
+from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Devices, Menu
 from app.bot.filters.feature import Feature
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
+from app.bot.screens.pricing import price_line_for
 from app.bot.screens.profile import devices_block, profile_caption
+from app.content import texts
 from app.core.errors import NotEnoughBalance, VpnPanelError
 
 PACKAGES = (1, 2, 3, 5)
 
 
-async def manager(call: types.CallbackQuery, c, user: dict, settings):
+async def manager(event, c, user: dict, settings):
     free_limit = await settings.int('price.devices_free_limit')
     price = await settings.int('price.device_extra')
+    connect_base = await settings.get('link.connect_base')
 
     kb = InlineKeyboardBuilder()
     for amount in PACKAGES:
         kb.add(types.InlineKeyboardButton(
-            text=f'+{amount} за {amount * price}₽',
+            text=f'Увеличить на {amount} за {amount * price}₽',
             callback_data=Devices(action='add', value=str(amount)).pack()))
     kb.adjust(2)
 
     if int(c.users.pick(user, 'vpn.hwidDeviceLimit', 0)) > free_limit:
         kb.row(types.InlineKeyboardButton(
-            text='➖ Уменьшить лимит', callback_data=Devices(action='remove', value='1').pack()))
+            text='➖ Уменьшить лимит на 1',
+            callback_data=Devices(action='remove', value='1').pack()))
     kb.row(types.InlineKeyboardButton(
         text='📲 Мои устройства', callback_data=Devices(action='list').pack()))
     await footer(kb, settings, back='my_subscription')
 
-    await render(call, Screen(
-        text=profile_caption(user) + devices_block(user, free_limit, price),
-        markup=kb.as_markup(), image=c.media('devices')))
-    await call.answer()
+    text = (profile_caption(user, '📲 Менеджер устройств')
+            + devices_block(user, await price_line_for(c, user), connect_base)
+            + f'<blockquote>📲 {texts.render("screen.devices.hint", free_devices=free_limit, device_price=price)}</blockquote>')
+
+    await render(event, Screen(text=text, markup=kb.as_markup(), image=c.media('devices')))
+    if isinstance(event, types.CallbackQuery):
+        await event.answer()
 
 
-async def add_devices(call: types.CallbackQuery, callback_data: Devices, c, user: dict, settings):
+async def add_devices(call: types.CallbackQuery, callback_data: Devices, c, user: dict,
+                      settings):
     try:
         amount = int(callback_data.value)
+        await c.devices.add(call.from_user.id, amount)
     except ValueError:
         await call.answer('Некорректное количество', show_alert=True)
         return
-
-    try:
-        await c.devices.add(call.from_user.id, amount)
     except NotEnoughBalance as exc:
         await call.answer(exc.user_message, show_alert=True)
         return
@@ -59,7 +66,19 @@ async def add_devices(call: types.CallbackQuery, callback_data: Devices, c, user
     await manager(call, c, await c.users.get(call.from_user.id), settings)
 
 
-async def list_devices(call: types.CallbackQuery, c, user: dict, settings):
+async def remove_devices(call: types.CallbackQuery, callback_data: Devices, c, user: dict,
+                         settings):
+    try:
+        new_limit = await c.devices.remove(call.from_user.id, int(callback_data.value or 1))
+    except VpnPanelError:
+        await call.answer('Панель не ответила, попробуйте позже.', show_alert=True)
+        return
+
+    await call.answer(f'Лимит устройств: {new_limit}')
+    await manager(call, c, await c.users.get(call.from_user.id), settings)
+
+
+async def list_devices(call: types.CallbackQuery, state: FSMContext, c, user: dict, settings):
     uuid = c.users.pick(user, 'vpn.uuid')
     try:
         devices = await c.vpn.devices(uuid)
@@ -67,38 +86,53 @@ async def list_devices(call: types.CallbackQuery, c, user: dict, settings):
         await call.answer('Не удалось загрузить устройства', show_alert=True)
         return
 
+    # hwid длиннее, чем влезает в callback_data (64 байта), поэтому в кнопке
+    # едет номер, а сами hwid лежат в состоянии диалога
+    hwids = [d.get('hwid', '') for d in devices]
+    await state.update_data(hwids=hwids)
+
     kb = InlineKeyboardBuilder()
-    for device in devices[:30]:
-        title = device.get('deviceModel') or device.get('platform') or device.get('hwid', '')[:12]
+    for index, device in enumerate(devices[:30]):
+        title = (device.get('deviceModel') or device.get('platform')
+                 or device.get('hwid', '')[:12])
         kb.row(types.InlineKeyboardButton(
             text=f'🗑 {title}',
-            callback_data=Devices(action='unbind', value=device.get('hwid', '')[:40]).pack()))
+            callback_data=Devices(action='unbind', value=str(index)).pack()))
     await footer(kb, settings, back='devices')
 
     text = ('<b>📲 Ваши устройства</b>\n\nНажмите, чтобы отвязать. Отвязка освобождает '
             'слот, лимит при этом не меняется.') if devices else \
            '<b>📲 Устройства</b>\n\nПодключённых устройств пока нет.'
-    await render(call, Screen(text=text, markup=kb.as_markup()))
+    await render(call, Screen(text=text, markup=kb.as_markup(),
+                              image=c.media('devices_list')))
     await call.answer()
 
 
-async def unbind(call: types.CallbackQuery, callback_data: Devices, c, user: dict, settings):
-    removed = await c.devices.unbind(call.from_user.id, callback_data.value)
+async def unbind(call: types.CallbackQuery, callback_data: Devices, state: FSMContext,
+                 c, user: dict, settings):
+    data = await state.get_data()
+    hwids = data.get('hwids') or []
+
+    try:
+        hwid = hwids[int(callback_data.value)]
+    except (ValueError, IndexError):
+        await call.answer('Список устарел, откройте его заново', show_alert=True)
+        return
+
+    removed = await c.devices.unbind(call.from_user.id, hwid)
     await call.answer('Устройство отвязано ✅' if removed else 'Не удалось отвязать',
                       show_alert=not removed)
-    await list_devices(call, c, await c.users.get(call.from_user.id), settings)
+    await list_devices(call, state, c, await c.users.get(call.from_user.id), settings)
 
 
 def create_router() -> Router:
-    """Собирает роутер раздела.
-
-    Фабрика, а не модульный синглтон: Router подключается только к одному
-    Dispatcher, поэтому синглтон ломает тесты и любой сценарий со вторым ботом.
-    Заодно карта «событие → хендлер» видна одним списком.
-    """
+    """Собирает роутер раздела."""
     router = Router(name='devices')
-    router.callback_query.register(manager, Menu.filter(F.screen == 'devices'), Feature('features.devices_enabled'))
-    router.callback_query.register(add_devices, Devices.filter(F.action == 'add'), Feature('features.devices_enabled'))
+    feature = Feature('features.devices_enabled')
+
+    router.callback_query.register(manager, Menu.filter(F.screen == 'devices'), feature)
+    router.callback_query.register(add_devices, Devices.filter(F.action == 'add'), feature)
+    router.callback_query.register(remove_devices, Devices.filter(F.action == 'remove'), feature)
     router.callback_query.register(list_devices, Devices.filter(F.action == 'list'))
     router.callback_query.register(unbind, Devices.filter(F.action == 'unbind'))
     return router

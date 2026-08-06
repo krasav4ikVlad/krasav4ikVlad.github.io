@@ -48,6 +48,10 @@ class FakeVpn:
         return {'uuid': 'u-new', 'shortUuid': 's-new',
                 'expireAt': now() + timedelta(days=days), 'createdAt': now()}
 
+    async def create_bypass_subscription(self, user_id, expire_at, traffic_bytes=None):
+        return {'uuid': 'u-bypass', 'shortUuid': 's-bypass',
+                'expireAt': expire_at, 'trafficLimitBytes': 1024 ** 3}
+
     async def update_subscription(self, uuid, **kw):
         return {}
 
@@ -55,9 +59,31 @@ class FakeVpn:
         return []
 
 
+class FakeCryptoResponse:
+    status_code = 200
+
+    def __init__(self, url):
+        self._url = url
+
+    def json(self):
+        return {'encrypted_link': f'happ://enc/{self._url.rsplit("/", 1)[-1]}'}
+
+
+class FakeCryptoHttp:
+    """Сервис шифрования ссылок Happ."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def post(self, url, **kwargs):
+        self.calls += 1
+        return FakeCryptoResponse((kwargs.get('json') or {}).get('url', ''))
+
+
 @pytest.fixture
 async def env(container):
     from app.bot.handlers import register
+    from app.integrations.vpn.links import LinkEncryptor
     from app.services.billing import BillingService
     from app.services.devices import DeviceBillingService
     from app.services.gifts import GiftService
@@ -71,6 +97,7 @@ async def env(container):
     container.devices = DeviceBillingService(container.users, container.settings, container.vpn)
     container.gifts = GiftService(container.users, container.db['gifts'], container.plans,
                                   container.settings, container.vpn)
+    container.links = LinkEncryptor(FakeCryptoHttp())
 
     session = RecordingSession()
     bot = Bot(token='1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', session=session)
@@ -186,13 +213,27 @@ async def test_promo_flow_credits_balance(env):
     assert 'активирован' in session.last_text
 
 
-async def test_email_is_saved_from_plain_message(env):
+async def test_email_is_changed_from_the_profile_button(env):
+    """Почта вводится осознанно: кнопка в профиле, потом адрес сообщением."""
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
 
-    await dp.feed_update(bot, message('ivan@example.com'))
+    await dp.feed_update(bot, callback(Menu(screen='email').pack()))
+    await dp.feed_update(bot, message('не почта'))
+    assert 'не похоже на адрес' in session.last_text
 
+    await dp.feed_update(bot, message('ivan@example.com'))
     assert (await c.users.get(5))['info']['email'] == 'ivan@example.com'
+
+
+async def test_plain_email_message_no_longer_overwrites_it(env):
+    """Раньше любое сообщение с @ молча меняло почту."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    await dp.feed_update(bot, message('random@example.com'))
+
+    assert (await c.users.get(5))['info']['email'] == 'Не привязана'
 
 
 async def test_gift_link_activates_subscription(env):
@@ -215,3 +256,89 @@ async def test_unknown_message_shows_profile(env):
 
     await dp.feed_update(bot, message('что-то непонятное'))
     assert 'Профиль' in session.last_text
+
+
+async def test_subscription_screen_shows_the_price_per_period(env):
+    """Раньше выводилось одно число — по нему непонятно, за что списывают."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 200, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='my_subscription').pack()))
+
+    assert '150₽ за месяц' in session.last_text
+
+
+async def test_bypass_link_is_sent_for_the_chosen_app(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 200, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+
+    await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
+    assert (await c.users.get(5))['vpn']['bypass_shortUuid'] == 's-bypass'
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='bypass_app', arg='happ').pack()))
+
+    assert 'happ://enc/s-bypass' in session.last_text
+    user = await c.users.get(5)
+    assert user['vpn']['bypass_connectUrl'] == 'happ://enc/s-bypass'
+    assert user['vpn']['preferred_client'] == 'happ'
+
+
+async def test_bypass_link_is_encrypted_once_and_reused(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 200, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
+
+    for _ in range(3):
+        await dp.feed_update(bot, callback(Menu(screen='bypass_app', arg='happ').pack()))
+
+    assert c.links._http.calls == 1
+
+
+async def test_bypass_incy_without_encoder_does_not_break_the_screen(env):
+    """На Windows и в тестовом контуре node-энкодера нет — это не повод падать."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 200, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
+
+    await dp.feed_update(bot, callback(Menu(screen='bypass_app', arg='incy').pack()))
+
+    assert 'bypass_connectUrl_incy' not in (await c.users.get(5))['vpn']
+
+
+async def test_bypass_traffic_is_charged_by_package_price(env):
+    """Цена не линейна: 15 Гб стоят 90₽, а не 15 × цену гигабайта."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
+
+    balance_before = (await c.users.get(5))['info']['balance']
+    await dp.feed_update(bot, callback(Menu(screen='bypass_buy', arg='15').pack()))
+
+    user = await c.users.get(5)
+    assert user['info']['balance'] == balance_before - 90
+    assert user['vpn']['bypass_trafficLimitBytes'] == 16 * 1024 ** 3
+
+
+async def test_bypass_unknown_package_is_not_charged(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
+
+    balance_before = (await c.users.get(5))['info']['balance']
+    await dp.feed_update(bot, callback(Menu(screen='bypass_buy', arg='7').pack()))
+
+    assert (await c.users.get(5))['info']['balance'] == balance_before

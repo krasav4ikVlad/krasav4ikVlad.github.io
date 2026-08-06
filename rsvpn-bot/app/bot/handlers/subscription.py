@@ -16,11 +16,11 @@ from app.bot.filters.feature import Feature
 from app.bot.keyboards.common import footer
 from app.bot.keyboards.subscription import plans_keyboard
 from app.bot.screens.base import Screen, render
+from app.bot.screens.pricing import price_line_for
 from app.bot.screens.profile import profile_caption, subscription_block
 from app.content import texts
 from app.core.errors import NotEnoughBalance
 from app.core.time import now, parse_dt
-from app.domain.pricing import subscription_price
 
 
 async def show_plans(event, c, user: dict, settings):
@@ -65,7 +65,7 @@ async def show_subscription(event, c, user: dict, settings):
     if not vpn.get('shortUuid'):
         return await show_plans(event, c, user, settings)
 
-    price = await subscription_monthly_cost(c, user, settings)
+    price = await price_line_for(c, user)
     connect_base = await settings.get('link.connect_base')
     expire = parse_dt(vpn.get('expireAt'))
 
@@ -81,7 +81,7 @@ async def show_subscription(event, c, user: dict, settings):
             text='🔁 Продлить подписку', callback_data=Menu(screen='extend').pack()))
     if await settings.flag('features.bypass_enabled'):
         kb.row(types.InlineKeyboardButton(
-            text='🚧 Белые списки', callback_data=Menu(screen='bypass').pack()))
+            text='🛡 ByPass подписка', callback_data=Menu(screen='bypass').pack()))
     if await settings.flag('features.devices_enabled'):
         kb.row(types.InlineKeyboardButton(
             text='📲 Менеджер устройств', callback_data=Menu(screen='devices').pack()))
@@ -92,14 +92,6 @@ async def show_subscription(event, c, user: dict, settings):
 
     await render(event, Screen(text=text, markup=kb.as_markup(),
                                image=c.media('subscription_active')))
-
-
-async def subscription_monthly_cost(c, user: dict, settings) -> int:
-    """Сколько спишется при следующем продлении: тариф + доп. устройства."""
-    plan = await c.plans.by_days((user.get('vpn') or {}).get('period') or 0)
-    rules = await c.topup.rules()
-    return subscription_price(int(plan['price']) if plan else 0,
-                              int((user.get('vpn') or {}).get('hwidDeviceLimit') or 0), rules)
 
 
 def create_router() -> Router:

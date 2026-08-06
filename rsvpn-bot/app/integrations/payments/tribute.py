@@ -11,7 +11,8 @@ import hashlib
 import hmac
 import re
 
-from app.integrations.payments.base import PaymentProvider, SignatureError, WebhookEvent
+from app.integrations.payments.base import (Invoice, PaymentProvider, SignatureError,
+                                            WebhookEvent)
 
 PAYMENT_EVENTS = {'new_donation', 'new_digital_product'}
 UID_IN_MESSAGE = re.compile(r'\b(\d{6,15})\b')
@@ -21,9 +22,15 @@ class TributeProvider(PaymentProvider):
     code = 'tribute'
     title = '🌐 Карта иностранная'
 
-    def __init__(self, api_key: str, http=None):
+    def __init__(self, api_key: str, http=None, app_url: str = ''):
         self._key = api_key
         self._http = http
+        self._app_url = app_url or 'https://t.me/tribute/app?startapp=dNvx'
+
+    async def create_invoice(self, user_id: int, amount: int) -> Invoice:
+        """У Tribute счёт не выставляется: пользователь платит в мини-аппе,
+        а сумму мы узнаём из вебхука."""
+        return Invoice(url=self._app_url, payment_id='', amount=amount)
 
     def verify(self, body: bytes, headers: dict[str, str], payload: dict) -> None:
         signature = (headers.get('trbt-signature') or '').strip()

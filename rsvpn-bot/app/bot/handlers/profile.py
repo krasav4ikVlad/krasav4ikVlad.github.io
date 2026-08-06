@@ -1,14 +1,25 @@
-"""Экран профиля."""
+"""Экран профиля и привязка почты."""
 
 from __future__ import annotations
 
+import re
+
 from aiogram import F, Router, types
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Menu
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import profile_caption
+
+EMAIL_RE = re.compile(r'^[\w.+-]+@[\w-]+\.[\w.]+$')
+NO_EMAIL = 'Не привязана'
+
+
+class EmailInput(StatesGroup):
+    value = State()
 
 
 async def profile_keyboard(user: dict, settings) -> InlineKeyboardBuilder:
@@ -27,8 +38,15 @@ async def profile_keyboard(user: dict, settings) -> InlineKeyboardBuilder:
     if await settings.flag('features.gifts_enabled'):
         kb.add(types.InlineKeyboardButton(
             text='🎁 Подарить', callback_data=Menu(screen='gifts').pack()))
+
+    # почта нужна для чеков и восстановления доступа — кнопка должна быть на виду
+    email = (user.get('info') or {}).get('email') or NO_EMAIL
+    kb.row(types.InlineKeyboardButton(
+        text='📩 Изменить почту' if email != NO_EMAIL else '📩 Привязать почту',
+        callback_data=Menu(screen='email').pack()))
+
     if await settings.flag('features.promo_enabled'):
-        kb.row(types.InlineKeyboardButton(
+        kb.add(types.InlineKeyboardButton(
             text='🎟 Промокод', callback_data=Menu(screen='promo').pack()))
 
     return await footer(kb, settings, back=None)
@@ -42,18 +60,52 @@ async def show_profile(event, c, user: dict, settings) -> None:
     ))
 
 
-async def profile(call: types.CallbackQuery, c, user: dict, settings):
+async def profile(call: types.CallbackQuery, state: FSMContext, c, user: dict, settings):
+    await state.clear()
     await show_profile(call, c, user, settings)
     await call.answer()
 
 
-def create_router() -> Router:
-    """Собирает роутер раздела.
+async def ask_email(call: types.CallbackQuery, state: FSMContext, c, user: dict, settings):
+    await state.set_state(EmailInput.value)
 
-    Фабрика, а не модульный синглтон: Router подключается только к одному
-    Dispatcher, поэтому синглтон ломает тесты и любой сценарий со вторым ботом.
-    Заодно карта «событие → хендлер» видна одним списком.
-    """
+    current = (user.get('info') or {}).get('email') or NO_EMAIL
+    kb = await footer(InlineKeyboardBuilder(), settings, back='profile')
+
+    await render(call, Screen(
+        text=('<b>📩 Почта</b>\n\n'
+              f'<b>Сейчас:</b> <code>{current}</code>\n\n'
+              'Отправьте адрес одним сообщением.\n'
+              '<blockquote>Она нужна для чеков об оплате и восстановления '
+              'доступа к подписке.</blockquote>'),
+        markup=kb.as_markup(), image=c.media('email')))
+    await call.answer()
+
+
+async def save_email(message: types.Message, state: FSMContext, c, settings):
+    email = (message.text or '').strip()
+
+    if not EMAIL_RE.match(email):
+        await message.answer('❗️Это не похоже на адрес почты. Пример: name@example.com')
+        return
+
+    await c.users.col.update_one(
+        {'user_data.user_id': message.from_user.id},
+        {'$set': {'info.email': email}})
+    await state.clear()
+
+    if c.notifier:
+        await c.notifier.email_changed(message.from_user.id, email=email)
+
+    user = await c.users.get(message.from_user.id)
+    await message.answer(f'✅ Почта сохранена: <code>{email}</code>')
+    await show_profile(message, c, user, settings)
+
+
+def create_router() -> Router:
+    """Собирает роутер раздела."""
     router = Router(name='profile')
     router.callback_query.register(profile, Menu.filter(F.screen == 'profile'))
+    router.callback_query.register(ask_email, Menu.filter(F.screen == 'email'))
+    router.message.register(save_email, EmailInput.value)
     return router

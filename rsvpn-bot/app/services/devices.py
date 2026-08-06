@@ -34,6 +34,31 @@ log = logging.getLogger(__name__)
 CHARGE_PERIOD_DAYS = 30
 
 
+def remove_from_nearest_charge(packages: list[dict], amount: int) -> tuple[list[dict], int]:
+    """Снять `amount` устройств, начиная с пакета с ближайшим списанием."""
+    items = [dict(p) for p in packages]
+    order = sorted(
+        (i for i, p in enumerate(items)
+         if p.get('active', True) and int(p.get('amount', 0) or 0) > 0),
+        key=lambda i: parse_dt(items[i].get('nextChargeAt')) or now(),
+    )
+
+    removed = 0
+    left = amount
+    for index in order:
+        if left <= 0:
+            break
+        item = items[index]
+        take = min(int(item.get('amount', 0) or 0), left)
+        item['amount'] = int(item['amount']) - take
+        if item['amount'] <= 0:
+            item['active'] = False
+        removed += take
+        left -= take
+
+    return items, removed
+
+
 @dataclass
 class DeviceBillingReport:
     charged: int = 0
@@ -89,6 +114,35 @@ class DeviceBillingService:
              '$set': {'vpn.hwidDeviceLimit': new_limit}},
         )
         log.info('%s купил %s доп. устройств за %s₽', user_id, amount, total)
+        return new_limit
+
+    async def remove(self, user_id: int, amount: int) -> int:
+        """Уменьшить лимит. Снимаем с пакета, у которого ближайшее списание —
+        так человек дольше пользуется уже оплаченным."""
+        if amount <= 0:
+            raise ValueError('количество должно быть больше нуля')
+
+        user = await self.users.get(user_id, {'vpn': 1})
+        vpn = (user or {}).get('vpn') or {}
+        packages = list(vpn.get('extraDevices') or [])
+        base_limit = await self.settings.int('price.devices_free_limit')
+
+        updated, removed = remove_from_nearest_charge(packages, amount)
+        if not removed:
+            return int(vpn.get('hwidDeviceLimit') or base_limit)
+
+        new_limit = base_limit + sum(int(p.get('amount', 0) or 0)
+                                     for p in updated if p.get('active', True))
+
+        uuid = vpn.get('uuid')
+        if uuid:
+            await self.vpn.update_subscription(uuid, device_limit=new_limit)
+
+        await self.users.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$set': {'vpn.extraDevices': updated, 'vpn.hwidDeviceLimit': new_limit}})
+
+        log.info('%s уменьшил лимит на %s, стало %s', user_id, removed, new_limit)
         return new_limit
 
     async def unbind(self, user_id: int, hwid: str) -> bool:

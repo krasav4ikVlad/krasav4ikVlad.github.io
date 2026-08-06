@@ -11,21 +11,6 @@ from aiogram import F, Router, types
 
 from app.bot.handlers.profile import show_profile
 
-EMAIL = F.text.regexp(r'^[\w.+-]+@[\w-]+\.[\w.]+$')
-
-
-async def save_email(message: types.Message, c, settings):
-    email = (message.text or '').strip()
-    await c.users.col.update_one(
-        {'user_data.user_id': message.from_user.id},
-        {'$set': {'info.email': email}})
-
-    if c.notifier:
-        await c.notifier.email_changed(message.from_user.id, email=email)
-
-    await message.answer(f'✅ Почта сохранена: <code>{email}</code>')
-
-
 async def anything_else(message: types.Message, c, user: dict | None, settings):
     if user is None:
         await message.answer('Отправьте /start, чтобы начать.')
@@ -41,6 +26,5 @@ def create_router() -> Router:
     Заодно карта «событие → хендлер» видна одним списком.
     """
     router = Router(name='fallback')
-    router.message.register(save_email, EMAIL)
     router.message.register(anything_else, F.chat.type == 'private')
     return router

@@ -47,8 +47,33 @@ class PaymentProvider:
     min_amount: int = 75
     verified: bool = True      # проверяется ли подпись входящего вебхука
 
+    # общие настройки, проставляются реестром при сборке
+    success_url: str = 'https://t.me/rsconnect_bot'
+    callback_base: str = 'https://webhook.rsvps.tech'
+
     async def create_invoice(self, user_id: int, amount: int) -> Invoice:
         raise NotImplementedError
+
+    async def _post(self, url: str, *, headers=None, json=None, content=None) -> dict:
+        """POST с разбором ответа. Ошибку превращает в PaymentError с текстом."""
+        from app.core.errors import PaymentError
+
+        if self._http is None:
+            raise PaymentError('нет http-клиента')
+
+        try:
+            response = await self._http.post(url, headers=headers, json=json,
+                                             content=content, timeout=30)
+        except Exception as exc:
+            raise PaymentError(f'{self.code}: {exc}') from exc
+
+        if response.status_code != 200:
+            raise PaymentError(f'{self.code}: HTTP {response.status_code} '
+                               f'{response.text[:200]}')
+        try:
+            return response.json()
+        except Exception as exc:
+            raise PaymentError(f'{self.code}: ответ не JSON') from exc
 
     def verify(self, body: bytes, headers: dict[str, str], payload: dict) -> None:
         """Бросает SignatureError, если подпись не сошлась."""

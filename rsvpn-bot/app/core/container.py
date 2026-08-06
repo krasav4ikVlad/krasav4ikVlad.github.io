@@ -50,6 +50,7 @@ class Container:
     payouts: Any = None
     survey: Any = None
     devices: Any = None
+    links: Any = None
     entities: dict = field(default_factory=dict)
 
     def collection(self, name: str):
@@ -152,6 +153,8 @@ class Container:
             await self.gifts.ensure_indexes()
         await self.plans.seed()
         await self.reload_texts()
+        if self.payments is not None:
+            await self.payments.configure()
 
         failed = [name for repo in (self.users, self.plans, self.payments_repo)
                   for name in repo.failed_indexes]
@@ -168,6 +171,7 @@ class Container:
 
         from app.admin.entities import build_entities
         from app.integrations.payments.registry import PaymentRegistry, build_providers
+        from app.integrations.vpn.links import LinkEncryptor
         from app.integrations.vpn.remnawave import RemnawaveClient
         from app.services.billing import BillingService
         from app.services.topup import TopupService
@@ -188,7 +192,12 @@ class Container:
         container.vpn = RemnawaveClient(config.vpn.base_url, config.vpn.token, http,
                                         container.settings, squads,
                                         dry_run=config.vpn.dry_run)
-        container.payments = PaymentRegistry(build_providers(config, http), container.settings)
+        container.links = LinkEncryptor(
+            http, rsa_public_key=config.vpn.happ_rsa_public_key,
+            incy_script=config.vpn.incy_script, incy_cwd=config.vpn.incy_cwd)
+        container.payments = PaymentRegistry(
+            build_providers(config, http, container.db[names.CARDLINK_BILLS]),
+            container.settings)
         container.topup = TopupService(
             container.users, container.payments_repo, container.settings, container=container)
         container.billing = BillingService(

@@ -11,30 +11,37 @@ from app.bot.callbacks import Menu
 from app.bot.filters.feature import Feature
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
+from app.bot.screens.profile import gifts_block, profile_caption
+
+
+async def gift_labels(plans_repo) -> dict[str, str]:
+    """Коды тарифов → названия: в тексте должно быть «1 месяц», а не «1month»."""
+    return {plan['code']: plan['title'] for plan in await plans_repo.all(only_enabled=False)}
 
 
 async def gifts_menu(call: types.CallbackQuery, c, user: dict, settings):
-    free = (c.users.pick(user, 'info.gifts', {}) or {})
     username = await settings.get('link.bot_username')
+    labels = await gift_labels(c.plans)
+    owned = c.users.pick(user, 'info.gifts', {}) or {}
 
-    lines = ['<b>🎁 Подарок другу</b>\n',
-             'Выберите тариф — бот подготовит ссылку, которую можно переслать.\n']
-    owned = [f'• {code}: {count} шт.' for code, count in free.items() if count]
-    if owned:
-        lines.append('<b>Бесплатные подарки:</b>')
-        lines.extend(owned)
-        lines.append('')
-    lines.append(f'Можно также набрать <code>@{username}</code> в любом чате.')
+    text = (
+        profile_caption(user, '🎁 Подарки')
+        + f'<b>🎁 Подарки:</b>\n{gifts_block(owned, labels)}\n\n'
+        + f'<blockquote>🎁 Чтобы подарить RS VPN другу, просто напишите '
+          f'@{username} прямо в чате с ним и выберите нужную подписку.\n\n'
+          f'Или выберите тариф кнопкой ниже — бот подготовит ссылку.</blockquote>'
+    )
 
     kb = InlineKeyboardBuilder()
     for plan in await c.plans.all():
+        free = int(owned.get(plan['code'], 0) or 0)
+        mark = f' (бесплатно: {free})' if free else f' — {plan["price"]}₽'
         kb.row(types.InlineKeyboardButton(
-            text=f'{plan["title"]} — {plan["price"]}₽',
+            text=f'🎁 {plan["title"]}{mark}',
             switch_inline_query=plan['code']))
     await footer(kb, settings, back='profile')
 
-    await render(call, Screen(text='\n'.join(lines), markup=kb.as_markup(),
-                              image=c.media('gifts')))
+    await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('gifts')))
     await call.answer()
 
 
@@ -44,9 +51,14 @@ async def inline_gifts(query: types.InlineQuery, c, settings):
         return
 
     username = await settings.get('link.bot_username')
+    wanted = (query.query or '').strip().lower()
     results = []
 
     for plan in await c.plans.all():
+        # текст запроса приходит из switch_inline_query — показываем выбранный тариф
+        if wanted and wanted not in (plan['code'].lower(), plan['title'].lower()):
+            continue
+
         gift_id = await c.gifts.create(query.from_user.id, plan['code'])
         kb = InlineKeyboardBuilder()
         kb.row(types.InlineKeyboardButton(
@@ -68,13 +80,9 @@ async def inline_gifts(query: types.InlineQuery, c, settings):
 
 
 def create_router() -> Router:
-    """Собирает роутер раздела.
-
-    Фабрика, а не модульный синглтон: Router подключается только к одному
-    Dispatcher, поэтому синглтон ломает тесты и любой сценарий со вторым ботом.
-    Заодно карта «событие → хендлер» видна одним списком.
-    """
+    """Собирает роутер раздела."""
     router = Router(name='gifts')
-    router.callback_query.register(gifts_menu, Menu.filter(F.screen == 'gifts'), Feature('features.gifts_enabled'))
+    router.callback_query.register(gifts_menu, Menu.filter(F.screen == 'gifts'),
+                                   Feature('features.gifts_enabled'))
     router.inline_query.register(inline_gifts)
     return router

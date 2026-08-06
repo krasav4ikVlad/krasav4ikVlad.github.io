@@ -15,18 +15,25 @@ from app.integrations.payments.wata import WataProvider
 log = logging.getLogger(__name__)
 
 
-def build_providers(config, http=None) -> list[PaymentProvider]:
-    """Провайдер поднимается, только если для него задан ключ в .env."""
+def build_providers(config, http=None, bills=None) -> list[PaymentProvider]:
+    """Провайдер поднимается, только если для него задан ключ в .env.
+
+    Названия у всех разные: несколько провайдеров закрывают один способ оплаты
+    (СБП — wata и два severpay, карта РФ — cardlink и cloudpayments), и с
+    одинаковыми подписями в меню появлялись кнопки-близнецы.
+    """
     keys = config.payments
     candidates = [
         (keys.cardlink_token, lambda: CardlinkProvider(keys.cardlink_token,
-                                                       keys.cardlink_shop_id, http)),
+                                                       keys.cardlink_shop_id, http, bills)),
         (keys.wata_token, lambda: WataProvider(keys.wata_token, keys.wata_token_visa, http=http)),
         (keys.heleket_key, lambda: HeleketProvider(keys.heleket_key,
                                                    keys.heleket_merchant_id, http)),
-        (keys.severpay_key, lambda: SeverPayProvider(keys.severpay_key, 'severpay', http)),
+        (keys.severpay_key, lambda: SeverPayProvider(keys.severpay_key, 'severpay', http,
+                                                     title='⚡️ СБП (резерв)')),
         (keys.severpay_web_key, lambda: SeverPayProvider(keys.severpay_web_key,
-                                                         'severpay_web', http)),
+                                                         'severpay_web', http,
+                                                         title='⚡️ СБП (запасной)')),
         (keys.tribute_key, lambda: TributeProvider(keys.tribute_key, http)),
         (keys.cloudpayments_secret, lambda: CloudPaymentsProvider(
             keys.cloudpayments_public_id, keys.cloudpayments_secret, http)),
@@ -41,6 +48,18 @@ class PaymentRegistry:
     def __init__(self, providers: list[PaymentProvider], settings):
         self._providers = {p.code: p for p in providers}
         self._settings = settings
+
+    async def configure(self) -> None:
+        """Общие настройки провайдеров: куда возвращать и куда слать вебхук."""
+        success = str(await self._settings.get('pay.success_url'))
+        callback = str(await self._settings.get('pay.callback_base'))
+        merchant = await self._settings.int('pay.severpay_mid')
+
+        for provider in self._providers.values():
+            provider.success_url = success
+            provider.callback_base = callback
+            if provider.code.startswith('severpay') and merchant:
+                provider._merchant_id = merchant
 
     def get(self, code: str) -> PaymentProvider | None:
         return self._providers.get(code)

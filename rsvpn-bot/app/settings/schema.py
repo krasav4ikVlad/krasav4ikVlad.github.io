@@ -74,6 +74,11 @@ SCHEMA: tuple[Group, ...] = (
         Setting('pay.tribute_enabled', 'Tribute (иностранные карты)', 'bool', True),
         Setting('pay.min_topup', 'Минимальное пополнение', 'int', 75, unit='₽', min=1),
         Setting('pay.min_topup_sbp', 'Минимум для СБП / загран. карт', 'int', 100, unit='₽', min=1),
+        Setting('pay.success_url', 'Куда возвращать после оплаты', 'str',
+                'https://t.me/rsconnect_bot'),
+        Setting('pay.callback_base', 'Адрес приёма вебхуков', 'str',
+                'https://webhook.rsvps.tech'),
+        Setting('pay.severpay_mid', 'Merchant ID SeverPay', 'int', 1058),
         Setting('pay.fee_rate', 'Комиссия шлюза (WATA)', 'percent', 0.05,
                 hint='Насколько уменьшать зачисление относительно оплаченного', min=0, max=1),
     )),
@@ -117,6 +122,8 @@ SCHEMA: tuple[Group, ...] = (
                 'dd4fd59f-415a-4fab-8af7-afde9db099bc'),
         Setting('bypass.default_traffic_gb', 'Трафик по умолчанию', 'int', 1, unit=' Гб', min=1),
         Setting('bypass.price_per_gb', 'Цена за гигабайт', 'int', 5, unit='₽', min=0),
+        Setting('bypass.packages', 'Пакеты трафика', 'str', '5:50,15:90,30:170,100:500',
+                hint='гигабайты:цена через запятую. Пусто — считается по цене за гигабайт'),
     )),
 
     Group('renewal', '🔁 Автопродление', (

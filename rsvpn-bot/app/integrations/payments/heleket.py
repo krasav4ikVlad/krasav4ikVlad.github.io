@@ -6,7 +6,8 @@ import base64
 import hashlib
 import json
 
-from app.integrations.payments.base import PaymentProvider, SignatureError, WebhookEvent
+from app.integrations.payments.base import (Invoice, PaymentProvider, SignatureError,
+                                            WebhookEvent)
 
 PAID_STATUSES = {'paid', 'paid_over'}
 
@@ -19,6 +20,34 @@ class HeleketProvider(PaymentProvider):
         self._key = api_key
         self._merchant_id = merchant_id
         self._http = http
+
+    async def create_invoice(self, user_id: int, amount: int) -> Invoice:
+        from uuid import uuid4
+
+        from app.core.errors import PaymentError
+
+        payload = {
+            'amount': str(amount), 'currency': 'RUB',
+            'order_id': f'{user_id}_{uuid4()}',
+            'url_success': self.success_url, 'url_return': self.success_url,
+            'url_callback': f'{self.callback_base}/payment/webhook/heleket',
+        }
+        raw = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+        sign = hashlib.md5(
+            (base64.b64encode(raw.encode()).decode() + self._key).encode()).hexdigest()
+
+        data = await self._post(
+            'https://api.heleket.com/v1/payment',
+            headers={'Content-Type': 'application/json',
+                     'merchant': self._merchant_id, 'sign': sign},
+            content=raw.encode(),
+        )
+
+        result = data.get('result') or {}
+        if not result.get('url'):
+            raise PaymentError(f'heleket: нет ссылки {str(data)[:200]}')
+        return Invoice(url=result['url'], payment_id=str(result.get('order_id') or ''),
+                       amount=amount)
 
     def verify(self, body: bytes, headers: dict[str, str], payload: dict) -> None:
         got = payload.get('sign')

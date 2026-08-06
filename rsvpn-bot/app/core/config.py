@@ -77,6 +77,10 @@ class VpnPanelConfig:
     base_squad_id: str = ''
     happ_rsa_public_key: str = ''
     connect_base: str = 'https://connect.rsvps.tech/'
+    # node-энкодер ссылок INCY: на сервере лежит рядом с ботом, локально его
+    # обычно нет — тогда кнопка INCY честно скажет, что недоступна
+    incy_script: str = ''
+    incy_cwd: str = ''
     # True — запросы на изменение в панель не уходят (тестовый контур)
     dry_run: bool = False
     # секрет вебхука панели: сейчас записан прямо в lifeline.py — перевыпустить
@@ -151,6 +155,8 @@ class Config:
                 happ_rsa_public_key=_env('HAPP_RSA_PUBLIC_KEY'),
                 connect_base=_env('VPN_CONNECT_BASE', default='https://connect.rsvps.tech/'),
                 webhook_secret=_env('REMNAWAVE_WEBHOOK_SECRET'),
+                incy_script=_env('INCY_ENCODER'),
+                incy_cwd=_env('INCY_CWD'),
                 dry_run=_env('PANEL_DRY_RUN', default='').lower() in ('1', 'true', 'yes'),
             ),
             payments=PaymentsConfig(

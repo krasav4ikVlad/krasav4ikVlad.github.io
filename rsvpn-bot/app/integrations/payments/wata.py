@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from app.integrations.payments.base import PaymentProvider, WebhookEvent
+from app.integrations.payments.base import Invoice, PaymentProvider, WebhookEvent
 
 UID_IN_DESCRIPTION = re.compile(r'Пополнение\s+баланса\s+(\d+)', re.IGNORECASE)
 
@@ -20,6 +20,30 @@ class WataProvider(PaymentProvider):
         self._token_visa = token_visa
         self._fee_rate = fee_rate
         self._http = http
+
+    async def create_invoice(self, user_id: int, amount: int) -> Invoice:
+        from uuid import uuid4
+
+        from app.core.errors import PaymentError
+
+        # сумма к оплате с учётом комиссии: на баланс придёт ровно amount
+        to_pay = int(round(amount * (1 + self._fee_rate)))
+
+        data = await self._post(
+            'https://api.wata.pro/api/h2h/links',
+            headers={'Content-Type': 'application/json',
+                     'Authorization': f'Bearer {self._token}'},
+            json={'amount': to_pay, 'currency': 'RUB',
+                  'description': f'Пополнение баланса {user_id} на {amount}₽',
+                  'orderId': str(uuid4()),
+                  'successRedirectUrl': self.success_url,
+                  'failRedirectUrl': self.success_url},
+        )
+
+        url = data.get('url')
+        if not url:
+            raise PaymentError(f'wata: нет ссылки в ответе {str(data)[:200]}')
+        return Invoice(url=url, payment_id=str(data.get('id') or ''), amount=to_pay)
 
     def parse(self, payload: dict) -> WebhookEvent:
         if payload.get('transactionStatus') != 'Paid':

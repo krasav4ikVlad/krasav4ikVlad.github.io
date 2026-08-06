@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -16,6 +18,8 @@ from app.bot.callbacks import Menu, Payment
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
 from app.core.errors import PaymentError
+
+log = logging.getLogger(__name__)
 
 PRESETS = (75, 150, 300, 500, 1000)
 
@@ -54,14 +58,35 @@ async def choose_amount(call: types.CallbackQuery, callback_data: Payment, c, se
                 text=f'{amount}₽',
                 callback_data=Payment(provider=provider.code, amount=amount).pack()))
     kb.adjust(3)
+    kb.row(types.InlineKeyboardButton(
+        text='✏️ Своя сумма',
+        callback_data=Payment(provider=provider.code, amount=-1).pack()))
     await footer(kb, settings, back='payments')
 
     await state.set_state(TopUp.amount)
     await state.update_data(provider=provider.code, minimum=minimum)
 
     await render(call, Screen(
-        text=(f'<b>{provider.title}</b>\n\nВыберите сумму или отправьте свою сообщением.\n'
-              f'Минимум: <b>{minimum}₽</b>'),
+        text=(f'<b>{provider.title}</b>\n\nВыберите сумму кнопкой или отправьте свою '
+              f'сообщением.\nМинимум: <b>{minimum}₽</b>'),
+        markup=kb.as_markup(), image=c.media('payment')))
+    await call.answer()
+
+
+async def ask_custom_amount(call: types.CallbackQuery, callback_data: Payment, c,
+                            settings, state: FSMContext):
+    data = await state.get_data()
+    minimum = data.get('minimum') or await settings.int('pay.min_topup')
+
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(
+        text='⬅️ Назад', callback_data=Payment(provider=callback_data.provider).pack()))
+
+    await state.set_state(TopUp.amount)
+    await state.update_data(provider=callback_data.provider, minimum=minimum)
+
+    await render(call, Screen(
+        text=f'Отправьте сумму пополнения числом.\nМинимум: <b>{minimum}₽</b>',
         markup=kb.as_markup()))
     await call.answer()
 
@@ -95,11 +120,17 @@ async def _send_invoice(event, c, provider_code: str, amount: int) -> None:
         return
 
     try:
-        invoice = await provider.create_invoice(
-            event.from_user.id if hasattr(event, 'from_user') else 0, amount)
-    except (PaymentError, NotImplementedError):
+        invoice = await provider.create_invoice(event.from_user.id, amount)
+    except NotImplementedError:
+        log.error('у провайдера %s не реализовано создание счёта', provider_code)
         await render(event, Screen(
-            text='Платёжная система сейчас недоступна. Попробуйте другой способ.'))
+            text='Этот способ оплаты пока недоступен. Выберите другой.'))
+        return
+    except PaymentError as exc:
+        log.error('счёт не создан (%s): %s', provider_code, exc)
+        await render(event, Screen(
+            text=('Платёжная система не ответила. Попробуйте ещё раз или '
+                  'выберите другой способ.')))
         return
 
     kb = InlineKeyboardBuilder()
@@ -122,6 +153,7 @@ def create_router() -> Router:
     router = Router(name='payments')
     router.callback_query.register(choose_provider, Menu.filter(F.screen == 'payments'))
     router.callback_query.register(choose_amount, Payment.filter(F.amount == 0))
+    router.callback_query.register(ask_custom_amount, Payment.filter(F.amount == -1))
     router.callback_query.register(create_invoice, Payment.filter(F.amount > 0))
     router.message.register(custom_amount, TopUp.amount)
     return router
