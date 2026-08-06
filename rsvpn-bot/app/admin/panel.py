@@ -53,20 +53,23 @@ def main_kb(c) -> InlineKeyboardBuilder:
     for entity in c.entities.values():
         kb.row(btn(entity.title, 'elist', entity.code))
     kb.row(btn('💬 Рассылка', 'broadcast'))
-    kb.row(btn('🔄 Обновить статистику', 'main'))
+    kb.row(btn('🔄 Обновить статистику', 'main', 'refresh'))
     return kb
 
 
 async def admin_command(message: types.Message, state: FSMContext, c) -> None:
     await state.clear()
-    await message.answer(await build_stats_text(c.users, c.config.admin_ids),
-                         reply_markup=main_kb(c).as_markup())
+    await message.answer(await c.stats.text(), reply_markup=main_kb(c).as_markup())
 
 
-async def admin_main(call: types.CallbackQuery, state: FSMContext, c, settings) -> None:
-    """Возврат в корень админки — то же, что /admin."""
+async def admin_main(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
+                     c, settings) -> None:
+    """Возврат в корень админки — то же, что /admin.
+
+    Возврат берёт цифры из кэша, «Обновить статистику» — считает заново.
+    """
     await state.clear()
-    await edit(call, await build_stats_text(c.users, c.config.admin_ids), main_kb(c))
+    await edit(call, await c.stats.text(force=callback_data.a == 'refresh'), main_kb(c))
 
 
 # ── настройки: группы ───────────────────────────────────────────────────────

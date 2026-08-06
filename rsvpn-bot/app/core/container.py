@@ -33,6 +33,7 @@ class Container:
     payments_repo: PaymentsRepository = field(init=False)
     settings: SettingsService = field(init=False)
     media_cache: Any = field(init=False)
+    stats: Any = field(init=False)
 
     # заполняются в build(): требуют http-клиента и бота
     vpn: Any = None
@@ -76,6 +77,9 @@ class Container:
         self.promo = PromoService(self.users, self.collection(names.PROMO_CODES),
                                   self.collection(names.PROMO_USAGES), self.settings)
         self.payouts = PayoutService(self.users, self.settings)
+
+        from app.admin.stats import StatsService
+        self.stats = StatsService(self.users, self.config.admin_ids)
         self.survey = SurveyService(self.users, self.db['survey_bonus'], self.settings)
 
     # ── медиа ───────────────────────────────────────────────────────────────
