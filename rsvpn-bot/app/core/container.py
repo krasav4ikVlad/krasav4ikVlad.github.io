@@ -166,9 +166,10 @@ class Container:
             log.warning('админ-уведомление не отправлено: %s', exc)
 
     async def reload_texts(self) -> None:
-        from app.content import texts
+        from app.content import emoji, texts
         docs = await self.db[names.CONTENT_OVERRIDES].find({}).to_list(length=None)
         texts.set_overrides({d['_id']: d.get('value', '') for d in docs if d.get('value')})
+        emoji.set_enabled(await self.settings.flag('content.custom_emoji'))
 
     async def warn_about_legacy_leftovers(self) -> list[str]:
         """Данные остались в коллекции с пробелом, а бот смотрит в чистую.

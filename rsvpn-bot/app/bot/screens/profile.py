@@ -8,18 +8,21 @@
 from __future__ import annotations
 
 from app.content import texts
+from app.content.emoji import e
 from app.core.time import fmt, parse_dt
 
 
-def profile_caption(user: dict, title: str = '👤 Профиль') -> str:
+def profile_caption(user: dict, title: str = '') -> str:
     info = user.get('info') or {}
     ref = info.get('ref_stats') or {}
+    heading = title or f'{e("user")} Профиль'
     return (
-        f'<b>{title}</b>\n\n'
-        f'<b>🆔 Идентификатор:</b> <code>{(user.get("user_data") or {}).get("user_id", "")}</code>\n'
-        f'<b>💰 Баланс:</b> <code>{info.get("balance", 0)}₽</code>\n'
-        f'<b>👥 Друзей:</b> <code>{len(ref.get("referrals") or [])}</code>\n'
-        f'<b>✉️ Почта:</b> <code>{info.get("email", "Не привязана")}</code>\n\n'
+        f'<b>{heading}</b>\n\n'
+        f'<b>{e("id")} Идентификатор:</b> '
+        f'<code>{(user.get("user_data") or {}).get("user_id", "")}</code>\n'
+        f'<b>{e("money")} Баланс:</b> <code>{info.get("balance", 0)}₽</code>\n'
+        f'<b>{e("friends")} Друзей:</b> <code>{len(ref.get("referrals") or [])}</code>\n'
+        f'<b>{e("email")} Почта:</b> <code>{info.get("email", "Не привязана")}</code>\n\n'
     )
 
 
@@ -40,17 +43,18 @@ def price_line(plan_price: int, days: int, devices_price: int) -> str:
     """
     line = f'<code>{plan_price}₽ за {period_label(days)}</code>'
     if devices_price:
-        line += f'\n<b>💳 Плата за устройства:</b> <code>{devices_price}₽ в месяц</code>'
+        line += (f'\n<b>{e("card")} Плата за устройства:</b> '
+                 f'<code>{devices_price}₽ в месяц</code>')
     return line
 
 
 def subscription_block(user: dict, price: str, connect_base: str) -> str:
     vpn = user.get('vpn') or {}
     return (
-        f'<b>📅 Дата окончания:</b> <code>{fmt(vpn.get("expireAt"))}</code>\n'
-        f'<b>📲 Лимит устройств:</b> <code>{vpn.get("hwidDeviceLimit", 0)}</code>\n'
-        f'<b>💸 Плата за подписку:</b> {price}\n\n'
-        f'<b>🔗 Ссылка на подключение:</b> {connect_base}{vpn.get("shortUuid", "")}\n\n'
+        f'<b>{e("calendar")} Дата окончания:</b> <code>{fmt(vpn.get("expireAt"))}</code>\n'
+        f'<b>{e("devices")} Лимит устройств:</b> <code>{vpn.get("hwidDeviceLimit", 0)}</code>\n'
+        f'<b>{e("payout")} Плата за подписку:</b> {price}\n\n'
+        f'<b>{e("link")} Ссылка на подключение:</b> {connect_base}{vpn.get("shortUuid", "")}\n\n'
     )
 
 
@@ -69,11 +73,11 @@ def extra_devices_list(user: dict) -> str:
 def devices_block(user: dict, price: str, connect_base: str) -> str:
     vpn = user.get('vpn') or {}
     return (
-        f'<b>📅 Дата окончания:</b> <code>{fmt(vpn.get("expireAt"))}</code>\n'
-        f'<b>📲 Лимит устройств:</b> <code>{vpn.get("hwidDeviceLimit", 0)}</code>\n'
-        f'<b>📦 Доп. устройства:</b>\n{extra_devices_list(user)}\n'
-        f'<b>💸 Плата за подписку:</b> {price}\n\n'
-        f'<b>🔗 Ссылка на подключение:</b> {connect_base}{vpn.get("shortUuid", "")}\n\n'
+        f'<b>{e("calendar")} Дата окончания:</b> <code>{fmt(vpn.get("expireAt"))}</code>\n'
+        f'<b>{e("devices")} Лимит устройств:</b> <code>{vpn.get("hwidDeviceLimit", 0)}</code>\n'
+        f'<b>{e("devices")} Доп. устройства:</b>\n{extra_devices_list(user)}\n'
+        f'<b>{e("payout")} Плата за подписку:</b> {price}\n\n'
+        f'<b>{e("link")} Ссылка на подключение:</b> {connect_base}{vpn.get("shortUuid", "")}\n\n'
     )
 
 

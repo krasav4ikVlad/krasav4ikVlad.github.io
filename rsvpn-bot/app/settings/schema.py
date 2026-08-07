@@ -136,6 +136,13 @@ SCHEMA: tuple[Group, ...] = (
                      'иначе Telegram не даст проверить подписку'),
     )),
 
+    Group('content', '🎨 Оформление', (
+        Setting('content.custom_emoji', 'Кастомные эмодзи', 'bool', True,
+                hint='Выключите, если Telegram отвечает ошибкой на сообщения: '
+                     'право их отправлять есть не у каждого бота. '
+                     'Сами id — в app/content/emoji.py'),
+    )),
+
     Group('moderation', '🚫 Блокировки', (
         Setting('moderation.ban_silent', 'Молча игнорировать забаненных', 'bool', False,
                 hint='Выключено — бот один раз отвечает текстом ниже'),
