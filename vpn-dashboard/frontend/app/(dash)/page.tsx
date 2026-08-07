@@ -5,6 +5,7 @@
  *  всё realtime-only. */
 
 import useSWR from "swr";
+import Link from "next/link";
 import { api, fetcher } from "@/lib/api";
 import type * as T from "@/lib/types";
 import { useEventStream } from "@/lib/ws";
@@ -15,7 +16,9 @@ import { Badge } from "@/components/ui/badge";
 import { ChartSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { TimeSeries } from "@/components/charts/timeseries";
+import { StackedBars } from "@/components/charts/stacked-bars";
 import {
+  fmtDate,
   fmtDateTime,
   fmtHoursApprox,
   fmtMoney,
@@ -243,6 +246,138 @@ function ProvidersCard() {
   );
 }
 
+function RenewalOutlookCard() {
+  const { data, isLoading } = useSWR<T.RenewalOutlook>(
+    api.urls.renewalOutlook(),
+    fetcher,
+    { refreshInterval: 120_000, keepPreviousData: true },
+  );
+  const today = data?.today;
+  const needing = (today?.users ?? []).filter((u) => u.expected_topup > 0);
+  const churnData = (data?.history ?? []).map((h) => ({
+    day: h.day,
+    gone: Math.max(0, h.churned - h.returned),
+    returned: h.returned,
+  }));
+  const lost14 = (data?.history ?? []).reduce((a, h) => a + h.churned, 0);
+  const lostRub14 = (data?.history ?? []).reduce(
+    (a, h) => a + h.lost_monthly_rub,
+    0,
+  );
+
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>Продления сегодня</CardTitle>
+          <p className="mt-0.5 text-xs text-muted">
+            У кого сегодня кончается подписка, сколько денег они должны
+            принести (мин. пополнение {fmtMoney(data?.min_topup ?? 75)}) и
+            сколько юзеров мы теряем
+          </p>
+        </div>
+      </CardHeader>
+      {isLoading && !data ? (
+        <ChartSkeleton height={220} />
+      ) : !data ? null : (
+        <div className="grid gap-4 lg:grid-cols-[230px_1fr_1fr]">
+          <div className="space-y-3">
+            <div>
+              <div className="text-xs text-muted">Истекает сегодня</div>
+              <div className="text-2xl font-semibold text-ink">
+                {fmtNum(today?.expiring)}
+              </div>
+              <div className="text-xs text-muted">
+                с баланса продлятся: {fmtNum(today?.can_renew_from_balance)} ·
+                нужно пополнить: {fmtNum(today?.need_topup)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted">Ожидаемые пополнения</div>
+              <div className="text-lg font-semibold text-[var(--delta-good)]">
+                ≈ {fmtMoney(today?.potential_topup_rub)}
+              </div>
+              <div className="text-xs text-muted">
+                весь объём когорты: {fmtMoney(today?.potential_monthly_rub)}
+                /мес
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted">Ушло за 14 дней</div>
+              <div className="text-lg font-semibold text-critical">
+                {fmtNum(lost14)}{" "}
+                <span className="text-xs font-normal text-muted">
+                  ≈ {fmtMoney(lostRub14)}/мес
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="min-w-0">
+            <div className="mb-1 text-xs text-muted">
+              Отвал по дням (ушли в expired / вернулись позже)
+            </div>
+            <StackedBars
+              data={churnData as unknown as Record<string, unknown>[]}
+              keys={["gone", "returned"]}
+              names={{ gone: "Ушли", returned: "Вернулись" }}
+              height={190}
+              xKey="day"
+              xFormatter={(d) => fmtDate(d)}
+              valueFormatter={(v) => fmtNum(v)}
+            />
+          </div>
+          <div className="min-w-0">
+            <div className="mb-1 text-xs text-muted">
+              Кому нужно пополнить (топ по сумме)
+            </div>
+            {needing.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted">
+                Сегодня всем хватает баланса 🎉
+              </div>
+            ) : (
+              <div className="max-h-[210px] overflow-y-auto pr-1">
+                <Table>
+                  <THead>
+                    <TR>
+                      <TH>Юзер</TH>
+                      <TH className="text-right">Баланс</TH>
+                      <TH className="text-right">Цена</TH>
+                      <TH className="text-right">Ждём</TH>
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {needing.slice(0, 10).map((u) => (
+                      <TR key={u.user_id}>
+                        <TD>
+                          <Link
+                            href={`/users/${u.user_id}`}
+                            className="text-accent hover:underline"
+                          >
+                            {u.username ? `@${u.username}` : `#${u.user_id}`}
+                          </Link>
+                        </TD>
+                        <TD className="text-right tabular text-ink-2">
+                          {fmtMoney(u.balance)}
+                        </TD>
+                        <TD className="text-right tabular text-ink-2">
+                          {fmtMoney(u.personal_cost)}
+                        </TD>
+                        <TD className="text-right tabular font-medium text-ink">
+                          {fmtMoney(u.expected_topup)}
+                        </TD>
+                      </TR>
+                    ))}
+                  </TBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function LiveOverviewPage() {
   const { data, isLoading } = useSWR<T.OverviewSummary>(
     api.urls.overviewSummary(),
@@ -294,6 +429,7 @@ export default function LiveOverviewPage() {
       </div>
 
       <PaceCard />
+      <RenewalOutlookCard />
 
       <div className="grid gap-3 lg:grid-cols-[1fr_380px]">
         <ProvidersCard />

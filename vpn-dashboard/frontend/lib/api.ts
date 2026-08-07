@@ -73,6 +73,7 @@ export const api = {
     providersStatus: () => "/api/overview/providers-status",
     recentEvents: (limit = 50) => `/api/overview/events/recent${qs(undefined, { limit })}`,
     pace: () => "/api/overview/pace",
+    renewalOutlook: () => "/api/overview/renewal-outlook",
 
     revenueTimeseries: (p: PeriodQuery, granularity: string) =>
       `/api/revenue/timeseries${qs(p, { granularity })}`,

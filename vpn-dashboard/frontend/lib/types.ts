@@ -352,6 +352,36 @@ export interface PaceResponse {
   verdict: string;
 }
 
+// ---- renewal outlook ----
+export interface ExpiringUser {
+  user_id: number;
+  username: string | null;
+  segment: string | null;
+  balance: number;
+  personal_cost: number;
+  needed: number;
+  expected_topup: number;
+  sub_until: string | null;
+}
+export interface RenewalOutlook {
+  min_topup: number;
+  monthly_sub_cost: number;
+  today: {
+    expiring: number;
+    can_renew_from_balance: number;
+    need_topup: number;
+    potential_topup_rub: number;
+    potential_monthly_rub: number;
+    users: ExpiringUser[];
+  };
+  history: {
+    day: string;
+    churned: number;
+    returned: number;
+    lost_monthly_rub: number;
+  }[];
+}
+
 // ---- experiments ----
 export interface AbGroup {
   group: string;

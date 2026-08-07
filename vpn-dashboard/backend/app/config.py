@@ -22,6 +22,8 @@ class Settings(BaseSettings):
                                      alias="PAYMENTS_COLLECTION")
     # Database holding payments_collection; empty = same as MONGO_DB
     payments_db: str = Field(default="", alias="PAYMENTS_DB")
+    # Minimum top-up amount enforced by the bot (₽)
+    min_topup_rub: float = Field(default=75, alias="MIN_TOPUP_RUB")
 
     # --- Redis cache (falls back to in-memory when unreachable) ---
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")

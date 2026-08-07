@@ -514,3 +514,143 @@ async def _pace() -> dict[str, Any]:
 async def pace() -> dict[str, Any]:
     """Сегодняшняя выручка против обычного темпа + факторы отклонения."""
     return await _pace()
+
+
+# ---------------------------------------------------------------------------
+# GET /overview/renewal-outlook — кто истекает сегодня и сколько это денег
+# ---------------------------------------------------------------------------
+
+_OUTLOOK_HISTORY_DAYS = 14
+_EXPIRED_RE = "expired|churn"
+_ACTIVE_RE = "active"
+
+
+async def _personal_costs(db: Any, user_ids: list[int]) -> dict[int, float]:
+    """Per-user renewal spend over the last 30 days (their real plan price
+    regardless of billing granularity)."""
+    if not user_ids:
+        return {}
+    since = datetime.now(timezone.utc) - timedelta(days=30)
+    rows = await db[TX_FLAT].aggregate([
+        {"$match": {"direction": "debit", "kind": "renewal",
+                    "user_id": {"$in": user_ids[:2000]},
+                    "dt": {"$type": "date", "$gte": since}}},
+        {"$group": {"_id": "$user_id", "total": {"$sum": "$amount"}}},
+    ]).to_list(length=None)
+    return {int(r["_id"]): float(r["total"] or 0) for r in rows
+            if r.get("_id") is not None}
+
+
+@cached(ttl=120, prefix="overview:renewal-outlook")
+async def _renewal_outlook() -> dict[str, Any]:
+    from .experiments import _monthly_sub_cost  # shared median
+
+    db = get_db()
+    settings = get_settings()
+    min_topup = float(settings.min_topup_rub)
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow = today_start + timedelta(days=1)
+    monthly_cost = await _monthly_sub_cost(db, 199.0)
+
+    # --- expiring today --------------------------------------------------
+    expiring_docs = await db[USERS_FLAT].find(
+        {"$or": [
+            {"sub_until": {"$gte": today_start, "$lt": tomorrow}},
+            {"sub_until": None, "days_to_expire": {"$gte": 0, "$lt": 1}},
+        ]},
+        {"username": 1, "balance": 1, "days_to_expire": 1, "sub_until": 1,
+         "renewals_count": 1, "segment": 1},
+    ).limit(2000).to_list(length=None)
+
+    costs = await _personal_costs(db, [int(d["_id"]) for d in expiring_docs])
+
+    users = []
+    can_renew = 0
+    need_topup = 0
+    potential_topup = 0.0
+    potential_monthly = 0.0
+    for doc in expiring_docs:
+        uid = int(doc["_id"])
+        balance = float(doc.get("balance") or 0)
+        personal = costs.get(uid) or monthly_cost
+        potential_monthly += personal
+        needed = max(0.0, personal - balance)
+        if needed <= 0:
+            can_renew += 1
+            expected = 0.0
+        else:
+            need_topup += 1
+            expected = max(needed, min_topup)
+            potential_topup += expected
+        users.append({
+            "user_id": uid,
+            "username": doc.get("username"),
+            "segment": doc.get("segment"),
+            "balance": r2(balance),
+            "personal_cost": r2(personal),
+            "needed": r2(needed),
+            "expected_topup": r2(expected),
+            "sub_until": iso(as_utc(doc.get("sub_until"))),
+        })
+    users.sort(key=lambda u: -u["expected_topup"])
+
+    # --- who we lost over the last days ---------------------------------
+    since = today_start - timedelta(days=_OUTLOOK_HISTORY_DAYS)
+    churned_by_day: dict[str, int] = {}
+    returned_by_day: dict[str, int] = {}
+    import re as _re
+    expired_re = _re.compile(_EXPIRED_RE, _re.IGNORECASE)
+    active_re = _re.compile(_ACTIVE_RE, _re.IGNORECASE)
+    cursor = db[USERS_FLAT].find(
+        {"segment_history": {"$elemMatch": {"dt": {"$gte": since}}}},
+        {"segment_history": 1},
+    ).batch_size(500)
+    async for doc in cursor:
+        history = doc.get("segment_history") or []
+        for idx, entry in enumerate(history):
+            dt = as_utc(entry.get("dt")) if isinstance(entry, dict) else None
+            segment = (entry or {}).get("segment") if isinstance(entry, dict) else None
+            if dt is None or not segment or dt < since:
+                continue
+            prev = history[idx - 1].get("segment") if idx else None
+            day = dt.date().isoformat()
+            if expired_re.search(str(segment)) and not (
+                    prev and expired_re.search(str(prev))):
+                churned_by_day[day] = churned_by_day.get(day, 0) + 1
+                # came back later?
+                if any(isinstance(later, dict)
+                       and active_re.search(str(later.get("segment") or ""))
+                       for later in history[idx + 1:]):
+                    returned_by_day[day] = returned_by_day.get(day, 0) + 1
+
+    history_series = []
+    for i in range(_OUTLOOK_HISTORY_DAYS, -1, -1):
+        day = (today_start - timedelta(days=i)).date().isoformat()
+        churned = churned_by_day.get(day, 0)
+        history_series.append({
+            "day": day,
+            "churned": churned,
+            "returned": returned_by_day.get(day, 0),
+            "lost_monthly_rub": r2(churned * monthly_cost),
+        })
+
+    return {
+        "min_topup": min_topup,
+        "monthly_sub_cost": r2(monthly_cost),
+        "today": {
+            "expiring": len(users),
+            "can_renew_from_balance": can_renew,
+            "need_topup": need_topup,
+            "potential_topup_rub": r2(potential_topup),
+            "potential_monthly_rub": r2(potential_monthly),
+            "users": users[:20],
+        },
+        "history": history_series,
+    }
+
+
+@router.get("/renewal-outlook")
+async def renewal_outlook() -> dict[str, Any]:
+    """Истекающие сегодня подписки: ожидаемые пополнения и отвал за 2 недели."""
+    return await _renewal_outlook()
