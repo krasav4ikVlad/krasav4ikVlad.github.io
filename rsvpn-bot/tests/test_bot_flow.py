@@ -123,6 +123,7 @@ async def env(container):
                                   container.settings, container.vpn)
     container.links = LinkEncryptor(FakeCryptoHttp())
     container.trial.vpn = container.vpn
+    container.moderation.vpn = container.vpn
     container.payments = PaymentRegistry(
         [HeleketProvider('key', 'merchant', FakeCryptoHttp())], container.settings)
 
@@ -1099,3 +1100,52 @@ async def test_unverifiable_subscription_is_not_the_users_fault(env):
 
     assert (await c.users.get(5))['vpn']['shortUuid'] == ''
     assert any('поддержку' in text.lower() for _, text in session.calls)
+
+
+async def test_hardban_command_disables_the_subscription(env):
+    dp, bot, session, c = env
+    await c.users.create({'user_data': {'user_id': 900, 'username': 'petya'},
+                          'info': {'balance': 0},
+                          'vpn': {'uuid': 'u-900', 'bypass_uuid': 'b-900'}})
+
+    statuses = []
+    c.vpn.set_status = lambda uuid, status: statuses.append((uuid, status)) or \
+        __import__('asyncio').sleep(0, result={})
+
+    await dp.feed_update(bot, message('/hardban 900 чарджбек'))
+
+    assert statuses == [('u-900', 'DISABLED'), ('b-900', 'DISABLED')]
+    saved = (await c.users.get(900))['moderation']
+    assert saved['banned'] is True and saved['hard'] is True
+    assert 'Жёстко заблокирован' in session.last_text
+
+
+async def test_unban_after_hardban_restores_the_subscription(env):
+    dp, bot, session, c = env
+    await c.users.create({'user_data': {'user_id': 900}, 'info': {'balance': 0},
+                          'vpn': {'uuid': 'u-900'}})
+
+    statuses = []
+    c.vpn.set_status = lambda uuid, status: statuses.append((uuid, status)) or \
+        __import__('asyncio').sleep(0, result={})
+
+    await dp.feed_update(bot, message('/hardban 900'))
+    await dp.feed_update(bot, message('/unban 900'))
+
+    assert statuses == [('u-900', 'DISABLED'), ('u-900', 'ACTIVE')]
+    assert (await c.users.get(900))['moderation']['hard'] is False
+
+
+async def test_plain_ban_does_not_call_the_panel(env):
+    dp, bot, session, c = env
+    await c.users.create({'user_data': {'user_id': 900}, 'info': {'balance': 0},
+                          'vpn': {'uuid': 'u-900'}})
+
+    statuses = []
+    c.vpn.set_status = lambda uuid, status: statuses.append((uuid, status)) or \
+        __import__('asyncio').sleep(0, result={})
+
+    await dp.feed_update(bot, message('/ban 900'))
+
+    assert statuses == []
+    assert '/hardban 900' in session.last_text      # подсказка, как ужесточить

@@ -84,7 +84,7 @@ class Container:
         self.stats = StatsService(self.users, self.config.admin_ids)
 
         from app.services.moderation import ModerationService
-        self.moderation = ModerationService(self.users, self.settings)
+        self.moderation = ModerationService(self.users, self.settings, vpn=None)
 
         from app.services.trial import TrialService
         self.trial = TrialService(self.users, self.settings, vpn=None)
@@ -238,6 +238,7 @@ class Container:
         container.gifts = GiftService(container.users, container.db[names.GIFTS],
                                       container.plans, container.settings, container.vpn)
         container.trial.vpn = container.vpn
+        container.moderation.vpn = container.vpn
         container.promo.vpn = container.vpn
         container.entities = build_entities(container)
         return container

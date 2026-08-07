@@ -129,9 +129,13 @@ class RemnawaveClient:
     async def update_subscription(self, uuid: str, *, expire_at: datetime | str | None = None,
                                   traffic_bytes: int | None = None,
                                   device_limit: int | None = None,
-                                  squads: list[str] | None = None) -> dict:
+                                  squads: list[str] | None = None,
+                                  status: str | None = None) -> dict:
         """Частичный PATCH: передаются только заданные поля."""
         payload: dict = {'uuid': uuid}
+
+        if status is not None:
+            payload['status'] = status
 
         if expire_at is not None:
             payload['expireAt'] = (expire_at.isoformat()
@@ -163,6 +167,14 @@ class RemnawaveClient:
         return data, squads or []
 
     # ── устройства ──────────────────────────────────────────────────────────
+    async def set_status(self, uuid: str, status: str) -> dict:
+        """ACTIVE / DISABLED — включить или отключить подписку в панели.
+
+        Нужно жёсткой блокировке: обычный бан только закрывает бота, а
+        конфиг у человека продолжает работать, пока не истечёт срок.
+        """
+        return await self.update_subscription(uuid, status=status)
+
     async def devices(self, uuid: str) -> list[dict]:
         if not uuid:
             return []

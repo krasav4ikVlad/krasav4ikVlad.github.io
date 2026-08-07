@@ -4,9 +4,9 @@
 свежей жалобе, когда id уже перед глазами, и лишние три перехода по меню
 здесь только мешают.
 
-    /ban 123456789 спам в поддержку
-    /ban @username
-    /unban 123456789
+    /ban 123456789 спам в поддержку     — закрыть бота, подписка работает
+    /hardban 123456789 чарджбек          — плюс отключить подписки в панели
+    /unban 123456789                     — снять любую блокировку
 """
 
 from __future__ import annotations
@@ -27,10 +27,11 @@ def _who(doc: dict) -> str:
     return f'{name} (<code>{data.get("user_id", "?")}</code>)'
 
 
-async def ban_command(message: types.Message, command: CommandObject, c) -> None:
+async def _ban(message: types.Message, command: CommandObject, c, hard: bool) -> None:
+    name = '/hardban' if hard else '/ban'
     args = (command.args or '').split(maxsplit=1)
     if not args:
-        await message.answer('Кого банить? <code>/ban 123456789 причина</code>')
+        await message.answer(f'Кого банить? <code>{name} 123456789 причина</code>')
         return
 
     target = await c.moderation.find_user(args[0])
@@ -44,9 +45,29 @@ async def ban_command(message: types.Message, command: CommandObject, c) -> None
         return
 
     reason = args[1] if len(args) > 1 else ''
-    await c.moderation.ban(user_id, message.from_user.id, reason)
-    await message.answer(f'🚫 Заблокирован {_who(target)}'
-                         + (f'\nПричина: {reason}' if reason else ''))
+    result = await c.moderation.ban(user_id, message.from_user.id, reason, hard=hard)
+
+    text = [f'{"⛔️ Жёстко заблокирован" if hard else "🚫 Заблокирован"} {_who(target)}']
+    if reason:
+        text.append(f'Причина: {reason}')
+    if hard:
+        text.append(f'Подписок отключено в панели: <code>{result.disabled}</code>')
+        if result.panel_failed:
+            text.append(f'⚠️ Не удалось отключить: <code>{result.panel_failed}</code> — '
+                        'панель не ответила. Блокировка бота уже действует, '
+                        'повторите команду, чтобы закрыть доступ.')
+    else:
+        text.append('<i>Подписка продолжает работать. Отключить — '
+                    f'<code>/hardban {user_id}</code></i>')
+    await message.answer('\n'.join(text))
+
+
+async def ban_command(message: types.Message, command: CommandObject, c) -> None:
+    await _ban(message, command, c, hard=False)
+
+
+async def hardban_command(message: types.Message, command: CommandObject, c) -> None:
+    await _ban(message, command, c, hard=True)
 
 
 async def unban_command(message: types.Message, command: CommandObject, c) -> None:
@@ -60,8 +81,15 @@ async def unban_command(message: types.Message, command: CommandObject, c) -> No
         return
 
     user_id = (target.get('user_data') or {}).get('user_id')
-    await c.moderation.unban(user_id, message.from_user.id)
-    await message.answer(f'✅ Разблокирован {_who(target)}')
+    result = await c.moderation.unban(user_id, message.from_user.id)
+
+    text = [f'✅ Разблокирован {_who(target)}']
+    if result.hard:
+        text.append(f'Подписок включено обратно: <code>{result.disabled}</code>')
+        if result.panel_failed:
+            text.append(f'⚠️ Не удалось включить: <code>{result.panel_failed}</code> — '
+                        'проверьте панель вручную.')
+    await message.answer('\n'.join(text))
 
 
 async def banned_list(call: types.CallbackQuery, c) -> None:
@@ -75,7 +103,8 @@ async def banned_list(call: types.CallbackQuery, c) -> None:
 
     for doc in banned:
         info = doc.get('moderation') or {}
-        lines.append(f'• {_who(doc)} — {fmt(info.get("banned_at"))}'
+        mark = '⛔️ жёстко' if info.get('hard') else '🚫 обычно'
+        lines.append(f'• {_who(doc)} — {mark}, {fmt(info.get("banned_at"))}'
                      + (f'\n  <i>{info["reason"]}</i>' if info.get('reason') else ''))
         kb.row(types.InlineKeyboardButton(
             text=f'✅ Разбанить {(doc.get("user_data") or {}).get("user_id")}',
@@ -102,6 +131,7 @@ async def unban_button(call: types.CallbackQuery, callback_data: Adm, c) -> None
 def register(router: Router) -> None:
     """Подключается к админскому роутеру: фильтр «только админ» уже стоит там."""
     router.message.register(ban_command, Command('ban'))
+    router.message.register(hardban_command, Command('hardban'))
     router.message.register(unban_command, Command('unban'))
     router.callback_query.register(banned_list, Adm.filter(F.act == 'banned'))
     router.callback_query.register(unban_button, Adm.filter(F.act == 'unban'))
