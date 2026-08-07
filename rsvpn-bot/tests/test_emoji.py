@@ -161,23 +161,130 @@ async def test_middleware_decorates_outgoing_text():
     assert sent[0].text.startswith('<tg-emoji')
 
 
-async def test_middleware_does_not_touch_button_labels():
-    """Подписи кнопок лежат в reply_markup — разметка там не работает."""
-    from aiogram.methods import SendMessage
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
+async def send(method):
+    """Прогнать метод через middleware, как это сделает сессия бота."""
     from app.bot.middlewares.emoji import emoji_middleware
-
-    markup = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f'{e("back")} Назад', callback_data='x')]])
-    method = SendMessage(chat_id=1, text='привет', reply_markup=markup)
 
     async def make_request(bot, m):
         return None
 
     await emoji_middleware(make_request, None, method)
+    return method
 
-    assert method.reply_markup.inline_keyboard[0][0].text == '⬅️ Назад'
+
+def button(text: str):
+    from aiogram.methods import SendMessage
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return SendMessage(chat_id=1, text='привет', reply_markup=InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=text, callback_data='x')]]))
+
+
+async def test_button_label_gets_an_icon():
+    """В подписи кнопки HTML не работает, зато работает icon_custom_emoji_id:
+    значок уезжает туда, а из текста убирается — иначе покажется дважды."""
+    method = await send(button(f'{e("back")} Назад'))
+    btn = method.reply_markup.inline_keyboard[0][0]
+
+    assert btn.icon_custom_emoji_id == '5321133913291135005'
+    assert btn.text == 'Назад'
+
+
+async def test_button_without_id_keeps_its_character():
+    """Иконки нет — обычный значок лучше, чем голая подпись."""
+    method = await send(button(f'{e("stats")} Статистика'))
+    btn = method.reply_markup.inline_keyboard[0][0]
+
+    assert btn.icon_custom_emoji_id is None
+    assert btn.text == '📊 Статистика'
+
+
+async def test_emoji_in_the_middle_of_a_label_stays_put():
+    """Иконка рисуется слева от подписи — переносить туда значок из
+    середины строки значит переставить его местами со словами."""
+    method = await send(button(f'Ежедневная {e("gift")} — 6₽'))
+    btn = method.reply_markup.inline_keyboard[0][0]
+
+    assert btn.icon_custom_emoji_id is None
+    assert btn.text == 'Ежедневная 🎁 — 6₽'
+
+
+async def test_button_labels_are_not_given_html():
+    method = await send(button(f'{e("money")} Баланс'))
+
+    assert '<tg-emoji' not in method.reply_markup.inline_keyboard[0][0].text
+
+
+async def test_popup_answer_is_left_alone():
+    """У answerCallbackQuery нет parse_mode: тег показался бы буквами."""
+    from aiogram.methods import AnswerCallbackQuery
+
+    method = await send(AnswerCallbackQuery(
+        callback_query_id='1', text=f'{e("money")} Баланс пополнен'))
+
+    assert method.text == '💰 Баланс пополнен'
+
+
+async def test_photo_caption_is_decorated():
+    """Экраны бота — фото с подписью, а не текст."""
+    from aiogram.methods import SendPhoto
+
+    method = await send(SendPhoto(chat_id=1, photo='id',
+                                  caption=f'{e("money")} Баланс'))
+
+    assert method.caption.startswith('<tg-emoji')
+
+
+async def test_caption_inside_media_is_decorated(caplog):
+    """При смене экрана подпись лежит на уровень глубже — в media.
+
+    Проверка на лог не лишняя: InputMediaPhoto заморожен, и присваивание
+    поля молча уходило в except — подписи экранов оставались обычными.
+    """
+    from aiogram.methods import EditMessageMedia
+    from aiogram.types import InputMediaPhoto
+
+    method = await send(EditMessageMedia(
+        chat_id=1, message_id=1,
+        media=InputMediaPhoto(media='id', caption=f'{e("money")} Баланс')))
+
+    assert method.media.caption.startswith('<tg-emoji')
+    assert not caplog.records, 'оформление свалилось в except'
+
+
+async def test_toggle_switches_off_the_whole_middleware():
+    emoji.set_enabled(False)
+    method = await send(button(f'{e("back")} Назад'))
+    btn = method.reply_markup.inline_keyboard[0][0]
+
+    assert btn.text == '⬅️ Назад'
+    assert btn.icon_custom_emoji_id is None
+    assert method.text == 'привет'
+
+
+async def test_manual_icon_is_not_overridden():
+    """Если id проставлен руками — это осознанный выбор, не переигрываем."""
+    from aiogram.methods import SendMessage
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+        text=f'{e("back")} Назад', callback_data='x',
+        icon_custom_emoji_id='111')]])
+    method = await send(SendMessage(chat_id=1, text='.', reply_markup=markup))
+    btn = method.reply_markup.inline_keyboard[0][0]
+
+    assert btn.icon_custom_emoji_id == '111'
+    assert btn.text == '⬅️ Назад'
+
+
+# ── подписи кнопок ──────────────────────────────────────────────────────────
+def test_leading_emoji_is_split_off():
+    from app.content.emoji import leading_emoji_id
+
+    assert leading_emoji_id(f'{e("back")} Назад') == ('5321133913291135005', 'Назад')
+    assert leading_emoji_id(f'{e("stats")} Статистика') == ('', '📊 Статистика')
+    assert leading_emoji_id('Просто текст') == ('', 'Просто текст')
+    assert leading_emoji_id('') == ('', '')
 
 
 def test_every_registered_character_is_reachable():
