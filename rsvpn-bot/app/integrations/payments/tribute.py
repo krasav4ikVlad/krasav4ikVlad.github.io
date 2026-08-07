@@ -13,6 +13,7 @@ import re
 
 from app.integrations.payments.base import (Invoice, PaymentProvider, SignatureError,
                                             WebhookEvent)
+from app.content.emoji import e
 
 PAYMENT_EVENTS = {'new_donation', 'new_digital_product'}
 UID_IN_MESSAGE = re.compile(r'\b(\d{6,15})\b')
@@ -20,7 +21,7 @@ UID_IN_MESSAGE = re.compile(r'\b(\d{6,15})\b')
 
 class TributeProvider(PaymentProvider):
     code = 'tribute'
-    title = '🌐 Карта иностранная'
+    title = f'{e("globe")} Карта иностранная'
 
     def __init__(self, api_key: str, http=None, app_url: str = '',
                  code: str = '', title: str = ''):

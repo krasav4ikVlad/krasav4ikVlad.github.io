@@ -15,6 +15,7 @@ from app.bot.filters.feature import Feature
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import profile_caption
+from app.content.emoji import e
 
 REASONS = {
     'not_subscribed': 'Подписка на канал не найдена. Подпишитесь и нажмите «Проверить».',
@@ -32,21 +33,21 @@ async def trial_screen(event, c, user: dict, settings, note: str = ''):
 
     kb = InlineKeyboardBuilder()
     if await settings.flag('trial.require_subscription'):
-        kb.row(types.InlineKeyboardButton(text='📢 Подписаться на канал', url=channel_url))
+        kb.row(types.InlineKeyboardButton(text=f'{e("channel")} Подписаться на канал', url=channel_url))
     kb.row(types.InlineKeyboardButton(
-        text='✅ Проверить и получить', callback_data=Menu(screen='trial_claim').pack()))
+        text=f'{e("ok")} Проверить и получить', callback_data=Menu(screen='trial_claim').pack()))
     kb.row(types.InlineKeyboardButton(
-        text='💳 Купить подписку', callback_data=Menu(screen='subscription').pack()))
+        text=f'{e("card")} Купить подписку', callback_data=Menu(screen='subscription').pack()))
     await footer(kb, settings, back='profile')
 
     hint = note or (
-        f'🎁 Подпишитесь на наш канал и получите <b>{days} дня</b> RS VPN бесплатно.\n\n'
+        f'{e("gift")} Подпишитесь на наш канал и получите <b>{days} дня</b> RS VPN бесплатно.\n\n'
         'После подписки нажмите «Проверить и получить» — доступ включится сразу.'
         if await settings.flag('trial.require_subscription') else
-        f'🎁 Заберите <b>{days} дня</b> RS VPN бесплатно — доступ включится сразу.')
+        f'{e("gift")} Заберите <b>{days} дня</b> RS VPN бесплатно — доступ включится сразу.')
 
     await render(event, Screen(
-        text=profile_caption(user, '🎁 Бесплатный период') + f'<blockquote>{hint}</blockquote>',
+        text=profile_caption(user, f'{e("gift")} Бесплатный период') + f'<blockquote>{hint}</blockquote>',
         markup=kb.as_markup(), image=c.media('duration')))
     if isinstance(event, types.CallbackQuery):
         await event.answer()
@@ -65,7 +66,7 @@ async def claim(call: types.CallbackQuery, c, user: dict, settings):
         await show_profile(call, c, await c.users.get(call.from_user.id), settings)
         return
 
-    await call.answer(f'Готово! {result.days} дня RS VPN активированы ✅', show_alert=True)
+    await call.answer(f'Готово! {result.days} дня RS VPN активированы {e("ok")}', show_alert=True)
     from app.bot.handlers.subscription import show_subscription
     await show_subscription(call, c, await c.users.get(call.from_user.id), settings)
 

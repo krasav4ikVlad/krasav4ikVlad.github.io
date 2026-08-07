@@ -31,18 +31,19 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.bot.callbacks import Admin as Adm
 from app.campaigns.sender import Sender
 from app.domain.segments import BY_GROUP, SEGMENTS
+from app.content.emoji import e
 
 log = logging.getLogger(__name__)
 
 # Готовые наборы сегментов: то, что в старой админке было кнопками
 # «Всем / активным / истёкшим / без подписки»
 AUDIENCES: dict[str, tuple[str, tuple[str, ...]]] = {
-    'all': ('📢 Всем', ()),
-    'trial': ('🧪 На триале', BY_GROUP.get('trial', ())),
-    'active': ('🟢 С активной подпиской', BY_GROUP.get('active', ())),
-    'expired': ('🔁 Истёкшие', BY_GROUP.get('expired', ())),
-    'churned': ('💀 Давно ушедшие', BY_GROUP.get('churned', ())),
-    'no_sub': ('⚪ Без подписки и оплат', ('inactive_no_sub',)),
+    'all': (f'{e("channel")} Всем', ()),
+    'trial': (f'{e("trial")} На триале', BY_GROUP.get('trial', ())),
+    'active': (f'{e("green")} С активной подпиской', BY_GROUP.get('active', ())),
+    'expired': (f'{e("renew")} Истёкшие', BY_GROUP.get('expired', ())),
+    'churned': (f'{e("skull")} Давно ушедшие', BY_GROUP.get('churned', ())),
+    'no_sub': (f'{e("white")} Без подписки и оплат', ('inactive_no_sub',)),
 }
 
 
@@ -75,11 +76,11 @@ async def menu(call: types.CallbackQuery, state: FSMContext, c, settings) -> Non
     kb = InlineKeyboardBuilder()
     for code, (title, _) in AUDIENCES.items():
         kb.row(_btn(f'{title} — {await _count(c, code)}', 'bcseg', code))
-    kb.row(_btn('🎯 Один сегмент', 'bcsegs'))
-    kb.row(_btn('⬅️ Назад', 'main'))
+    kb.row(_btn(f'{e("target")} Один сегмент', 'bcsegs'))
+    kb.row(_btn(f'{e("back")} Назад', 'main'))
 
     await call.message.edit_text(
-        '<b>💬 Рассылка</b>\n\nКому отправляем?', reply_markup=kb.as_markup())
+        f'<b>{e("broadcast")} Рассылка</b>\n\nКому отправляем?', reply_markup=kb.as_markup())
     await call.answer()
 
 
@@ -92,9 +93,9 @@ async def segment_list(call: types.CallbackQuery, state: FSMContext, c, settings
         # код сегмента едет в отдельном поле: двоеточие — разделитель
         # callback_data у aiogram, и «one:new_trial_d0» роняет pack()
         kb.row(_btn(segment.title, 'bcseg', segment.code, 'one'))
-    kb.row(_btn('⬅️ Назад', 'broadcast'))
+    kb.row(_btn(f'{e("back")} Назад', 'broadcast'))
 
-    await call.message.edit_text('<b>💬 Рассылка</b>\n\nВыберите сегмент:',
+    await call.message.edit_text(f'<b>{e("broadcast")} Рассылка</b>\n\nВыберите сегмент:',
                                  reply_markup=kb.as_markup())
     await call.answer()
 
@@ -110,9 +111,9 @@ async def ask_text(call: types.CallbackQuery, callback_data: Adm, state: FSMCont
     await state.update_data(audience=audience, one=one, total=total)
 
     kb = InlineKeyboardBuilder()
-    kb.row(_btn('⬅️ Отмена', 'broadcast'))
+    kb.row(_btn(f'{e("back")} Отмена', 'broadcast'))
     await call.message.edit_text(
-        f'<b>💬 Рассылка</b>\n\nПолучателей: <code>{total}</code>\n\n'
+        f'<b>{e("broadcast")} Рассылка</b>\n\nПолучателей: <code>{total}</code>\n\n'
         'Отправьте текст сообщения. Работает HTML-разметка: '
         '<code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, <code>&lt;a href&gt;</code>.',
         reply_markup=kb.as_markup())
@@ -129,19 +130,19 @@ async def preview(message: types.Message, state: FSMContext, c, settings) -> Non
     await state.update_data(text=text)
 
     kb = InlineKeyboardBuilder()
-    kb.row(_btn('✅ Отправить', 'bcgo'), _btn('⬅️ Отмена', 'broadcast'))
+    kb.row(_btn(f'{e("ok")} Отправить', 'bcgo'), _btn(f'{e("back")} Отмена', 'broadcast'))
 
     # Показываем именно тем же способом, каким уйдёт: если разметка битая,
     # ошибка вылезет здесь, а не на десяти тысячах получателей
     try:
         await message.answer(text)
     except Exception as exc:
-        await message.answer(f'❗️ Разметка сломана, Telegram отказался её принять:\n'
+        await message.answer(f'{e("warning")} Разметка сломана, Telegram отказался её принять:\n'
                              f'<code>{exc}</code>\n\nПоправьте и пришлите заново.')
         return
 
     await message.answer(
-        f'☝️ Так увидят получатели.\n\nПолучателей: <code>{data.get("total", 0)}</code>',
+        f'{e("up_finger")} Так увидят получатели.\n\nПолучателей: <code>{data.get("total", 0)}</code>',
         reply_markup=kb.as_markup())
 
 
@@ -158,7 +159,7 @@ async def start_sending(call: types.CallbackQuery, state: FSMContext, c, setting
     query = ({'growth.segment': audience} if data.get('one') else _query(audience))
 
     await call.message.edit_text(
-        f'<b>💬 Рассылка запущена</b>\n\nПолучателей: <code>{data.get("total", 0)}</code>\n'
+        f'<b>{e("broadcast")} Рассылка запущена</b>\n\nПолучателей: <code>{data.get("total", 0)}</code>\n'
         'Отчёт придёт сюда же, когда закончится.', reply_markup=None)
     await call.answer('Пошла рассылка')
 
@@ -188,7 +189,7 @@ async def _run(c, bot, message, query: dict, text: str) -> None:
 
     log.info('рассылка завершена: отправлено %s, не доставлено %s', sent, failed)
     try:
-        await message.answer(f'<b>✅ Рассылка завершена</b>\n\n'
+        await message.answer(f'<b>{e("ok")} Рассылка завершена</b>\n\n'
                              f'Доставлено: <code>{sent}</code>\n'
                              f'Не доставлено: <code>{failed}</code>')
     except Exception as exc:

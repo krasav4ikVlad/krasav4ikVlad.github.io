@@ -21,6 +21,7 @@ from app.bot.screens.profile import profile_caption
 from app.core.errors import VpnPanelError
 from app.core.time import fmt, parse_dt
 from app.integrations.vpn.links import LinkEncryptionError
+from app.content.emoji import e
 
 GB = 1024 ** 3
 
@@ -49,8 +50,8 @@ async def traffic_packages(settings) -> tuple[tuple[int, int], ...]:
 def _bypass_block(user: dict) -> str:
     vpn = user.get('vpn') or {}
     left = round(int(vpn.get('bypass_trafficLimitBytes') or 0) / GB, 1)
-    return (f'<b>📅 Дата окончания:</b> <code>{fmt(vpn.get("bypass_expireAt"))}</code>\n'
-            f'<b>🔋 Лимит гигабайт:</b> <code>{left}</code>\n\n')
+    return (f'<b>{e("calendar")} Дата окончания:</b> <code>{fmt(vpn.get("bypass_expireAt"))}</code>\n'
+            f'<b>{e("traffic")} Лимит гигабайт:</b> <code>{left}</code>\n\n')
 
 
 async def bypass(event, c, user: dict, settings):
@@ -58,30 +59,30 @@ async def bypass(event, c, user: dict, settings):
     kb = InlineKeyboardBuilder()
 
     if not vpn.get('bypass_uuid'):
-        text = (profile_caption(user, '🛡 ByPass подписка')
-                + '<blockquote>🛡 ByPass — дополнительная подписка поверх обычной для '
+        text = (profile_caption(user, f'{e("shield")} ByPass подписка')
+                + f'<blockquote>{e("shield")} ByPass — дополнительная подписка поверх обычной для '
                   'обхода белых списков. Подключение бесплатное, оплачивается только '
                   'трафик.\n\n'
-                  '❗️ ByPass является тестовым конфигом и не гарантирует полную работу '
+                  f'{e("warning")} ByPass является тестовым конфигом и не гарантирует полную работу '
                   'из-за внешних факторов.</blockquote>')
         kb.row(types.InlineKeyboardButton(
-            text='➕ Подключить ByPass', callback_data=Menu(screen='bypass_create').pack()))
+            text=f'{e("plus")} Подключить ByPass', callback_data=Menu(screen='bypass_create').pack()))
     else:
-        text = (profile_caption(user, '🛡 Ваша ByPass подписка')
+        text = (profile_caption(user, f'{e("shield")} Ваша ByPass подписка')
                 + _bypass_block(user)
-                + '<blockquote>🔗 Выберите приложение — пришлём ссылку для подключения.\n\n'
-                  '❗️ ByPass это дополнительная подписка поверх обычной для обхода белых '
+                + f'<blockquote>{e("link")} Выберите приложение — пришлём ссылку для подключения.\n\n'
+                  f'{e("warning")} ByPass это дополнительная подписка поверх обычной для обхода белых '
                   'списков. Оплачивается за гигабайты.\n'
                   'ByPass является тестовым конфигом, и не гарантирует полную работу '
                   'из-за внешних факторов.</blockquote>')
         kb.row(
             types.InlineKeyboardButton(
-                text='📲 Happ', callback_data=Menu(screen='bypass_app', arg='happ').pack()),
+                text=f'{e("devices")} Happ', callback_data=Menu(screen='bypass_app', arg='happ').pack()),
             types.InlineKeyboardButton(
-                text='📲 INCY', callback_data=Menu(screen='bypass_app', arg='incy').pack()),
+                text=f'{e("devices")} INCY', callback_data=Menu(screen='bypass_app', arg='incy').pack()),
         )
         kb.row(types.InlineKeyboardButton(
-            text='🔋 Купить гигабайты', callback_data=Menu(screen='bypass_traffic').pack()))
+            text=f'{e("traffic")} Купить гигабайты', callback_data=Menu(screen='bypass_traffic').pack()))
 
     await footer(kb, settings, back='my_subscription')
     await render(event, Screen(text=text, markup=kb.as_markup(), image=c.media('bypass')))
@@ -108,7 +109,7 @@ async def create(call: types.CallbackQuery, c, user: dict, settings):
         'bypass_expireAt': expire,
         'bypass_trafficLimitBytes': created.get('trafficLimitBytes', 0),
     })
-    await call.answer('ByPass подключён ✅')
+    await call.answer(f'ByPass подключён {e("ok")}')
     await bypass(call, c, await c.users.get(call.from_user.id), settings)
 
 
@@ -140,9 +141,9 @@ async def send_link(call: types.CallbackQuery, callback_data: Menu, c, user: dic
     kb = InlineKeyboardBuilder()
     kb.row(close_button())
     await call.message.answer(
-        f'🔗 <b>Ваша ссылка для подключения ByPass ({app_name}):</b>\n\n'
+        f'{e("link")} <b>Ваша ссылка для подключения ByPass ({app_name}):</b>\n\n'
         f'<code>{link}</code>\n\n'
-        f'<blockquote>📋 Скопируйте ссылку выше и добавьте её в <b>{app_name}</b>:\n\n'
+        f'<blockquote>{e("clipboard")} Скопируйте ссылку выше и добавьте её в <b>{app_name}</b>:\n\n'
         f'1️⃣ Откройте приложение <b>{app_name}</b>\n'
         f'2️⃣ Нажмите <b>+</b> или <b>Добавить подписку</b>\n'
         f'3️⃣ Вставьте скопированную ссылку\n'
@@ -164,9 +165,9 @@ async def traffic_menu(call: types.CallbackQuery, c, user: dict, settings):
             callback_data=Menu(screen='bypass_buy', arg=str(volume)).pack()))
     await footer(kb, settings, back='bypass')
 
-    text = (profile_caption(user, '🔋 Покупка гигабайт')
+    text = (profile_caption(user, f'{e("traffic")} Покупка гигабайт')
             + _bypass_block(user)
-            + '<blockquote>🔋 Выберите нужное количество гигабайт.\n'
+            + f'<blockquote>{e("traffic")} Выберите нужное количество гигабайт.\n'
               'Гигабайты не восстанавливаются и не сгорают.</blockquote>')
     await render(call, Screen(text=text, markup=kb.as_markup(),
                               image=c.media('bypass_buying')))
@@ -206,7 +207,7 @@ async def buy_traffic(call: types.CallbackQuery, callback_data: Menu, c, user: d
         {'$inc': {'vpn.bypass_trafficLimitBytes': amount * GB},
          '$push': {'info.bypass_stats.purchases': {'amount_gb': amount, 'price': price}}})
 
-    await call.answer(f'Начислено {amount} Гб ✅')
+    await call.answer(f'Начислено {amount} Гб {e("ok")}')
     await bypass(call, c, await c.users.get(call.from_user.id), settings)
 
 

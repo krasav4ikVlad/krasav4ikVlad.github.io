@@ -21,6 +21,7 @@ from app.bot.screens.profile import period_label, profile_caption, subscription_
 from app.content import texts
 from app.core.errors import NotEnoughBalance
 from app.core.time import now, parse_dt
+from app.content.emoji import e
 
 
 async def show_plans(event, c, user: dict, settings):
@@ -48,8 +49,8 @@ async def change_period(event, c, user: dict, settings, note: str = ''):
                               current=(current or {}).get('code', ''))
     await footer(kb, settings, back='my_subscription')
 
-    text = (profile_caption(user, '📅 Длительность подписки')
-            + f'<b>📅 Сейчас продлевается на:</b> '
+    text = (profile_caption(user, f'{e("calendar")} Длительность подписки')
+            + f'<b>{e("calendar")} Сейчас продлевается на:</b> '
               f'<code>{period_label(vpn.get("period") or 0)}</code>\n\n'
             + f'<blockquote>{note or texts.render("screen.subscription.change_period")}</blockquote>')
 
@@ -67,7 +68,7 @@ async def set_period(call: types.CallbackQuery, callback_data: Plan, c, user: di
         return
 
     await c.users.set_vpn(call.from_user.id, {'period': int(plan['days'])})
-    await call.answer(f'Длительность: {plan["title"]} ✅')
+    await call.answer(f'Длительность: {plan["title"]} {e("ok")}')
     await change_period(call, c, await c.users.get(call.from_user.id), settings,
                         note=f'Готово. При следующем продлении подписка продлится '
                              f'на {period_label(int(plan["days"]))} за {plan["price"]}₽. '
@@ -81,7 +82,7 @@ async def buy_plan(call: types.CallbackQuery, callback_data: Plan, c, settings):
         await not_enough(call, c, settings, exc)
         return
 
-    await call.answer(f'Подписка «{result["plan"]["title"]}» активирована ✅')
+    await call.answer(f'Подписка «{result["plan"]["title"]}» активирована {e("ok")}')
     await show_subscription(call, c, await c.users.get(call.from_user.id), settings)
 
 
@@ -94,7 +95,7 @@ async def extend(call: types.CallbackQuery, c, settings):
         await not_enough(call, c, settings, exc)
         return
 
-    await call.answer('Подписка продлена ✅')
+    await call.answer(f'Подписка продлена {e("ok")}')
     await show_subscription(call, c, await c.users.get(call.from_user.id), settings)
 
 
@@ -124,19 +125,19 @@ async def show_subscription(event, c, user: dict, settings):
 
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(
-        text='🛡 Настроить VPN', url=f'{connect_base}{vpn["shortUuid"]}'))
+        text=f'{e("shield")} Настроить VPN', url=f'{connect_base}{vpn["shortUuid"]}'))
     if await settings.flag('features.extend_enabled'):
         kb.row(types.InlineKeyboardButton(
-            text='🔁 Продлить подписку', callback_data=Menu(screen='extend').pack()))
+            text=f'{e("renew")} Продлить подписку', callback_data=Menu(screen='extend').pack()))
     if await settings.flag('features.bypass_enabled'):
         kb.row(types.InlineKeyboardButton(
-            text='🛡 ByPass подписка', callback_data=Menu(screen='bypass').pack()))
+            text=f'{e("shield")} ByPass подписка', callback_data=Menu(screen='bypass').pack()))
     if await settings.flag('features.devices_enabled'):
         kb.row(types.InlineKeyboardButton(
-            text='📲 Менеджер устройств', callback_data=Menu(screen='devices').pack()))
+            text=f'{e("devices")} Менеджер устройств', callback_data=Menu(screen='devices').pack()))
     if await settings.flag('features.change_period_enabled'):
         kb.row(types.InlineKeyboardButton(
-            text='📅 Изменить длительность', callback_data=Menu(screen='period').pack()))
+            text=f'{e("calendar")} Изменить длительность', callback_data=Menu(screen='period').pack()))
     await footer(kb, settings, back='profile')
 
     await render(event, Screen(text=text, markup=kb.as_markup(),

@@ -15,6 +15,7 @@ from aiogram.fsm.context import FSMContext
 
 from app.bot.handlers.profile import show_profile
 from app.core.time import now
+from app.content.emoji import e
 
 log = logging.getLogger(__name__)
 # «Красивые» ссылки: /start?ref_<slug> вместо цифрового id
@@ -112,7 +113,7 @@ async def register(tg_user: types.User, args: str, c, settings) -> dict:
 async def accept_gift(message: types.Message, args: str, c) -> None:
     parts = args.split('_')
     if len(parts) < 4:
-        await message.answer('❌ Ссылка на подарок неполная.')
+        await message.answer(f'{e("cross")} Ссылка на подарок неполная.')
         return
 
     result = await c.gifts.activate(gift_id=parts[1], plan_code=parts[2],
@@ -121,20 +122,20 @@ async def accept_gift(message: types.Message, args: str, c) -> None:
     if result.ok:
         action = 'продлена' if result.extended else 'активирована'
         await message.answer(
-            f'🎁 <b>Подарок принят!</b>\n\nПодписка {action} на {result.days} дней.')
+            f'{e("gift")} <b>Подарок принят!</b>\n\nПодписка {action} на {result.days} дней.')
         return
 
     await message.answer(GIFT_ERRORS.get(result.reason, GIFT_ERRORS['default']))
 
 
 GIFT_ERRORS = {
-    'used': '❌ Этот подарок уже активирован.',
-    'self': '❌ Нельзя принять собственный подарок.',
-    'no_funds': '❌ У отправителя недостаточно средств.',
-    'no_sender': '❌ Отправитель подарка не найден.',
-    'panel_error': '❌ Не удалось выдать подписку. Попробуйте позже.',
-    'disabled': '❌ Подарки временно недоступны.',
-    'default': '❌ Подарок недействителен.',
+    'used': f'{e("cross")} Этот подарок уже активирован.',
+    'self': f'{e("cross")} Нельзя принять собственный подарок.',
+    'no_funds': f'{e("cross")} У отправителя недостаточно средств.',
+    'no_sender': f'{e("cross")} Отправитель подарка не найден.',
+    'panel_error': f'{e("cross")} Не удалось выдать подписку. Попробуйте позже.',
+    'disabled': f'{e("cross")} Подарки временно недоступны.',
+    'default': f'{e("cross")} Подарок недействителен.',
 }
 
 
@@ -151,5 +152,5 @@ def create_router() -> Router:
     """
     router = Router(name='start')
     router.message.register(start, Command('start'))
-    router.message.register(profile_button, F.text.in_({'Профиль', '👤 Профиль', 'профиль'}))
+    router.message.register(profile_button, F.text.in_({'Профиль', f'{e("user")} Профиль', 'профиль'}))
     return router

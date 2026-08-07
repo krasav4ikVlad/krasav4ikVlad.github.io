@@ -25,7 +25,10 @@ async def lifespan(app: FastAPI):
     from aiogram import Bot
     from aiogram.client.default import DefaultBotProperties
 
+    from app.bot.middlewares.emoji import emoji_middleware
+
     bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode='HTML'))
+    bot.session.middleware(emoji_middleware)
     container.attach_bot(bot)
 
     app.state.container = container

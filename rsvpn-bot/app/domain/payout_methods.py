@@ -12,6 +12,7 @@ format_method_details, draft_is_ready, REQUIRED_FIELDS, FIELD_TITLES).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from app.content.emoji import e
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ DEFAULT_TYPE = 'sbp'
 
 # Куда выплачивать, если человек не добавил ни одного способа
 BOT_BALANCE = 'bot_balance'
-BOT_BALANCE_TITLE = '👤 На баланс бота'
+BOT_BALANCE_TITLE = f'{e("user")} На баланс бота'
 
 
 def method_title(method: dict | None) -> str:

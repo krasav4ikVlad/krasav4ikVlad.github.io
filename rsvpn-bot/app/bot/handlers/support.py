@@ -9,6 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.bot.callbacks import Menu
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
+from app.content.emoji import e
 
 
 async def about(event, settings, c=None):
@@ -16,8 +17,8 @@ async def about(event, settings, c=None):
     privacy = await settings.get('link.privacy')
 
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text='📄 Публичная оферта', url=offer))
-    kb.row(types.InlineKeyboardButton(text='🔒 Политика конфиденциальности', url=privacy))
+    kb.row(types.InlineKeyboardButton(text=f'{e("document")} Публичная оферта', url=offer))
+    kb.row(types.InlineKeyboardButton(text=f'{e("lock")} Политика конфиденциальности', url=privacy))
     await footer(kb, settings, back='profile')
 
     await render(event, Screen(

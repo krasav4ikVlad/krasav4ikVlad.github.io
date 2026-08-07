@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from app.content.emoji import e
 
 # Типы полей:
 #   int     — целое число
@@ -47,7 +48,7 @@ class Group:
 # ВСЁ, ЧТО МОЖНО МЕНЯТЬ ИЗ АДМИНКИ. Добавил строку — появилась кнопка.
 # ─────────────────────────────────────────────────────────────────────────────
 SCHEMA: tuple[Group, ...] = (
-    Group('features', '🎛 Функции', (
+    Group('features', f'{e("features")} Функции', (
         Setting('features.buy_enabled', 'Покупка подписки', 'bool', True,
                 hint='Выключает кнопки покупки тарифов'),
         Setting('features.extend_enabled', 'Продление подписки', 'bool', True,
@@ -66,7 +67,7 @@ SCHEMA: tuple[Group, ...] = (
                 hint='Кнопка «получить бесплатно» — см. раздел «Бесплатный период»'),
     )),
 
-    Group('payments', '💳 Платёжные методы', (
+    Group('payments', f'{e("card")} Платёжные методы', (
         # ключ строится как pay.<код провайдера>_enabled — см. PaymentRegistry
         # Значения по умолчанию отражают то, что реально подключено:
         # СБП — Cardlink, карты — Tribute, крипта — Heleket. Остальные выключены,
@@ -90,7 +91,7 @@ SCHEMA: tuple[Group, ...] = (
                 hint='Насколько уменьшать зачисление относительно оплаченного', min=0, max=1),
     )),
 
-    Group('pricing', '💰 Цены и лимиты', (
+    Group('pricing', f'{e("money")} Цены и лимиты', (
         Setting('price.device_extra', 'Доп. устройство в месяц', 'int', 75, unit='₽', min=0),
         Setting('price.devices_free_limit', 'Бесплатных устройств в подписке', 'int', 2, min=1),
         Setting('price.start_balance', 'Стартовый баланс при регистрации', 'int', 0,
@@ -106,7 +107,7 @@ SCHEMA: tuple[Group, ...] = (
         # Сами тарифы (цена/дни/подарки) — отдельная сущность, см. core/plans.py
     )),
 
-    Group('bonuses', '🎁 Бонусы и акции', (
+    Group('bonuses', f'{e("gift")} Бонусы и акции', (
         Setting('bonus.topup_rate', 'Бонус за пополнение', 'percent', 0.20, min=0, max=2,
                 hint='Начисляется сверху к каждому пополнению'),
         Setting('bonus.topup_enabled', 'Бонус за пополнение включён', 'bool', True),
@@ -118,7 +119,7 @@ SCHEMA: tuple[Group, ...] = (
         Setting('bonus.churn_survey_reward', 'Бонус за ответ в опросе оттока', 'int', 8, unit='₽', min=0),
     )),
 
-    Group('squads', '🖥 Серверы (сквады панели)', (
+    Group('squads', f'{e("servers")} Серверы (сквады панели)', (
         Setting('squads.base', 'Базовый сквад', 'str',
                 '727b7629-6c08-47dc-8741-33501be0e5b7'),
         Setting('squads.extra', 'Ротационные сквады', 'str', '',
@@ -128,7 +129,7 @@ SCHEMA: tuple[Group, ...] = (
         Setting('squads.fingerprint_pick', 'Сколько выдавать из них', 'int', 5, min=0),
     )),
 
-    Group('trial', '🎁 Бесплатный период', (
+    Group('trial', f'{e("gift")} Бесплатный период', (
         Setting('price.trial_days', 'Сколько дней выдавать', 'int', 3, unit=' дн.', min=1),
         Setting('trial.require_subscription', 'Требовать подписку на канал', 'bool', True),
         Setting('trial.channel', 'Канал для проверки', 'str', '@rsconnect_vpn',
@@ -136,21 +137,21 @@ SCHEMA: tuple[Group, ...] = (
                      'иначе Telegram не даст проверить подписку'),
     )),
 
-    Group('content', '🎨 Оформление', (
+    Group('content', f'{e("design")} Оформление', (
         Setting('content.custom_emoji', 'Кастомные эмодзи', 'bool', True,
                 hint='Выключите, если Telegram отвечает ошибкой на сообщения: '
                      'право их отправлять есть не у каждого бота. '
                      'Сами id — в app/content/emoji.py'),
     )),
 
-    Group('moderation', '🚫 Блокировки', (
+    Group('moderation', f'{e("ban")} Блокировки', (
         Setting('moderation.ban_silent', 'Молча игнорировать забаненных', 'bool', False,
                 hint='Выключено — бот один раз отвечает текстом ниже'),
         Setting('moderation.ban_message', 'Что видит забаненный', 'text',
-                '🚫 Доступ к боту ограничен. Если это ошибка — напишите в поддержку.'),
+                f'{e("ban")} Доступ к боту ограничен. Если это ошибка — напишите в поддержку.'),
     )),
 
-    Group('bypass', '🚧 ByPass (белые списки)', (
+    Group('bypass', f'{e("bypass")} ByPass (белые списки)', (
         Setting('bypass.squad_uuid', 'Сквад ByPass', 'str',
                 'ac03f8c3-0de7-4380-9774-00079d0385ce'),
         Setting('bypass.external_squad_uuid', 'Внешний сквад ByPass', 'str',
@@ -161,7 +162,7 @@ SCHEMA: tuple[Group, ...] = (
                 hint='гигабайты:цена через запятую. Пусто — считается по цене за гигабайт'),
     )),
 
-    Group('renewal', '🔁 Автопродление', (
+    Group('renewal', f'{e("renew")} Автопродление', (
         Setting('renewal.window_hours', 'За сколько часов продлевать', 'int', 24,
                 unit=' ч', min=1),
         Setting('renewal.grace_hours', 'Сколько часов продлевать просроченные', 'int', 48,
@@ -169,7 +170,7 @@ SCHEMA: tuple[Group, ...] = (
                 hint='Если бот лежал, подписка не должна умереть при живом балансе'),
     )),
 
-    Group('expiry', '⏰ Напоминания об истечении', (
+    Group('expiry', f'{e("clock")} Напоминания об истечении', (
         Setting('expiry.notify_enabled', 'Напоминания включены', 'bool', True,
                 hint='Приходят вебхуками от панели, а не опросом базы'),
         Setting('expiry.send_3d', 'За 3 дня', 'bool', True),
@@ -184,7 +185,7 @@ SCHEMA: tuple[Group, ...] = (
         Setting('expiry.send_expired_72h', 'Через трое суток после', 'bool', False),
     )),
 
-    Group('payouts', '💸 Вывод реферальных средств', (
+    Group('payouts', f'{e("payout")} Вывод реферальных средств', (
         Setting('payout.min_withdraw', 'Минимальная сумма вывода', 'int', 500, unit='₽', min=1),
         Setting('payout.cooldown_hours', 'Пауза между заявками', 'int', 24, unit=' ч', min=0),
         Setting('payout.min_card', 'Минимум на карту', 'int', 1000, unit='₽', min=0),
@@ -195,14 +196,14 @@ SCHEMA: tuple[Group, ...] = (
                 'Минимум по СБП: 500₽, по картам МИР: 1000₽, в USDT: 50$.'),
     )),
 
-    Group('lifeline', '🪢 Lifeline (сервер после истечения)', (
+    Group('lifeline', f'{e("knot")} Lifeline (сервер после истечения)', (
         Setting('lifeline.enabled', 'Переводить истёкших на TG-сервер', 'bool', True),
         Setting('lifeline.grace_days', 'Сколько дней держать', 'int', 3, unit=' дн.', min=1),
         Setting('lifeline.squad_uuid', 'UUID сквада lifeline', 'str',
                 '36df3a14-75d1-4c9a-a933-212fd29a7806'),
     )),
 
-    Group('survey', '📊 Опрос с бонусом', (
+    Group('survey', f'{e("stats")} Опрос с бонусом', (
         Setting('survey.enabled', 'Опрос включён', 'bool', True),
         Setting('survey.bonus', 'Бонус за прохождение', 'int', 25, unit='₽', min=0),
         Setting('survey.price_question_value', 'Цена в вопросе про подписку', 'int', 150, unit='₽'),
@@ -210,7 +211,7 @@ SCHEMA: tuple[Group, ...] = (
                 hint='Ключи через запятую'),
     )),
 
-    Group('campaigns', '📣 Кампании и рассылки', (
+    Group('campaigns', f'{e("megaphone")} Кампании и рассылки', (
         Setting('campaign.new_trial_enabled', 'Кампания «новые триал»', 'bool', True),
         Setting('campaign.expired_enabled', 'Кампания «истёкшие»', 'bool', True),
         Setting('campaign.trial_enabled', 'Кампания «триал»', 'bool', True),
@@ -221,7 +222,7 @@ SCHEMA: tuple[Group, ...] = (
         Setting('campaign.broadcast_delay_ms', 'Пауза между сообщениями рассылки', 'int', 40, unit='мс', min=0),
     )),
 
-    Group('notify', '🔔 Уведомления админам', (
+    Group('notify', f'{e("bell")} Уведомления админам', (
         # темы форума в админ-чате: сейчас эти числа зашиты в 17 местах кода
         Setting('notify.chat_id', 'Чат для уведомлений', 'int', -1002433849803),
         Setting('notify.topic_registration', 'Тема: регистрации', 'int', 2),
@@ -237,7 +238,7 @@ SCHEMA: tuple[Group, ...] = (
         Setting('notify.enabled', 'Слать уведомления админам', 'bool', True),
     )),
 
-    Group('links', '🔗 Ссылки и контакты', (
+    Group('links', f'{e("link")} Ссылки и контакты', (
         Setting('link.support', 'Поддержка', 'str', 'https://t.me/RSConnectHelp_bot'),
         Setting('link.channel', 'Канал', 'str', 'https://t.me/rsconnect_vpn'),
         Setting('link.connect_base', 'База ссылки подключения', 'str', 'https://connect.rsvps.tech/'),
@@ -252,7 +253,7 @@ SCHEMA: tuple[Group, ...] = (
                 'https://telegra.ph/Politika-konfidencialnosti-RS-VPN-07-02'),
     )),
 
-    Group('texts', '📝 Тексты', (
+    Group('texts', f'{e("note")} Тексты', (
         Setting('text.sub_hint', 'Подсказка на экране выбора тарифа', 'text',
                 'Выберите длительность подписки.'),
         Setting('text.devices_hint', 'Подсказка в менеджере устройств', 'text',
@@ -286,7 +287,7 @@ def cast_value(setting: Setting, raw: Any) -> Any:
 # ── ввод/вывод значений для админки ─────────────────────────────────────────
 def format_value(setting: Setting, value: Any) -> str:
     if setting.type == 'bool':
-        return '✅ включено' if value else '❌ выключено'
+        return f'{e("ok")} включено' if value else f'{e("cross")} выключено'
     if setting.type == 'percent':
         return f'{round(float(value) * 100, 2):g}%'
     if setting.type == 'text':

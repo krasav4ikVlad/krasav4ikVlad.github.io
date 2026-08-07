@@ -16,6 +16,7 @@ from typing import Any, Callable
 from app.core import db as db_names
 
 from app.settings.schema import Setting
+from app.content.emoji import e
 
 
 @dataclass(frozen=True)
@@ -137,20 +138,20 @@ def build_entities(container) -> dict[str, EntityAdmin]:
     """Что редактируется списками в админке. Добавить раздел = добавить объект."""
     entities = (
         EntityAdmin(
-            code='plan', title='💰 Тарифы',
+            code='plan', title=f'{e("money")} Тарифы',
             collection=container.plans.col, id_field='code', fields=PLAN_FIELDS,
             label=lambda p: f'{p.get("title", "?")} — {p.get("price", 0)}₽ / {p.get("days", 0)} дн.',
             on_change=container.plans.invalidate,
         ),
         EntityAdmin(
-            code='qr', title='🧩 Быстрые ответы поддержки',
+            code='qr', title=f'{e("puzzle")} Быстрые ответы поддержки',
             collection=container.collection(db_names.QUICK_REPLIES), id_field='key',
             fields=QUICK_REPLY_FIELDS, label=lambda x: x.get('title', '?'),
             toggle_field='active',
             id_hint='Отправьте ключ ответа (например: how_to_connect).',
         ),
         EntityAdmin(
-            code='promo', title='🎁 Промокоды',
+            code='promo', title=f'{e("gift")} Промокоды',
             collection=container.collection(db_names.PROMO_CODES), id_field='code',
             fields=PROMO_FIELDS,
             label=lambda p: (f'{p.get("code")} · {p.get("reward_value")} '
@@ -161,7 +162,7 @@ def build_entities(container) -> dict[str, EntityAdmin]:
             defaults={'used_count': 0, 'expires_at': None},
         ),
         EntityAdmin(
-            code='text', title='📝 Тексты бота',
+            code='text', title=f'{e("note")} Тексты бота',
             collection=container.db[db_names.CONTENT_OVERRIDES], id_field='_id',
             fields=TEXT_FIELDS, label=lambda x: x.get('title') or x.get('_id', '?'),
             sort_field='_id', toggle_field=None, allow_create=False, allow_delete=True,

@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 from app.core.time import fmt
+from app.content.emoji import e
 
 log = logging.getLogger(__name__)
 
@@ -66,12 +67,12 @@ class Notifier:
     async def registered(self, user_id: int, username: str | None = None,
                          utm: str = '') -> bool:
         return await self.send('registration',
-                               f'👤 <b>Новый пользователь</b>\n{user_link(user_id, username)}'
+                               f'{e("user")} <b>Новый пользователь</b>\n{user_link(user_id, username)}'
                                + (f'\n<b>UTM:</b> <code>{utm}</code>' if utm else ''))
 
     async def topup(self, user_id: int, amount: int, bonus: int, credit: int,
                     provider: str) -> bool:
-        text = (f'💰 <b>Пополнение</b>\n{await self._who(user_id)}\n'
+        text = (f'{e("money")} <b>Пополнение</b>\n{await self._who(user_id)}\n'
                 f'<b>Оплачено:</b> <code>{amount}₽</code>\n'
                 f'<b>Зачислено:</b> <code>{credit}₽</code>\n'
                 f'<b>Способ:</b> <code>{provider}</code>')
@@ -81,21 +82,21 @@ class Notifier:
 
     async def topup_try(self, user_id: int, amount: int, provider: str) -> bool:
         return await self.send('topup_try',
-                               f'🧾 <b>Счёт выставлен</b>\n{await self._who(user_id)}\n'
+                               f'{e("receipt")} <b>Счёт выставлен</b>\n{await self._who(user_id)}\n'
                                f'<b>Сумма:</b> <code>{amount}₽</code>\n'
                                f'<b>Способ:</b> <code>{provider}</code>')
 
     async def subscription_created(self, user_id: int, plan: dict,
                                    subscription: dict | None = None) -> bool:
         return await self.send('subscription',
-                               f'🛡 <b>Покупка подписки</b>\n{await self._who(user_id)}\n'
+                               f'{e("shield")} <b>Покупка подписки</b>\n{await self._who(user_id)}\n'
                                f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>\n'
                                f'<b>Действует до:</b> '
                                f'<code>{fmt((subscription or {}).get("expireAt"))}</code>')
 
     async def renewed(self, user_id: int, plan: dict, price: int, until=None) -> bool:
         return await self.send('subscription',
-                               f'🔁 <b>Автопродление</b>\n{await self._who(user_id)}\n'
+                               f'{e("renew")} <b>Автопродление</b>\n{await self._who(user_id)}\n'
                                f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>\n'
                                f'<b>Списано:</b> <code>{price}₽</code>\n'
                                f'<b>Действует до:</b> <code>{fmt(until)}</code>')
@@ -103,40 +104,40 @@ class Notifier:
     async def devices_charged(self, user_id: int, amount: int, price: int,
                               next_charge=None) -> bool:
         return await self.send('devices',
-                               f'📲 <b>Плата за доп. устройства</b>\n{await self._who(user_id)}\n'
+                               f'{e("devices")} <b>Плата за доп. устройства</b>\n{await self._who(user_id)}\n'
                                f'<b>Устройств:</b> <code>{amount}</code>\n'
                                f'<b>Списано:</b> <code>{price}₽</code>\n'
                                f'<b>Следующее списание:</b> <code>{fmt(next_charge)}</code>')
 
     async def devices_removed(self, user_id: int, amount: int, limit: int) -> bool:
         return await self.send('devices',
-                               f'📲 <b>Доп. устройства отключены</b>\n{await self._who(user_id)}\n'
+                               f'{e("devices")} <b>Доп. устройства отключены</b>\n{await self._who(user_id)}\n'
                                f'<b>Снято:</b> <code>{amount}</code>\n'
                                f'<b>Новый лимит:</b> <code>{limit}</code>')
 
     async def gift_accepted(self, from_user_id: int, to_user_id: int,
                             plan: dict | None = None) -> bool:
         return await self.send('subscription',
-                               f'🎁 <b>Подарок принят</b>\n'
+                               f'{e("gift")} <b>Подарок принят</b>\n'
                                f'<b>От:</b> {await self._who(from_user_id)}\n'
                                f'<b>Кому:</b> {await self._who(to_user_id)}\n'
                                f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>')
 
     async def email_changed(self, user_id: int, email: str) -> bool:
         return await self.send('email',
-                               f'✉️ <b>Почта привязана</b>\n{await self._who(user_id)}\n'
+                               f'{e("email")} <b>Почта привязана</b>\n{await self._who(user_id)}\n'
                                f'<code>{email}</code>')
 
     async def promo_used(self, user_id: int, code: str, reward: str) -> bool:
         return await self.send('promo',
-                               f'🎟 <b>Промокод</b>\n{await self._who(user_id)}\n'
+                               f'{e("promo")} <b>Промокод</b>\n{await self._who(user_id)}\n'
                                f'<b>Код:</b> <code>{code}</code>\n<b>Награда:</b> {reward}')
 
     async def campaign_report(self, report) -> bool:
         steps = [s for s in (getattr(report, 'steps', None) or []) if s.sent or s.failed]
         lines = [f'• {s.step}: отправлено {s.sent}, не дошло {s.failed}' for s in steps]
         return await self.send('campaigns',
-                               f'📣 <b>Кампании отработали</b>\n'
+                               f'{e("megaphone")} <b>Кампании отработали</b>\n'
                                f'<b>Отправлено:</b> <code>{getattr(report, "sent", 0)}</code>\n'
                                f'<b>Начислено:</b> <code>{getattr(report, "credited", 0)}₽</code>'
                                + ('\n\n' + '\n'.join(lines) if lines else ''))
@@ -146,7 +147,7 @@ class Notifier:
                                details: str = '', username: str | None = None) -> bool:
         from app.bot.keyboards.payouts import payout_card_keyboard
 
-        text = (f'📤 <b>Заявка на вывод</b>\n{await self._who(user_id, username)}\n'
+        text = (f'{e("withdraw")} <b>Заявка на вывод</b>\n{await self._who(user_id, username)}\n'
                 f'<b>Сумма:</b> <code>{amount}₽</code>\n\n'
                 f'{details or method}')
         return await self.send('payout', text, markup=payout_card_keyboard(user_id))

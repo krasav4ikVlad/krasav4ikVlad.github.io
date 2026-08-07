@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from app.content.emoji import e
 
 
 @dataclass(frozen=True)
@@ -19,28 +20,28 @@ class Segment:
 
 
 SEGMENTS: tuple[Segment, ...] = (
-    Segment('new_trial_d0', '🆕 Новые триал D0', 'trial'),
-    Segment('new_trial_d1', '🆕 Новые триал D1', 'trial'),
-    Segment('new_trial_d2', '🆕 Новые триал D2', 'trial'),
-    Segment('new_trial_d2_hot', '🔥 Новые триал D2 HOT', 'trial'),
-    Segment('new_trial_d3', '🆕 Новые триал D3', 'trial'),
-    Segment('new_trial_d3_hot', '🔥 Новые триал D3 HOT', 'trial'),
-    Segment('trial', '🧪 Триал закончился', 'trial'),
-    Segment('active_no_topup', '🟡 Активные без пополнения', 'active'),
-    Segment('first_payment_active', '💳 Активные с 1 оплатой', 'active'),
-    Segment('active_paid', '🟢 Активные платящие', 'active'),
-    Segment('expiring_3d', '⏳ Истекают до 3 дней', 'active'),
-    Segment('expired_1d', '🔁 Истекли 0–1 день', 'expired'),
-    Segment('expired_3d', '🔁 Истекли 2–3 дня', 'expired'),
-    Segment('expired_7d', '🔁 Истекли 4–7 дней', 'expired'),
-    Segment('expired_14d', '🔁 Истекли 8–14 дней', 'expired'),
-    Segment('expired_21d', '🔁 Истекли 15–21 день', 'expired'),
-    Segment('expired_30d', '🔁 Истекли 22–30 дней', 'expired'),
-    Segment('churned_45d', '💀 Ушли 31–45 дней', 'churned'),
-    Segment('churned_60d', '💀 Ушли 46–60 дней', 'churned'),
-    Segment('churned_90d', '💀 Ушли 61–90 дней', 'churned'),
-    Segment('churned_dead', '💀 Ушли 90+ дней', 'churned'),
-    Segment('inactive_no_sub', '⚪ Без подписки и оплат', 'other'),
+    Segment('new_trial_d0', f'{e("new")} Новые триал D0', 'trial'),
+    Segment('new_trial_d1', f'{e("new")} Новые триал D1', 'trial'),
+    Segment('new_trial_d2', f'{e("new")} Новые триал D2', 'trial'),
+    Segment('new_trial_d2_hot', f'{e("hot")} Новые триал D2 HOT', 'trial'),
+    Segment('new_trial_d3', f'{e("new")} Новые триал D3', 'trial'),
+    Segment('new_trial_d3_hot', f'{e("hot")} Новые триал D3 HOT', 'trial'),
+    Segment('trial', f'{e("trial")} Триал закончился', 'trial'),
+    Segment('active_no_topup', f'{e("yellow")} Активные без пополнения', 'active'),
+    Segment('first_payment_active', f'{e("card")} Активные с 1 оплатой', 'active'),
+    Segment('active_paid', f'{e("green")} Активные платящие', 'active'),
+    Segment('expiring_3d', f'{e("hourglass")} Истекают до 3 дней', 'active'),
+    Segment('expired_1d', f'{e("renew")} Истекли 0–1 день', 'expired'),
+    Segment('expired_3d', f'{e("renew")} Истекли 2–3 дня', 'expired'),
+    Segment('expired_7d', f'{e("renew")} Истекли 4–7 дней', 'expired'),
+    Segment('expired_14d', f'{e("renew")} Истекли 8–14 дней', 'expired'),
+    Segment('expired_21d', f'{e("renew")} Истекли 15–21 день', 'expired'),
+    Segment('expired_30d', f'{e("renew")} Истекли 22–30 дней', 'expired'),
+    Segment('churned_45d', f'{e("skull")} Ушли 31–45 дней', 'churned'),
+    Segment('churned_60d', f'{e("skull")} Ушли 46–60 дней', 'churned'),
+    Segment('churned_90d', f'{e("skull")} Ушли 61–90 дней', 'churned'),
+    Segment('churned_dead', f'{e("skull")} Ушли 90+ дней', 'churned'),
+    Segment('inactive_no_sub', f'{e("white")} Без подписки и оплат', 'other'),
 )
 
 BY_CODE = {s.code: s for s in SEGMENTS}

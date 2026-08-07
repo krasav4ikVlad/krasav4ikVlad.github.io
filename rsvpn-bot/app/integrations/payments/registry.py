@@ -11,6 +11,7 @@ from app.integrations.payments.heleket import HeleketProvider
 from app.integrations.payments.severpay import SeverPayProvider
 from app.integrations.payments.tribute import TributeProvider
 from app.integrations.payments.wata import WataProvider
+from app.content.emoji import e
 
 log = logging.getLogger(__name__)
 
@@ -30,19 +31,19 @@ def build_providers(config, http=None, bills=None) -> list[PaymentProvider]:
         (keys.heleket_key, lambda: HeleketProvider(keys.heleket_key,
                                                    keys.heleket_merchant_id, http)),
         (keys.severpay_key, lambda: SeverPayProvider(keys.severpay_key, 'severpay', http,
-                                                     title='⚡️ СБП (резерв)')),
+                                                     title=f'{e("sbp")} СБП (резерв)')),
         (keys.severpay_web_key, lambda: SeverPayProvider(keys.severpay_web_key,
                                                          'severpay_web', http,
-                                                         title='⚡️ СБП (запасной)')),
+                                                         title=f'{e("sbp")} СБП (запасной)')),
         # Один и тот же мини-апп Tribute закрывает и российские, и зарубежные
         # карты — в меню это две кнопки, как и было в старом боте. Вебхуки
         # приходят на код tribute, вторая запись нужна только ради кнопки.
         # адрес мини-аппа проставит configure() из настройки link.tribute
         (keys.tribute_key, lambda: TributeProvider(keys.tribute_key, http,
-                                                   title='💳 Карта РФ')),
+                                                   title=f'{e("card")} Карта РФ')),
         (keys.tribute_key, lambda: TributeProvider(keys.tribute_key, http,
                                                    code='tribute_eu',
-                                                   title='🌐 Карта иностранная')),
+                                                   title=f'{e("globe")} Карта иностранная')),
         (keys.cloudpayments_secret, lambda: CloudPaymentsProvider(
             keys.cloudpayments_public_id, keys.cloudpayments_secret, http)),
     ]

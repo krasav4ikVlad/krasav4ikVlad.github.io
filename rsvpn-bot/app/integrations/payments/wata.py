@@ -5,13 +5,14 @@ from __future__ import annotations
 import re
 
 from app.integrations.payments.base import Invoice, PaymentProvider, WebhookEvent
+from app.content.emoji import e
 
 UID_IN_DESCRIPTION = re.compile(r'Пополнение\s+баланса\s+(\d+)', re.IGNORECASE)
 
 
 class WataProvider(PaymentProvider):
     code = 'wata'
-    title = '⚡️ СБП'
+    title = f'{e("sbp")} СБП'
     min_amount = 100
     verified = False   # ⚠️ подписи в текущем обработчике нет — см. webhooks.py
 

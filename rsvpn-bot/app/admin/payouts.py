@@ -17,6 +17,7 @@ from aiogram import F, Router, types
 from app.bot.callbacks import PayoutAdmin
 from app.bot.keyboards.payouts import reject_reasons_keyboard
 from app.services.payouts import REJECT_REASONS
+from app.content.emoji import e
 
 log = logging.getLogger(__name__)
 
@@ -45,9 +46,9 @@ async def to_balance(call: types.CallbackQuery, callback_data: PayoutAdmin, c) -
         return
 
     await _tell_user(call.bot, callback_data.user_id,
-                     f'💰 Реферальные {amount}₽ переведены на баланс бота.')
-    await _close_card(call, f'💰 Переведено на баланс: {amount}₽')
-    await call.answer('Переведено ✅')
+                     f'{e("money")} Реферальные {amount}₽ переведены на баланс бота.')
+    await _close_card(call, f'{e("money")} Переведено на баланс: {amount}₽')
+    await call.answer(f'Переведено {e("ok")}')
 
 
 async def paid_externally(call: types.CallbackQuery, callback_data: PayoutAdmin, c) -> None:
@@ -57,9 +58,9 @@ async def paid_externally(call: types.CallbackQuery, callback_data: PayoutAdmin,
         return
 
     await _tell_user(call.bot, callback_data.user_id,
-                     f'✅ Выплата {amount}₽ отправлена по указанным вами реквизитам.')
-    await _close_card(call, f'✅ Выплачено вручную: {amount}₽')
-    await call.answer('Отмечено ✅')
+                     f'{e("ok")} Выплата {amount}₽ отправлена по указанным вами реквизитам.')
+    await _close_card(call, f'{e("ok")} Выплачено вручную: {amount}₽')
+    await call.answer(f'Отмечено {e("ok")}')
 
 
 async def ask_reason(call: types.CallbackQuery, callback_data: PayoutAdmin) -> None:
@@ -72,10 +73,10 @@ async def reject(call: types.CallbackQuery, callback_data: PayoutAdmin, c) -> No
     text = await c.payouts.reject(callback_data.user_id, callback_data.reason,
                                   call.from_user.id)
     await _tell_user(call.bot, callback_data.user_id,
-                     f'❌ Заявка на вывод отклонена: {text}\n\n'
+                     f'{e("cross")} Заявка на вывод отклонена: {text}\n\n'
                      'Деньги остались на реферальном балансе — исправьте реквизиты '
                      'и оформите заявку заново.')
-    await _close_card(call, f'❌ Отказ ({callback_data.reason})')
+    await _close_card(call, f'{e("cross")} Отказ ({callback_data.reason})')
     await call.answer('Отказано')
 
 

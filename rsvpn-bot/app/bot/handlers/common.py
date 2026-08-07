@@ -10,9 +10,10 @@ from __future__ import annotations
 from aiogram import F, Router, types
 
 from app.bot.callbacks import Menu
+from app.content.emoji import e
 
 
-def close_button(text: str = '❌ Удалить сообщение') -> types.InlineKeyboardButton:
+def close_button(text: str = f'{e("cross")} Удалить сообщение') -> types.InlineKeyboardButton:
     return types.InlineKeyboardButton(
         text=text, callback_data=Menu(screen='close').pack())
 

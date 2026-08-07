@@ -13,6 +13,7 @@ from app.admin import panel as admin_panel
 from app.bot.handlers import register
 from app.bot.middlewares.ban import BanMiddleware
 from app.bot.middlewares.deps import DependenciesMiddleware
+from app.bot.middlewares.emoji import emoji_middleware
 from app.bot.middlewares.errors import ErrorsMiddleware
 from app.bot.middlewares.maintenance import MaintenanceMiddleware
 from app.bot.middlewares.throttle import ThrottleMiddleware
@@ -21,10 +22,13 @@ from app.core.container import Container
 
 
 def create_bot(container: Container) -> Bot:
-    return Bot(
+    bot = Bot(
         token=container.config.bot_token,
         default=DefaultBotProperties(parse_mode='HTML'),
     )
+    # кастомные эмодзи навешиваются здесь, на выходе: см. middlewares/emoji.py
+    bot.session.middleware(emoji_middleware)
+    return bot
 
 
 def create_dispatcher(container: Container, storage=None) -> Dispatcher:

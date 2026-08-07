@@ -11,15 +11,16 @@ from app.bot.callbacks import Menu
 from app.bot.filters.feature import Feature
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
+from app.content.emoji import e
 
 MESSAGES = {
-    'not_found': '❌ Промокод не найден или больше не действует.',
-    'used': '❌ Вы уже активировали этот промокод.',
-    'limit': '❌ У промокода закончился лимит активаций.',
-    'no_bypass': '❌ Нет ByPass-подписки, на которую можно начислить гигабайты.',
-    'panel_error': '❌ Не удалось начислить награду. Попробуйте позже.',
-    'bad_type': '❌ Неизвестный тип награды.',
-    'disabled': '❌ Промокоды временно отключены.',
+    'not_found': f'{e("cross")} Промокод не найден или больше не действует.',
+    'used': f'{e("cross")} Вы уже активировали этот промокод.',
+    'limit': f'{e("cross")} У промокода закончился лимит активаций.',
+    'no_bypass': f'{e("cross")} Нет ByPass-подписки, на которую можно начислить гигабайты.',
+    'panel_error': f'{e("cross")} Не удалось начислить награду. Попробуйте позже.',
+    'bad_type': f'{e("cross")} Неизвестный тип награды.',
+    'disabled': f'{e("cross")} Промокоды временно отключены.',
 }
 
 
@@ -32,7 +33,7 @@ async def ask_code(call: types.CallbackQuery, state: FSMContext, settings):
 
     kb = await footer(InlineKeyboardBuilder(), settings, back='profile')
     await render(call, Screen(
-        text='<b>🎟 Промокод</b>\n\nОтправьте код одним сообщением.',
+        text=f'<b>{e("promo")} Промокод</b>\n\nОтправьте код одним сообщением.',
         markup=kb.as_markup()))
     await call.answer()
 
@@ -47,7 +48,7 @@ async def apply_code(message: types.Message, state: FSMContext, c, settings):
     await state.clear()
     kb = await footer(InlineKeyboardBuilder(), settings, back='profile')
     await message.answer(
-        f'<b>✅ Промокод активирован</b>\n\n<b>Награда:</b> {result.reward}',
+        f'<b>{e("ok")} Промокод активирован</b>\n\n<b>Награда:</b> {result.reward}',
         reply_markup=kb.as_markup())
 
 

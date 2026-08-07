@@ -13,6 +13,7 @@ from app.bot.callbacks import Menu
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import profile_caption
+from app.content.emoji import e
 
 EMAIL_RE = re.compile(r'^[\w.+-]+@[\w-]+\.[\w.]+$')
 NO_EMAIL = 'Не привязана'
@@ -31,30 +32,30 @@ async def profile_keyboard(user: dict, settings, trial=None) -> InlineKeyboardBu
     if trial is not None and await trial.available(user):
         days = await settings.int('price.trial_days')
         kb.row(types.InlineKeyboardButton(
-            text=f'🎁 {days} дня бесплатно', callback_data=Menu(screen='trial').pack()))
+            text=f'{e("gift")} {days} дня бесплатно', callback_data=Menu(screen='trial').pack()))
 
     kb.row(types.InlineKeyboardButton(
-        text='🛡 Ваша подписка' if has_sub else '➕ Подключить RS VPN',
+        text=f'{e("shield")} Ваша подписка' if has_sub else f'{e("plus")} Подключить RS VPN',
         callback_data=Menu(screen='my_subscription' if has_sub else 'subscription').pack()))
     kb.row(types.InlineKeyboardButton(
-        text='💰 Пополнить баланс', callback_data=Menu(screen='payments').pack()))
+        text=f'{e("money")} Пополнить баланс', callback_data=Menu(screen='payments').pack()))
 
     if await settings.flag('features.referrals_enabled'):
         kb.row(types.InlineKeyboardButton(
-            text='🫂 Пригласить', callback_data=Menu(screen='referrals').pack()))
+            text=f'{e("referrals")} Пригласить', callback_data=Menu(screen='referrals').pack()))
     if await settings.flag('features.gifts_enabled'):
         kb.add(types.InlineKeyboardButton(
-            text='🎁 Подарить', callback_data=Menu(screen='gifts').pack()))
+            text=f'{e("gift")} Подарить', callback_data=Menu(screen='gifts').pack()))
 
     # почта нужна для чеков и восстановления доступа — кнопка должна быть на виду
     email = (user.get('info') or {}).get('email') or NO_EMAIL
     kb.row(types.InlineKeyboardButton(
-        text='📩 Изменить почту' if email != NO_EMAIL else '📩 Привязать почту',
+        text=f'{e("mail")} Изменить почту' if email != NO_EMAIL else f'{e("mail")} Привязать почту',
         callback_data=Menu(screen='email').pack()))
 
     if await settings.flag('features.promo_enabled'):
         kb.add(types.InlineKeyboardButton(
-            text='🎟 Промокод', callback_data=Menu(screen='promo').pack()))
+            text=f'{e("promo")} Промокод', callback_data=Menu(screen='promo').pack()))
 
     return await footer(kb, settings, back=None)
 
@@ -80,7 +81,7 @@ async def ask_email(call: types.CallbackQuery, state: FSMContext, c, user: dict,
     kb = await footer(InlineKeyboardBuilder(), settings, back='profile')
 
     await render(call, Screen(
-        text=('<b>📩 Почта</b>\n\n'
+        text=(f'<b>{e("mail")} Почта</b>\n\n'
               f'<b>Сейчас:</b> <code>{current}</code>\n\n'
               'Отправьте адрес одним сообщением.\n'
               '<blockquote>Она нужна для чеков об оплате и восстановления '
@@ -93,7 +94,7 @@ async def save_email(message: types.Message, state: FSMContext, c, settings):
     email = (message.text or '').strip()
 
     if not EMAIL_RE.match(email):
-        await message.answer('❗️Это не похоже на адрес почты. Пример: name@example.com')
+        await message.answer(f'{e("warning")}Это не похоже на адрес почты. Пример: name@example.com')
         return
 
     await c.users.col.update_one(
@@ -105,7 +106,7 @@ async def save_email(message: types.Message, state: FSMContext, c, settings):
         await c.notifier.email_changed(message.from_user.id, email=email)
 
     user = await c.users.get(message.from_user.id)
-    await message.answer(f'✅ Почта сохранена: <code>{email}</code>')
+    await message.answer(f'{e("ok")} Почта сохранена: <code>{email}</code>')
     await show_profile(message, c, user, settings)
 
 

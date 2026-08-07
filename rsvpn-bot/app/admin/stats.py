@@ -10,34 +10,35 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from app.content.emoji import e
 
 log = logging.getLogger(__name__)
 
 MSK = ZoneInfo('Europe/Moscow')
 
 SEGMENT_USERS_LABELS = {
-    'new_trial_d0': '🆕 Новые триал D0 (день 0)',
-    'new_trial_d1': '🆕 Новые триал D1 (день 1)',
-    'new_trial_d2': '🆕 Новые триал D2 (день 2)',
-    'new_trial_d2_hot': '🔥 Новые триал D2 HOT (≤6ч)',
-    'new_trial_d3': '🆕 Новые триал D3 (день 3)',
-    'new_trial_d3_hot': '🔥 Новые триал D3 HOT (≤2ч)',
-    'trial': '🧪 Триал',
-    'active_no_topup': '🟡 Активные без пополнения',
-    'first_payment_active': '💳 Активные с 1 оплатой',
-    'active_paid': '🟢 Активные платящие',
-    'expiring_3d': '⏳ Истекают до 3 дней',
-    'expired_1d': '🔁 Истекли 0–1 день',
-    'expired_3d': '🔁 Истекли 2–3 дня',
-    'expired_7d': '🔁 Истекли 4–7 дней',
-    'expired_14d': '🔁 Истекли 8–14 дней',
-    'expired_21d': '🔁 Истекли 15–21 день',
-    'expired_30d': '🔁 Истекли 22–30 дней',
-    'churned_45d': '💀 Ушли 31–45 дней',
-    'churned_60d': '💀 Ушли 46–60 дней',
-    'churned_90d': '💀 Ушли 61–90 дней',
-    'churned_dead': '💀 Ушли 90+ дней',
-    'inactive_no_sub': '⚪ Без подписки и оплат',
+    'new_trial_d0': f'{e("new")} Новые триал D0 (день 0)',
+    'new_trial_d1': f'{e("new")} Новые триал D1 (день 1)',
+    'new_trial_d2': f'{e("new")} Новые триал D2 (день 2)',
+    'new_trial_d2_hot': f'{e("hot")} Новые триал D2 HOT (≤6ч)',
+    'new_trial_d3': f'{e("new")} Новые триал D3 (день 3)',
+    'new_trial_d3_hot': f'{e("hot")} Новые триал D3 HOT (≤2ч)',
+    'trial': f'{e("trial")} Триал',
+    'active_no_topup': f'{e("yellow")} Активные без пополнения',
+    'first_payment_active': f'{e("card")} Активные с 1 оплатой',
+    'active_paid': f'{e("green")} Активные платящие',
+    'expiring_3d': f'{e("hourglass")} Истекают до 3 дней',
+    'expired_1d': f'{e("renew")} Истекли 0–1 день',
+    'expired_3d': f'{e("renew")} Истекли 2–3 дня',
+    'expired_7d': f'{e("renew")} Истекли 4–7 дней',
+    'expired_14d': f'{e("renew")} Истекли 8–14 дней',
+    'expired_21d': f'{e("renew")} Истекли 15–21 день',
+    'expired_30d': f'{e("renew")} Истекли 22–30 дней',
+    'churned_45d': f'{e("skull")} Ушли 31–45 дней',
+    'churned_60d': f'{e("skull")} Ушли 46–60 дней',
+    'churned_90d': f'{e("skull")} Ушли 61–90 дней',
+    'churned_dead': f'{e("skull")} Ушли 90+ дней',
+    'inactive_no_sub': f'{e("white")} Без подписки и оплат',
 }
 
 NEW_TRIAL_KEYS = ('new_trial', 'new_trial_d0', 'new_trial_d1', 'new_trial_d2',
@@ -236,30 +237,30 @@ def render_stats(data: dict) -> str:
     balance_active, balance_no_active = data['balance_active'], data['balance_no_active']
     ref_balance_sum, unknown_segments = data['ref_balance_sum'], data['unknown']
 
-    lines = [f'• 🆕 Новые триал (итого): <code>{sum(segment_counts[k] for k in NEW_TRIAL_KEYS)}</code>']
+    lines = [f'• {e("new")} Новые триал (итого): <code>{sum(segment_counts[k] for k in NEW_TRIAL_KEYS)}</code>']
     lines += [f'  ↳ {SEGMENT_USERS_LABELS[k]}: <code>{segment_counts[k]}</code>'
               for k in NEW_TRIAL_KEYS if k in SEGMENT_USERS_LABELS]
     lines += [f'• {SEGMENT_USERS_LABELS[k]}: <code>{segment_counts[k]}</code>'
               for k in ('trial', 'active_no_topup', 'first_payment_active', 'active_paid', 'expiring_3d')]
-    lines.append(f'• 🔁 Ушедшие (итого): <code>{sum(segment_counts[k] for k in EXPIRED_KEYS)}</code>')
+    lines.append(f'• {e("renew")} Ушедшие (итого): <code>{sum(segment_counts[k] for k in EXPIRED_KEYS)}</code>')
     lines += [f'  ↳ {SEGMENT_USERS_LABELS[k]}: <code>{segment_counts[k]}</code>' for k in EXPIRED_KEYS]
     lines.append(f'• {SEGMENT_USERS_LABELS["inactive_no_sub"]}: <code>{segment_counts["inactive_no_sub"]}</code>')
     if unknown_segments:
-        lines.append(f'• ❔ Не определён: <code>{unknown_segments}</code>')
+        lines.append(f'• {e("question")} Не определён: <code>{unknown_segments}</code>')
 
     return (
-        '<b>🛠 Админ-панель RS VPN</b>\n\n'
-        '<b>👥 Пользователи</b>\n'
+        f'<b>{e("tools")} Админ-панель RS VPN</b>\n\n'
+        f'<b>{e("friends")} Пользователи</b>\n'
         f'• Всего зарегистрировано: <code>{total_users}</code>\n\n'
-        '<b>🛡 Подписки RS VPN</b>\n'
+        f'<b>{e("shield")} Подписки RS VPN</b>\n'
         f'• Всего подписок: <code>{total_subs}</code>\n'
         f'• Активных подписок: <code>{active_subs}</code>\n'
         f'• Активных подписок с пополнением: <code>{active_with_topup}</code>\n\n'
-        '<b>💰 Балансы</b>\n'
+        f'<b>{e("money")} Балансы</b>\n'
         f'• Баланс с активной подпиской: <code>{balance_active}₽</code>\n'
         f'• Баланс без активной подписки: <code>{balance_no_active}₽</code>\n'
         f'• Суммарный реферальный баланс: <code>{ref_balance_sum}₽</code>\n\n'
-        '<b>🧩 Сегменты пользователей</b>\n' + '\n'.join(lines)
+        f'<b>{e("puzzle")} Сегменты пользователей</b>\n' + '\n'.join(lines)
     )
 
 

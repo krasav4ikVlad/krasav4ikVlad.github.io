@@ -24,6 +24,7 @@ from app.bot.keyboards.payouts import (draft_keyboard, methods_keyboard,
 from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import profile_caption
 from app.domain import payout_methods as pm
+from app.content.emoji import e
 
 PAYOUT_MESSAGES = {
     'below_min': 'Минимальная сумма вывода — {minimum}₽.',
@@ -43,7 +44,7 @@ async def methods_screen(event, c, user: dict, settings, note: str = ''):
 
     body = ('\n'.join(f'• {pm.method_title(m)}' for m in methods)
             if methods else 'Пока не добавлено ни одного способа.')
-    text = (profile_caption(user, '💸 Способы вывода')
+    text = (profile_caption(user, f'{e("payout")} Способы вывода')
             + f'<b>Сохранённые способы:</b>\n{body}\n\n'
             + f'<blockquote>{note or "Реквизиты нужны, чтобы мы знали, куда перечислить деньги. Без них выплата возможна только на баланс бота."}</blockquote>')
 
@@ -63,9 +64,9 @@ async def draft_screen(event, c, user: dict, settings, note: str = ''):
              for f in pm.fields_of(draft.get('type', ''))]
     missing = pm.missing_fields(draft)
     hint = (note or (f'Не заполнено: {", ".join(f.title for f in missing)}'
-                     if missing else '✅ Всё готово. Нажмите «Добавить».'))
+                     if missing else f'{e("ok")} Всё готово. Нажмите «Добавить».'))
 
-    text = (profile_caption(user, '➕ Новый способ вывода')
+    text = (profile_caption(user, f'{e("plus")} Новый способ вывода')
             + f'<b>Тип:</b> <code>{pm.method_title(draft)}</code>\n'
             + '\n'.join(lines) + '\n\n'
             + f'<blockquote>{hint}</blockquote>')
@@ -103,9 +104,9 @@ async def ask_field(call: types.CallbackQuery, callback_data: Payout, state: FSM
 
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(
-        text='⬅️ Назад', callback_data=Payout(action='add').pack()))
+        text=f'{e("back")} Назад', callback_data=Payout(action='add').pack()))
     await call.message.answer(
-        f'✏️ <b>{field.title}</b>\n\nОтправьте значение сообщением.\n\n'
+        f'{e("edit")} <b>{field.title}</b>\n\nОтправьте значение сообщением.\n\n'
         f'<blockquote>{field.hint}</blockquote>', reply_markup=kb.as_markup())
     await call.answer()
 
@@ -137,7 +138,7 @@ async def save_method(call: types.CallbackQuery, state: FSMContext, c, user: dic
         await call.answer(problem, show_alert=True)
         return
 
-    await call.answer('Способ сохранён ✅')
+    await call.answer(f'Способ сохранён {e("ok")}')
     await methods_screen(call, c, await c.users.get(call.from_user.id), settings,
                          note='Способ добавлен и выбран для следующей выплаты.')
 
@@ -151,14 +152,14 @@ async def view_method(call: types.CallbackQuery, callback_data: Payout, c, user:
         await methods_screen(call, c, user, settings)
         return
 
-    text = (profile_caption(user, '💸 Способ вывода')
+    text = (profile_caption(user, f'{e("payout")} Способ вывода')
             + pm.format_details(method) + '\n\n'
             + '<blockquote>Номер карты показан частично — так он не попадёт '
               'в чужие руки со скриншота.</blockquote>')
 
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(
-        text='🗑 Удалить',
+        text=f'{e("trash")} Удалить',
         callback_data=Payout(action='delete', value=method['id']).pack()))
     await footer(kb, settings, back='payout')
 
@@ -180,9 +181,9 @@ async def payout_menu(event, c, user: dict, settings, note: str = ''):
     methods = await c.payouts.methods(user_id)
     selected = stats.get('payout_selected') or pm.BOT_BALANCE
 
-    text = (profile_caption(user, '📤 Вывод средств')
-            + f'<b>💸 Доступно к выводу:</b> <code>{stats.get("withdrawable", 0)}₽</code>\n'
-            + f'<b>📄 Куда:</b> <code>{pm.selected_title(methods, selected)}</code>\n\n'
+    text = (profile_caption(user, f'{e("withdraw")} Вывод средств')
+            + f'<b>{e("payout")} Доступно к выводу:</b> <code>{stats.get("withdrawable", 0)}₽</code>\n'
+            + f'<b>{e("document")} Куда:</b> <code>{pm.selected_title(methods, selected)}</code>\n\n'
             + f'<blockquote>{note or await settings.get("payout.note")}</blockquote>')
 
     kb = payout_menu_keyboard(methods, selected)
@@ -221,7 +222,7 @@ async def order(call: types.CallbackQuery, c, user: dict, settings):
                               show_alert=True)
             return
 
-    await call.answer(f'Заявка на {result.amount}₽ отправлена ✅', show_alert=True)
+    await call.answer(f'Заявка на {result.amount}₽ отправлена {e("ok")}', show_alert=True)
     await payout_menu(call, c, await c.users.get(call.from_user.id), settings,
                       note='Заявка принята. Обычно выплата занимает до суток.')
 

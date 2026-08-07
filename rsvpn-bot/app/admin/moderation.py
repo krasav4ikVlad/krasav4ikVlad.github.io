@@ -17,6 +17,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Admin as Adm
 from app.core.time import fmt
+from app.content.emoji import e
 
 PAGE_SIZE = 20
 
@@ -47,13 +48,15 @@ async def _ban(message: types.Message, command: CommandObject, c, hard: bool) ->
     reason = args[1] if len(args) > 1 else ''
     result = await c.moderation.ban(user_id, message.from_user.id, reason, hard=hard)
 
-    text = [f'{"⛔️ Жёстко заблокирован" if hard else "🚫 Заблокирован"} {_who(target)}']
+    verdict = (f'{e("hardban")} Жёстко заблокирован' if hard
+               else f'{e("ban")} Заблокирован')
+    text = [f'{verdict} {_who(target)}']
     if reason:
         text.append(f'Причина: {reason}')
     if hard:
         text.append(f'Подписок отключено в панели: <code>{result.disabled}</code>')
         if result.panel_failed:
-            text.append(f'⚠️ Не удалось отключить: <code>{result.panel_failed}</code> — '
+            text.append(f'{e("attention")} Не удалось отключить: <code>{result.panel_failed}</code> — '
                         'панель не ответила. Блокировка бота уже действует, '
                         'повторите команду, чтобы закрыть доступ.')
     else:
@@ -83,11 +86,11 @@ async def unban_command(message: types.Message, command: CommandObject, c) -> No
     user_id = (target.get('user_data') or {}).get('user_id')
     result = await c.moderation.unban(user_id, message.from_user.id)
 
-    text = [f'✅ Разблокирован {_who(target)}']
+    text = [f'{e("ok")} Разблокирован {_who(target)}']
     if result.hard:
         text.append(f'Подписок включено обратно: <code>{result.disabled}</code>')
         if result.panel_failed:
-            text.append(f'⚠️ Не удалось включить: <code>{result.panel_failed}</code> — '
+            text.append(f'{e("attention")} Не удалось включить: <code>{result.panel_failed}</code> — '
                         'проверьте панель вручную.')
     await message.answer('\n'.join(text))
 
@@ -99,15 +102,15 @@ async def banned_list(call: types.CallbackQuery, c) -> None:
     total = await c.moderation.count()
 
     kb = InlineKeyboardBuilder()
-    lines = [f'<b>🚫 Заблокированные</b>\n\nВсего: <code>{total}</code>\n']
+    lines = [f'<b>{e("ban")} Заблокированные</b>\n\nВсего: <code>{total}</code>\n']
 
     for doc in banned:
         info = doc.get('moderation') or {}
-        mark = '⛔️ жёстко' if info.get('hard') else '🚫 обычно'
+        mark = f'{e("hardban")} жёстко' if info.get('hard') else f'{e("ban")} обычно'
         lines.append(f'• {_who(doc)} — {mark}, {fmt(info.get("banned_at"))}'
                      + (f'\n  <i>{info["reason"]}</i>' if info.get('reason') else ''))
         kb.row(types.InlineKeyboardButton(
-            text=f'✅ Разбанить {(doc.get("user_data") or {}).get("user_id")}',
+            text=f'{e("ok")} Разбанить {(doc.get("user_data") or {}).get("user_id")}',
             callback_data=Adm(act='unban', a=str((doc.get('user_data') or {}).get('user_id'))).pack()))
 
     if not banned:
@@ -117,14 +120,14 @@ async def banned_list(call: types.CallbackQuery, c) -> None:
                      'Остальных ищите командой <code>/unban id</code>.')
 
     kb.row(types.InlineKeyboardButton(
-        text='⬅️ Назад', callback_data=Adm(act='main').pack()))
+        text=f'{e("back")} Назад', callback_data=Adm(act='main').pack()))
     await edit(call, '\n'.join(lines), kb)
 
 
 async def unban_button(call: types.CallbackQuery, callback_data: Adm, c) -> None:
     if callback_data.a.isdigit():
         await c.moderation.unban(int(callback_data.a), call.from_user.id)
-        await call.answer('Разблокирован ✅')
+        await call.answer(f'Разблокирован {e("ok")}')
     await banned_list(call, c)
 
 

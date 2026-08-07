@@ -21,6 +21,7 @@ from app.admin.stats import build_stats_text
 from app.bot.callbacks import Admin as Adm
 from app.settings.schema import (GROUPS, INDEX, SCHEMA, format_value, input_hint,
                                  parse_value)
+from app.content.emoji import e
 
 
 
@@ -50,12 +51,12 @@ async def edit(call: types.CallbackQuery, text: str, kb: InlineKeyboardBuilder) 
 # ── главное меню ────────────────────────────────────────────────────────────
 def main_kb(c) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    kb.row(btn('⚙️ Настройки бота', 'sets'))
+    kb.row(btn(f'{e("settings")} Настройки бота', 'sets'))
     for entity in c.entities.values():
         kb.row(btn(entity.title, 'elist', entity.code))
-    kb.row(btn('💬 Рассылка', 'broadcast'))
-    kb.row(btn('🚫 Заблокированные', 'banned'))
-    kb.row(btn('🔄 Обновить статистику', 'main', 'refresh'))
+    kb.row(btn(f'{e("broadcast")} Рассылка', 'broadcast'))
+    kb.row(btn(f'{e("ban")} Заблокированные', 'banned'))
+    kb.row(btn(f'{e("refresh")} Обновить статистику', 'main', 'refresh'))
     return kb
 
 
@@ -80,8 +81,8 @@ async def settings_groups(call: types.CallbackQuery, state: FSMContext, c, setti
     kb = InlineKeyboardBuilder()
     for group in SCHEMA:
         kb.row(btn(group.title, 'grp', group.code))
-    kb.row(btn('⬅️ Назад', 'main'))
-    await edit(call, '<b>⚙️ Настройки бота</b>\n\nВыберите раздел:', kb)
+    kb.row(btn(f'{e("back")} Назад', 'main'))
+    await edit(call, f'<b>{e("settings")} Настройки бота</b>\n\nВыберите раздел:', kb)
 
 
 async def settings_group(call: types.CallbackQuery, callback_data: Adm, state: FSMContext, c, settings) -> None:
@@ -99,11 +100,12 @@ async def settings_group(call: types.CallbackQuery, callback_data: Adm, state: F
         value = values.get(setting.key, setting.default)
         lines.append(f'• {setting.title}: <b>{format_value(setting, value)}</b>')
         if setting.type == 'bool':
-            kb.row(btn(f'{"✅" if value else "❌"} {setting.title}', 'tgl', setting.key))
+            mark = e('ok') if value else e('cross')
+            kb.row(btn(f'{mark} {setting.title}', 'tgl', setting.key))
         else:
-            kb.row(btn(f'✏️ {setting.title}: {format_value(setting, value)}', 'fld', setting.key))
+            kb.row(btn(f'{e("edit")} {setting.title}: {format_value(setting, value)}', 'fld', setting.key))
 
-    kb.row(btn('⬅️ Назад', 'sets'))
+    kb.row(btn(f'{e("back")} Назад', 'sets'))
     await edit(call, '\n'.join(lines), kb)
 
 
@@ -112,7 +114,7 @@ async def settings_toggle(call: types.CallbackQuery, callback_data: Adm, state: 
         await call.answer('Настройка не найдена', show_alert=True)
         return
     new_value = await settings.toggle(callback_data.a, call.from_user.id)
-    await call.answer('Включено ✅' if new_value else 'Выключено ❌')
+    await call.answer(f'Включено {e("ok")}' if new_value else f'Выключено {e("cross")}')
     group_code = next(g.code for g in SCHEMA if any(s.key == callback_data.a for s in g.items))
     await settings_group(call, Adm(act='grp', a=group_code), state, c, settings)
 
@@ -127,15 +129,15 @@ async def settings_field(call: types.CallbackQuery, callback_data: Adm, state: F
     value = await settings.get(setting.key)
 
     kb = InlineKeyboardBuilder()
-    kb.row(btn('♻️ Сбросить к значению по умолчанию', 'rst', setting.key))
-    kb.row(btn('⬅️ Назад', 'grp', group_code))
+    kb.row(btn(f'{e("reset")} Сбросить к значению по умолчанию', 'rst', setting.key))
+    kb.row(btn(f'{e("back")} Назад', 'grp', group_code))
 
     await state.set_state(AdminEdit.setting_value)
     await state.update_data(setting_key=setting.key, group_code=group_code)
 
     await edit(
         call,
-        f'<b>✏️ {setting.title}</b>\n\n'
+        f'<b>{e("edit")} {setting.title}</b>\n\n'
         f'<b>Ключ:</b> <code>{setting.key}</code>\n'
         f'<b>Сейчас:</b> {format_value(setting, value)}\n'
         f'<b>По умолчанию:</b> {format_value(setting, setting.default)}\n'
@@ -166,16 +168,16 @@ async def settings_value_input(message: types.Message, state: FSMContext, c, set
     raw = message.html_text if setting.type == 'text' else (message.text or '')
     ok, value, error = parse_value(setting, raw)
     if not ok:
-        await message.answer(f'❗️{error}')
+        await message.answer(f'{e("warning")}{error}')
         return
 
     await settings.set(setting.key, value, message.from_user.id)
     await state.clear()
 
     kb = InlineKeyboardBuilder()
-    kb.row(btn('⬅️ К разделу', 'grp', data.get('group_code', '')))
+    kb.row(btn(f'{e("back")} К разделу', 'grp', data.get('group_code', '')))
     await message.answer(
-        f'✅ <b>{setting.title}</b> → {format_value(setting, value)}',
+        f'{e("ok")} <b>{setting.title}</b> → {format_value(setting, value)}',
         reply_markup=kb.as_markup(),
     )
 
@@ -197,12 +199,12 @@ async def entity_list(call: types.CallbackQuery, callback_data: Adm, state: FSMC
     for item in items:
         mark = ''
         if entity.toggle_field:
-            mark = '✅ ' if item.get(entity.toggle_field, True) else '❌ '
+            mark = f'{e("ok")} ' if item.get(entity.toggle_field, True) else f'{e("cross")} '
         kb.row(btn(f'{mark}{entity.label(item)}', 'eopen', entity.code, str(item.get(entity.id_field))))
 
     if entity.allow_create:
-        kb.row(btn('➕ Добавить', 'enew', entity.code))
-    kb.row(btn('⬅️ Назад', 'main'))
+        kb.row(btn(f'{e("plus")} Добавить', 'enew', entity.code))
+    kb.row(btn(f'{e("back")} Назад', 'main'))
 
     text = f'<b>{entity.title}</b>\n\n' + (
         'Пока пусто.' if not items else 'Нажмите на элемент, чтобы изменить его.')
@@ -224,19 +226,20 @@ async def entity_open(call: types.CallbackQuery, callback_data: Adm, state: FSMC
         value = item.get(setting.key, setting.default)
         lines.append(f'<b>{setting.title}:</b> {format_value(setting, value)}')
         if setting.type == 'bool':
-            kb.row(btn(f'{"✅" if value else "❌"} {setting.title}', 'etgf',
+            mark = e('ok') if value else e('cross')
+            kb.row(btn(f'{mark} {setting.title}', 'etgf',
                        f'{entity.code}|{setting.key}', callback_data.b))
         else:
-            kb.row(btn(f'✏️ {setting.title}', 'eedit', f'{entity.code}|{setting.key}', callback_data.b))
+            kb.row(btn(f'{e("edit")} {setting.title}', 'eedit', f'{entity.code}|{setting.key}', callback_data.b))
 
     if entity.toggle_field:
         active = item.get(entity.toggle_field, True)
-        kb.row(btn('❌ Выключить' if active else '✅ Включить', 'etgl', entity.code, callback_data.b))
-    kb.row(btn('⬆️', 'eup', entity.code, callback_data.b),
-           btn('⬇️', 'edn', entity.code, callback_data.b))
+        kb.row(btn(f'{e("cross")} Выключить' if active else f'{e("ok")} Включить', 'etgl', entity.code, callback_data.b))
+    kb.row(btn(f'{e("up")}', 'eup', entity.code, callback_data.b),
+           btn(f'{e("down_arrow")}', 'edn', entity.code, callback_data.b))
     if entity.allow_delete:
-        kb.row(btn('🗑 Удалить', 'edel', entity.code, callback_data.b))
-    kb.row(btn('⬅️ К списку', 'elist', entity.code))
+        kb.row(btn(f'{e("trash")} Удалить', 'edel', entity.code, callback_data.b))
+    kb.row(btn(f'{e("back")} К списку', 'elist', entity.code))
 
     await edit(call, '\n'.join(lines), kb)
 
@@ -247,7 +250,7 @@ async def entity_toggle(call: types.CallbackQuery, callback_data: Adm, state: FS
         await call.answer('Не найдено', show_alert=True)
         return
     enabled = await entity.toggle(callback_data.b)
-    await call.answer('Включено ✅' if enabled else 'Выключено ❌')
+    await call.answer(f'Включено {e("ok")}' if enabled else f'Выключено {e("cross")}')
     await entity_open(call, callback_data, state, c, settings)
 
 
@@ -274,10 +277,10 @@ async def entity_edit_field(call: types.CallbackQuery, callback_data: Adm, state
     await state.update_data(entity_code=entity_code, field_key=field_key, item_id=callback_data.b)
 
     kb = InlineKeyboardBuilder()
-    kb.row(btn('⬅️ Отмена', 'eopen', entity_code, callback_data.b))
+    kb.row(btn(f'{e("back")} Отмена', 'eopen', entity_code, callback_data.b))
     await edit(
         call,
-        f'<b>✏️ {setting.title}</b>\n\n'
+        f'<b>{e("edit")} {setting.title}</b>\n\n'
         f'<b>Элемент:</b> <code>{callback_data.b}</code>\n'
         f'<b>Сейчас:</b> {format_value(setting, item.get(setting.key, setting.default))}\n'
         + (f'\n<blockquote>{setting.hint}</blockquote>\n' if setting.hint else '')
@@ -298,16 +301,16 @@ async def entity_value_input(message: types.Message, state: FSMContext, c, setti
     raw = message.html_text if setting.type == 'text' else (message.text or '')
     ok, value, error = parse_value(setting, raw)
     if not ok:
-        await message.answer(f'❗️{error}')
+        await message.answer(f'{e("warning")}{error}')
         return
 
     await entity.set_field(data['item_id'], setting.key, value)
     await state.clear()
 
     kb = InlineKeyboardBuilder()
-    kb.row(btn('⬅️ К элементу', 'eopen', entity.code, data['item_id']))
+    kb.row(btn(f'{e("back")} К элементу', 'eopen', entity.code, data['item_id']))
     await message.answer(
-        f'✅ <b>{setting.title}</b> → {format_value(setting, value)}',
+        f'{e("ok")} <b>{setting.title}</b> → {format_value(setting, value)}',
         reply_markup=kb.as_markup(),
     )
 
@@ -322,8 +325,8 @@ async def entity_new(call: types.CallbackQuery, callback_data: Adm, state: FSMCo
     await state.update_data(entity_code=entity.code)
 
     kb = InlineKeyboardBuilder()
-    kb.row(btn('⬅️ Отмена', 'elist', entity.code))
-    await edit(call, f'<b>➕ {entity.title}</b>\n\n{entity.id_hint}', kb)
+    kb.row(btn(f'{e("back")} Отмена', 'elist', entity.code))
+    await edit(call, f'<b>{e("plus")} {entity.title}</b>\n\n{entity.id_hint}', kb)
 
 
 async def entity_new_input(message: types.Message, state: FSMContext, c, settings) -> None:
@@ -336,19 +339,19 @@ async def entity_new_input(message: types.Message, state: FSMContext, c, setting
 
     item_id = (message.text or '').strip()
     if not item_id or len(item_id) < 2:
-        await message.answer('❗️Слишком короткий идентификатор.')
+        await message.answer(f'{e("warning")}Слишком короткий идентификатор.')
         return
     if await entity.get(item_id):
-        await message.answer('❗️Такой уже существует, отправьте другой.')
+        await message.answer(f'{e("warning")}Такой уже существует, отправьте другой.')
         return
 
     await entity.create(item_id)
     await state.clear()
 
     kb = InlineKeyboardBuilder()
-    kb.row(btn('⚙️ Настроить', 'eopen', entity.code, item_id))
+    kb.row(btn(f'{e("settings")} Настроить', 'eopen', entity.code, item_id))
     await message.answer(
-        f'✅ Создано: <code>{item_id}</code>\nТеперь задайте поля.',
+        f'{e("ok")} Создано: <code>{item_id}</code>\nТеперь задайте поля.',
         reply_markup=kb.as_markup(),
     )
 
@@ -359,8 +362,8 @@ async def entity_delete_ask(call: types.CallbackQuery, callback_data: Adm, c, se
         await call.answer('Недоступно', show_alert=True)
         return
     kb = InlineKeyboardBuilder()
-    kb.row(btn('🗑 Да, удалить', 'edelok', entity.code, callback_data.b))
-    kb.row(btn('⬅️ Отмена', 'eopen', entity.code, callback_data.b))
+    kb.row(btn(f'{e("trash")} Да, удалить', 'edelok', entity.code, callback_data.b))
+    kb.row(btn(f'{e("back")} Отмена', 'eopen', entity.code, callback_data.b))
     await edit(call, f'Удалить <code>{callback_data.b}</code> безвозвратно?', kb)
 
 

@@ -20,6 +20,7 @@ from app.bot.screens.base import Screen, render
 from app.bot.screens.pricing import price_line_for
 from app.bot.screens.profile import profile_caption
 from app.core.errors import PaymentError
+from app.content.emoji import e
 
 log = logging.getLogger(__name__)
 
@@ -49,17 +50,17 @@ async def bonus_line(c, user: dict, settings) -> str:
     percent = round(await settings.rate('bonus.ab_new_trial_rate') * 100)
     if percent <= 0:
         return ''
-    return (f'\n<blockquote>🎁 При пополнении сегодня вы получите '
+    return (f'\n<blockquote>{e("gift")} При пополнении сегодня вы получите '
             f'<b>+{percent}% сверху</b> — предложение для новых пользователей.</blockquote>')
 
 
-async def topup_caption(c, user: dict, settings, title: str = '💰 Пополнение баланса',
+async def topup_caption(c, user: dict, settings, title: str = f'{e("money")} Пополнение баланса',
                         tail: str = '') -> str:
     """Шапка экранов пополнения: кто, сколько на балансе, сколько стоит подписка."""
     price = (await price_line_for(c, user) if c.users.pick(user, 'vpn.shortUuid')
              else '<code>Подписка не оформлена</code>')
     return (profile_caption(user, title)
-            + f'<b>💸 Плата за подписку:</b> {price}\n\n'
+            + f'<b>{e("payout")} Плата за подписку:</b> {price}\n\n'
             + tail + await bonus_line(c, user, settings))
 
 
@@ -80,7 +81,7 @@ async def choose_provider(call: types.CallbackQuery, c, user: dict, settings,
     await footer(kb, settings, back='profile')
     await render(call, Screen(
         text=await topup_caption(c, user, settings,
-                                 tail='<blockquote>💰 Выберите способ оплаты.</blockquote>'),
+                                 tail=f'<blockquote>{e("money")} Выберите способ оплаты.</blockquote>'),
         markup=kb.as_markup(), image=c.media('payment')))
     await call.answer()
 
@@ -101,7 +102,7 @@ async def choose_amount(call: types.CallbackQuery, callback_data: Payment, c, us
                 callback_data=Payment(provider=provider.code, amount=amount).pack()))
     kb.adjust(3)
     kb.row(types.InlineKeyboardButton(
-        text='✏️ Своя сумма',
+        text=f'{e("edit")} Своя сумма',
         callback_data=Payment(provider=provider.code, amount=-1).pack()))
     await footer(kb, settings, back='payments')
 
@@ -110,8 +111,8 @@ async def choose_amount(call: types.CallbackQuery, callback_data: Payment, c, us
 
     await render(call, Screen(
         text=await topup_caption(
-            c, user, settings, title=f'💰 {provider.title}',
-            tail=(f'<blockquote>💰 Выберите сумму кнопкой или отправьте свою сообщением.\n'
+            c, user, settings, title=f'{e("money")} {provider.title}',
+            tail=(f'<blockquote>{e("money")} Выберите сумму кнопкой или отправьте свою сообщением.\n'
                   f'Минимальная сумма пополнения — {minimum}₽.</blockquote>')),
         markup=kb.as_markup(), image=c.media('payment')))
     await call.answer()
@@ -124,7 +125,7 @@ async def ask_custom_amount(call: types.CallbackQuery, callback_data: Payment, c
 
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(
-        text='⬅️ Назад', callback_data=Payment(provider=callback_data.provider).pack()))
+        text=f'{e("back")} Назад', callback_data=Payment(provider=callback_data.provider).pack()))
 
     await state.set_state(TopUp.amount)
     await state.update_data(provider=callback_data.provider, minimum=minimum)
@@ -145,12 +146,12 @@ async def custom_amount(message: types.Message, state: FSMContext, c):
     raw = (message.text or '').strip().replace(' ', '')
 
     if not raw.isdigit():
-        await message.answer('❗️Отправьте сумму числом.')
+        await message.answer(f'{e("warning")}Отправьте сумму числом.')
         return
 
     amount = int(raw)
     if amount < data.get('minimum', 0):
-        await message.answer(f'❗️Минимальная сумма — {data["minimum"]}₽.')
+        await message.answer(f'{e("warning")}Минимальная сумма — {data["minimum"]}₽.')
         return
 
     await state.clear()
@@ -179,7 +180,7 @@ async def _send_invoice(event, c, provider_code: str, amount: int) -> None:
 
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(text=f'Оплатить {amount}₽', url=invoice.url))
-    kb.row(types.InlineKeyboardButton(text='⬅️ Назад', callback_data=Menu(screen='payments').pack()))
+    kb.row(types.InlineKeyboardButton(text=f'{e("back")} Назад', callback_data=Menu(screen='payments').pack()))
 
     await render(event, Screen(
         text=(f'<b>Счёт на {amount}₽</b>\n\nПосле оплаты баланс пополнится автоматически — '

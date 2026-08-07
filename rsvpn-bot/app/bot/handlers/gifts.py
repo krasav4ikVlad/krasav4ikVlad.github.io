@@ -12,6 +12,7 @@ from app.bot.filters.feature import Feature
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import gifts_block, profile_caption
+from app.content.emoji import e
 
 
 async def gift_labels(plans_repo) -> dict[str, str]:
@@ -25,9 +26,9 @@ async def gifts_menu(call: types.CallbackQuery, c, user: dict, settings):
     owned = c.users.pick(user, 'info.gifts', {}) or {}
 
     text = (
-        profile_caption(user, '🎁 Подарки')
-        + f'<b>🎁 Подарки:</b>\n{gifts_block(owned, labels)}\n\n'
-        + f'<blockquote>🎁 Чтобы подарить RS VPN другу, просто напишите '
+        profile_caption(user, f'{e("gift")} Подарки')
+        + f'<b>{e("gift")} Подарки:</b>\n{gifts_block(owned, labels)}\n\n'
+        + f'<blockquote>{e("gift")} Чтобы подарить RS VPN другу, просто напишите '
           f'@{username} прямо в чате с ним и выберите нужную подписку.\n\n'
           f'Или выберите тариф кнопкой ниже — бот подготовит ссылку.</blockquote>'
     )
@@ -37,7 +38,7 @@ async def gifts_menu(call: types.CallbackQuery, c, user: dict, settings):
         free = int(owned.get(plan['code'], 0) or 0)
         mark = f' (бесплатно: {free})' if free else f' — {plan["price"]}₽'
         kb.row(types.InlineKeyboardButton(
-            text=f'🎁 {plan["title"]}{mark}',
+            text=f'{e("gift")} {plan["title"]}{mark}',
             switch_inline_query=plan['code']))
     await footer(kb, settings, back='profile')
 
@@ -68,15 +69,15 @@ async def inline_gifts(query: types.InlineQuery, c, settings):
         gift_id = await c.gifts.pending(query.from_user.id, plan['code'])
         kb = InlineKeyboardBuilder()
         kb.row(types.InlineKeyboardButton(
-            text='🎁 Принять подарок',
+            text=f'{e("gift")} Принять подарок',
             url=f'https://t.me/{username}?start=gift_{gift_id}_{plan["code"]}_{query.from_user.id}'))
 
         results.append(types.InlineQueryResultArticle(
             id=hashlib.md5(f'{plan["code"]}{gift_id}'.encode()).hexdigest(),
-            title=f'🎁 Подарить {plan["title"]}',
+            title=f'{e("gift")} Подарить {plan["title"]}',
             description=f'С баланса спишется {plan["price"]}₽ после принятия',
             input_message_content=types.InputTextMessageContent(
-                message_text=(f'<b>🎁 {query.from_user.full_name} дарит вам '
+                message_text=(f'<b>{e("gift")} {query.from_user.full_name} дарит вам '
                               f'RS VPN на {plan["days"]} дней!</b>\n\n'
                               f'Нажмите кнопку ниже, чтобы активировать.')),
             reply_markup=kb.as_markup(),

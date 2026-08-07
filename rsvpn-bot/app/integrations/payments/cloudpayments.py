@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from app.integrations.payments.base import Invoice, PaymentProvider, WebhookEvent
+from app.content.emoji import e
 
 
 class CloudPaymentsProvider(PaymentProvider):
     code = 'cards_ru'
-    title = '💳 Карта РФ'
+    title = f'{e("card")} Карта РФ'
     verified = False   # ⚠️ HMAC из заголовка Content-HMAC сейчас не проверяется
 
     def __init__(self, public_id: str = '', secret: str = '', http=None):

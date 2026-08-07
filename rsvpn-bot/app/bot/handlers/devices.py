@@ -15,6 +15,7 @@ from app.bot.screens.pricing import price_line_for
 from app.bot.screens.profile import devices_block, profile_caption
 from app.content import texts
 from app.core.errors import NotEnoughBalance, VpnPanelError
+from app.content.emoji import e
 
 PACKAGES = (1, 2, 3, 5)
 
@@ -33,15 +34,15 @@ async def manager(event, c, user: dict, settings):
 
     if int(c.users.pick(user, 'vpn.hwidDeviceLimit', 0)) > free_limit:
         kb.row(types.InlineKeyboardButton(
-            text='➖ Уменьшить лимит на 1',
+            text=f'{e("minus")} Уменьшить лимит на 1',
             callback_data=Devices(action='remove', value='1').pack()))
     kb.row(types.InlineKeyboardButton(
-        text='📲 Мои устройства', callback_data=Devices(action='list').pack()))
+        text=f'{e("devices")} Мои устройства', callback_data=Devices(action='list').pack()))
     await footer(kb, settings, back='my_subscription')
 
-    text = (profile_caption(user, '📲 Менеджер устройств')
+    text = (profile_caption(user, f'{e("devices")} Менеджер устройств')
             + devices_block(user, await price_line_for(c, user), connect_base)
-            + f'<blockquote>📲 {texts.render("screen.devices.hint", free_devices=free_limit, device_price=price)}</blockquote>')
+            + f'<blockquote>{e("devices")} {texts.render("screen.devices.hint", free_devices=free_limit, device_price=price)}</blockquote>')
 
     await render(event, Screen(text=text, markup=kb.as_markup(), image=c.media('devices')))
     if isinstance(event, types.CallbackQuery):
@@ -63,7 +64,7 @@ async def add_devices(call: types.CallbackQuery, callback_data: Devices, c, user
         await call.answer('Панель не ответила, попробуйте позже.', show_alert=True)
         return
 
-    await call.answer(f'Добавлено устройств: {amount} ✅')
+    await call.answer(f'Добавлено устройств: {amount} {e("ok")}')
     await manager(call, c, await c.users.get(call.from_user.id), settings)
 
 
@@ -100,21 +101,21 @@ async def list_devices(call: types.CallbackQuery, c, user: dict, settings, note:
         hwid = device.get('hwid', '')
         title = device.get('deviceModel') or device.get('platform') or hwid[:12]
         kb.row(types.InlineKeyboardButton(
-            text=f'🗑 {title}',
+            text=f'{e("trash")} {title}',
             callback_data=Devices(action='unbind', value=device_token(hwid)).pack()))
     if devices:
         kb.row(types.InlineKeyboardButton(
-            text=f'🧹 Отвязать все ({len(devices)})',
+            text=f'{e("broom")} Отвязать все ({len(devices)})',
             callback_data=Devices(action='unbind_all').pack()))
     await footer(kb, settings, back='devices')
 
     if note:
-        text = f'<b>📲 Ваши устройства</b>\n\n{note}'
+        text = f'<b>{e("devices")} Ваши устройства</b>\n\n{note}'
     elif devices:
-        text = ('<b>📲 Ваши устройства</b>\n\nНажмите, чтобы отвязать. Отвязка освобождает '
+        text = (f'<b>{e("devices")} Ваши устройства</b>\n\nНажмите, чтобы отвязать. Отвязка освобождает '
                 'слот, лимит при этом не меняется.')
     else:
-        text = '<b>📲 Устройства</b>\n\nПодключённых устройств пока нет.'
+        text = f'<b>{e("devices")} Устройства</b>\n\nПодключённых устройств пока нет.'
 
     await render(call, Screen(text=text, markup=kb.as_markup(),
                               image=c.media('devices_list')))
@@ -131,7 +132,7 @@ async def unbind(call: types.CallbackQuery, callback_data: Devices, c, user: dic
         return
 
     removed = await c.devices.unbind(call.from_user.id, hwid)
-    await call.answer('Устройство отвязано ✅' if removed else 'Не удалось отвязать',
+    await call.answer(f'Устройство отвязано {e("ok")}' if removed else 'Не удалось отвязать',
                       show_alert=not removed)
     await list_devices(call, c, await c.users.get(call.from_user.id), settings)
 
@@ -145,13 +146,13 @@ async def ask_unbind_all(call: types.CallbackQuery, c, user: dict, settings):
 
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(
-        text=f'🧹 Да, отвязать все ({count})',
+        text=f'{e("broom")} Да, отвязать все ({count})',
         callback_data=Devices(action='unbind_all_ok').pack()))
     kb.row(types.InlineKeyboardButton(
-        text='⬅️ Отмена', callback_data=Devices(action='list').pack()))
+        text=f'{e("back")} Отмена', callback_data=Devices(action='list').pack()))
 
     await render(call, Screen(
-        text=('<b>🧹 Отвязать все устройства</b>\n\n'
+        text=(f'<b>{e("broom")} Отвязать все устройства</b>\n\n'
               f'Будет отвязано устройств: <code>{count}</code>.\n\n'
               '<blockquote>Лимит устройств не изменится — освободятся слоты. '
               'Каждое устройство привяжется заново при следующем подключении, '
@@ -162,7 +163,7 @@ async def ask_unbind_all(call: types.CallbackQuery, c, user: dict, settings):
 
 async def unbind_all(call: types.CallbackQuery, c, user: dict, settings):
     removed = await c.devices.unbind_all(call.from_user.id)
-    await call.answer(f'Отвязано устройств: {removed} ✅' if removed
+    await call.answer(f'Отвязано устройств: {removed} {e("ok")}' if removed
                       else 'Не удалось отвязать', show_alert=not removed)
     await list_devices(call, c, await c.users.get(call.from_user.id), settings,
                        note=f'Отвязано устройств: <code>{removed}</code>. '

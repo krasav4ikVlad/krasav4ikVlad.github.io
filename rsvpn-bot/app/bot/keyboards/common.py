@@ -6,6 +6,7 @@ from aiogram import types
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Menu
+from app.content.emoji import e
 
 
 async def footer(builder: InlineKeyboardBuilder, settings,
@@ -13,22 +14,22 @@ async def footer(builder: InlineKeyboardBuilder, settings,
     """«Назад / Поддержка / Канал». Ссылки берутся из настроек, не из кода."""
     if back:
         builder.row(types.InlineKeyboardButton(
-            text='⬅️ Назад', callback_data=Menu(screen=back).pack()))
+            text=f'{e("back")} Назад', callback_data=Menu(screen=back).pack()))
     builder.row(types.InlineKeyboardButton(
-        text='🤖 Поддержка', url=await settings.get('link.support')))
+        text=f'{e("support")} Поддержка', url=await settings.get('link.support')))
     builder.add(types.InlineKeyboardButton(
-        text='📢 RS VPN', url=await settings.get('link.channel')))
+        text=f'{e("channel")} RS VPN', url=await settings.get('link.channel')))
     return builder
 
 
 def topup_button() -> types.InlineKeyboardButton:
     return types.InlineKeyboardButton(
-        text='💳 Пополнить баланс', callback_data=Menu(screen='payments').pack())
+        text=f'{e("card")} Пополнить баланс', callback_data=Menu(screen='payments').pack())
 
 
 def extend_button() -> types.InlineKeyboardButton:
     return types.InlineKeyboardButton(
-        text='🔁 Продлить подписку', callback_data=Menu(screen='extend').pack())
+        text=f'{e("renew")} Продлить подписку', callback_data=Menu(screen='extend').pack())
 
 
 def campaign_keyboards() -> dict:

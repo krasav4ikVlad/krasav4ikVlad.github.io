@@ -21,6 +21,7 @@ from aiogram.types import InlineKeyboardMarkup
 
 from app.core.time import days_since, hours_since, now
 from app.repositories.users import UsersRepository
+from app.content.emoji import e
 
 log = logging.getLogger(__name__)
 
@@ -83,10 +84,10 @@ class StepReport:
     skipped_claimed: int = 0
 
     def as_text(self) -> str:
-        return (f'📨 <b>{self.step}</b>\n'
-                f'✅ Отправлено: <code>{self.sent}</code>\n'
-                f'⛔️ Не доставлено: <code>{self.failed}</code>\n'
-                f'💰 Начислено: <code>{self.credited}₽</code>')
+        return (f'{e("envelope")} <b>{self.step}</b>\n'
+                f'{e("ok")} Отправлено: <code>{self.sent}</code>\n'
+                f'{e("hardban")} Не доставлено: <code>{self.failed}</code>\n'
+                f'{e("money")} Начислено: <code>{self.credited}₽</code>')
 
 
 @dataclass

@@ -13,12 +13,13 @@ import json
 
 from app.integrations.payments.base import (Invoice, PaymentProvider, SignatureError,
                                             WebhookEvent)
+from app.content.emoji import e
 
 PAID_STATUSES = {'paid', 'success', 'succeeded'}
 
 
 class SeverPayProvider(PaymentProvider):
-    title = '⚡️ СБП'
+    title = f'{e("sbp")} СБП'
 
     def __init__(self, api_key: str, code: str = 'severpay', http=None,
                  merchant_id: int = 0, title: str | None = None):

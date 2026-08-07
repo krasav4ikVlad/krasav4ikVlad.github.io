@@ -8,13 +8,14 @@ import json
 
 from app.integrations.payments.base import (Invoice, PaymentProvider, SignatureError,
                                             WebhookEvent)
+from app.content.emoji import e
 
 PAID_STATUSES = {'paid', 'paid_over'}
 
 
 class HeleketProvider(PaymentProvider):
     code = 'heleket'
-    title = '💸 Криптовалюта'
+    title = f'{e("payout")} Криптовалюта'
 
     def __init__(self, api_key: str, merchant_id: str = '', http=None):
         self._key = api_key

@@ -7,6 +7,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Payout, PayoutAdmin
 from app.domain import payout_methods as pm
+from app.content.emoji import e
 
 
 def _btn(text: str, action: str, value: str = '') -> types.InlineKeyboardButton:
@@ -17,8 +18,8 @@ def _btn(text: str, action: str, value: str = '') -> types.InlineKeyboardButton:
 def methods_keyboard(methods: list[dict]) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     for method in methods:
-        kb.row(_btn(f'📄 {pm.method_title(method)}', 'view', method['id']))
-    kb.row(_btn('➕ Добавить способ', 'add'))
+        kb.row(_btn(f'{e("document")} {pm.method_title(method)}', 'view', method['id']))
+    kb.row(_btn(f'{e("plus")} Добавить способ', 'add'))
     return kb
 
 
@@ -28,15 +29,16 @@ def draft_keyboard(draft: dict) -> InlineKeyboardBuilder:
     current = draft.get('type', pm.DEFAULT_TYPE)
 
     kb.row(*[types.InlineKeyboardButton(
-        text=('✅ ' if method.code == current else '') + method.title,
+        text=(f'{e("ok")} ' if method.code == current else '') + method.title,
         callback_data=Payout(action='type', value=method.code).pack())
         for method in pm.METHODS])
 
     for field in pm.fields_of(current):
         filled = str((draft.get('data') or {}).get(field.code) or '').strip()
-        kb.row(_btn(f'{"✏️" if filled else "➕"} {field.title}', 'field', field.code))
+        mark = e('edit') if filled else e('plus')
+        kb.row(_btn(f'{mark} {field.title}', 'field', field.code))
 
-    kb.row(_btn('🧹 Очистить', 'clear'), _btn('✅ Добавить', 'save'))
+    kb.row(_btn(f'{e("broom")} Очистить', 'clear'), _btn(f'{e("ok")} Добавить', 'save'))
     return kb
 
 
@@ -45,14 +47,14 @@ def payout_menu_keyboard(methods: list[dict], selected: str) -> InlineKeyboardBu
     kb = InlineKeyboardBuilder()
 
     def mark(code: str, title: str) -> str:
-        return ('✅ ' if code == selected else '') + title
+        return (f'{e("ok")} ' if code == selected else '') + title
 
     kb.row(_btn(mark(pm.BOT_BALANCE, pm.BOT_BALANCE_TITLE), 'pick', pm.BOT_BALANCE))
     for method in methods:
-        kb.row(_btn(mark(method['id'], f'📄 {pm.method_title(method)}'), 'pick', method['id']))
+        kb.row(_btn(mark(method['id'], f'{e("document")} {pm.method_title(method)}'), 'pick', method['id']))
 
-    kb.row(_btn('📤 Заказать вывод', 'order'))
-    kb.row(_btn('⚙️ Способы вывода', 'methods'))
+    kb.row(_btn(f'{e("withdraw")} Заказать вывод', 'order'))
+    kb.row(_btn(f'{e("settings")} Способы вывода', 'methods'))
     return kb
 
 
@@ -60,13 +62,13 @@ def payout_card_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
     """Кнопки под заявкой в админ-чате."""
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(
-        text='💰 На баланс бота',
+        text=f'{e("money")} На баланс бота',
         callback_data=PayoutAdmin(action='balance', user_id=user_id).pack()))
     kb.row(types.InlineKeyboardButton(
-        text='✅ Выплачено вручную',
+        text=f'{e("ok")} Выплачено вручную',
         callback_data=PayoutAdmin(action='paid', user_id=user_id).pack()))
     kb.row(types.InlineKeyboardButton(
-        text='❌ Отказать',
+        text=f'{e("cross")} Отказать',
         callback_data=PayoutAdmin(action='reject_ask', user_id=user_id).pack()))
     return kb.as_markup()
 
