@@ -149,6 +149,21 @@ Providers = distinct non-null sources over last 30 days; the webhook stream
 (`payments_flat`, status=paid) is preferred per source, balance credits are
 the fallback. Threshold = `max(settings.provider_silence_hours, 4 * median_gap_hours)`.
 
+`GET /overview/pace` (cached 60s) — today's revenue pace vs the median of
+the last 7 days ∪ same weekday of 4 weeks (hours in UTC):
+```json
+{"now_hour": 14, "baseline_days": 10,
+ "today_so_far": 0.0, "expected_so_far": 0.0, "expected_full_day": 0.0,
+ "projected_today": 0.0, "deviation_pct": -32.1,
+ "status": "behind|on_track|ahead|no_data",     // band ±15%
+ "series": [{"hour": 0, "today": 12.0, "expected": 15.0}],  // cumulative; today null after now_hour
+ "factors": [{"key": "payments_count|avg_check|renewals|registrations|source:<name>",
+              "label": "...", "unit": "шт|₽",
+              "today": 0.0, "expected": 0.0, "delta_pct": -36.8,
+              "gap_rub": -1200.0}],              // gap_rub on source:* only
+ "verdict": "Отстаём на 32% от обычного темпа: ..."}
+```
+
 `GET /overview/events/recent?limit=50` → `{"events": [...last WS events from hub._recent...]}` — read `app.ws.hub` ring buffer (add a public `recent()` accessor usage: `list(hub._recent)` is acceptable).
 
 ### `revenue.py` — prefix `/revenue`

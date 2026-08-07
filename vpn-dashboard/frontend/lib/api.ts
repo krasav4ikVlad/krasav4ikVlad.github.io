@@ -72,6 +72,7 @@ export const api = {
     overviewSummary: () => "/api/overview/summary",
     providersStatus: () => "/api/overview/providers-status",
     recentEvents: (limit = 50) => `/api/overview/events/recent${qs(undefined, { limit })}`,
+    pace: () => "/api/overview/pace",
 
     revenueTimeseries: (p: PeriodQuery, granularity: string) =>
       `/api/revenue/timeseries${qs(p, { granularity })}`,

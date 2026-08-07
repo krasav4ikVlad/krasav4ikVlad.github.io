@@ -12,15 +12,136 @@ import { StatCard } from "@/components/live/stat-card";
 import { EventTicker } from "@/components/live/ticker";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { TableSkeleton } from "@/components/ui/skeleton";
+import { ChartSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { TimeSeries } from "@/components/charts/timeseries";
 import {
   fmtDateTime,
   fmtHoursApprox,
   fmtMoney,
   fmtNum,
+  fmtPct,
 } from "@/lib/format";
 import { cn } from "@/lib/utils";
+
+const PACE_STATUS: Record<
+  T.PaceResponse["status"],
+  { variant: "good" | "warning" | "critical" | "default"; label: string }
+> = {
+  ahead: { variant: "good", label: "Опережаем" },
+  on_track: { variant: "good", label: "В норме" },
+  behind: { variant: "critical", label: "Отстаём" },
+  no_data: { variant: "default", label: "Мало данных" },
+};
+
+function PaceCard() {
+  const { data, isLoading } = useSWR<T.PaceResponse>(api.urls.pace(), fetcher, {
+    refreshInterval: 60_000,
+    keepPreviousData: true,
+  });
+  const st = data ? PACE_STATUS[data.status] : null;
+  const factors = (data?.factors ?? []).filter((f) => f.delta_pct !== null);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="min-w-0">
+          <CardTitle>Темп дня</CardTitle>
+          <p className="mt-0.5 text-xs text-muted">
+            {data?.verdict ?? "Сравнение с медианой последних недель, часы UTC"}
+          </p>
+        </div>
+        {st ? <Badge variant={st.variant}>{st.label}</Badge> : null}
+      </CardHeader>
+      {isLoading && !data ? (
+        <ChartSkeleton height={200} />
+      ) : !data || data.status === "no_data" ? (
+        <div className="py-8 text-center text-sm text-muted">
+          Нужен хотя бы день истории — загляните завтра
+        </div>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-[220px_1fr_300px]">
+          <div className="space-y-3">
+            <div>
+              <div className="text-xs text-muted">Сейчас</div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-semibold text-ink">
+                  {fmtMoney(data.today_so_far)}
+                </span>
+                {data.deviation_pct !== null ? (
+                  <span
+                    className={cn(
+                      "text-xs font-medium",
+                      data.deviation_pct >= 0
+                        ? "text-[var(--delta-good)]"
+                        : "text-critical",
+                    )}
+                  >
+                    {fmtPct(data.deviation_pct, true)}
+                  </span>
+                ) : null}
+              </div>
+              <div className="text-xs text-muted">
+                обычно к этому часу: {fmtMoney(data.expected_so_far)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted">Прогноз на день</div>
+              <div className="text-lg font-semibold text-ink">
+                {fmtMoney(data.projected_today)}
+              </div>
+              <div className="text-xs text-muted">
+                обычный день: {fmtMoney(data.expected_full_day)}
+              </div>
+            </div>
+          </div>
+          <div className="min-w-0">
+            <TimeSeries
+              data={data.series as unknown as Record<string, unknown>[]}
+              series={[
+                { key: "expected", name: "Обычно", kind: "area" },
+                { key: "today", name: "Сегодня" },
+              ]}
+              height={200}
+              xKey="hour"
+              xFormatter={(h) => `${h}:00`}
+              valueFormatter={(v) => fmtMoney(v)}
+            />
+          </div>
+          <div className="space-y-1 self-center">
+            {factors.slice(0, 6).map((f) => (
+              <div
+                key={f.key}
+                className="flex items-center justify-between gap-2 text-xs"
+              >
+                <span className="truncate text-ink-2">{f.label}</span>
+                <span className="shrink-0 tabular text-muted">
+                  {f.unit === "₽"
+                    ? `${fmtMoney(f.today)} / ${fmtMoney(f.expected)}`
+                    : `${fmtNum(f.today)} / ${fmtNum(f.expected)}`}
+                </span>
+                <span
+                  className={cn(
+                    "w-14 shrink-0 text-right tabular font-medium",
+                    (f.delta_pct ?? 0) >= 0
+                      ? "text-[var(--delta-good)]"
+                      : "text-critical",
+                  )}
+                >
+                  {fmtPct(f.delta_pct, true)}
+                </span>
+              </div>
+            ))}
+            <p className="pt-1 text-[10px] text-muted">
+              сегодня / обычно к этому часу · медиана за {data.baseline_days}{" "}
+              дн
+            </p>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 const PROVIDER_STATUS: Record<
   T.ProviderStatus["status"],
@@ -171,6 +292,8 @@ export default function LiveOverviewPage() {
           sparkFormatter={fmtNum}
         />
       </div>
+
+      <PaceCard />
 
       <div className="grid gap-3 lg:grid-cols-[1fr_380px]">
         <ProvidersCard />

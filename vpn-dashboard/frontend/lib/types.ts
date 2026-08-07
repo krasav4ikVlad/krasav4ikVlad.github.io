@@ -328,6 +328,30 @@ export interface PeakHoursResponse {
   hours: { hour: number; count: number }[];
 }
 
+// ---- pace ----
+export interface PaceFactor {
+  key: string;
+  label: string;
+  unit: string;
+  today: number;
+  expected: number;
+  delta_pct: number | null;
+  gap_rub?: number;
+}
+export interface PaceResponse {
+  now_hour: number;
+  baseline_days: number;
+  today_so_far: number;
+  expected_so_far: number;
+  expected_full_day: number;
+  projected_today: number | null;
+  deviation_pct: number | null;
+  status: "behind" | "on_track" | "ahead" | "no_data";
+  series: { hour: number; today: number | null; expected: number }[];
+  factors: PaceFactor[];
+  verdict: string;
+}
+
 // ---- experiments ----
 export interface AbGroup {
   group: string;

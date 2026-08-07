@@ -266,3 +266,251 @@ async def recent_events(
     limit: int = Query(50, ge=1, le=100, description="Max events to return"),
 ) -> dict[str, Any]:
     return {"events": hub.recent(limit)}
+
+
+# ---------------------------------------------------------------------------
+# GET /overview/pace — сегодняшний темп выручки и разбор отклонения
+# ---------------------------------------------------------------------------
+
+_PACE_BASELINE_DAYS = 28
+_PACE_BAND_PCT = 15.0  # ±15% считается нормой
+
+
+def _cum_at_cutoff(by_hour: dict[int, float], hour: int, frac: float) -> float:
+    """Cumulative value up to `hour` plus `frac` of that hour's bucket."""
+    total = sum(v for h, v in by_hour.items() if h < hour)
+    return total + by_hour.get(hour, 0.0) * frac
+
+
+def _median_or_zero(values: list[float]) -> float:
+    return float(statistics.median(values)) if values else 0.0
+
+
+def _pace_baseline_days(today: date) -> set[str]:
+    """Baseline: last 7 days + the same weekday of the past 4 weeks."""
+    days: set[str] = set()
+    for i in range(1, 8):
+        days.add((today - timedelta(days=i)).isoformat())
+    for w in range(1, 5):
+        days.add((today - timedelta(days=7 * w)).isoformat())
+    return days
+
+
+@cached(ttl=60, prefix="overview:pace")
+async def _pace() -> dict[str, Any]:
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    baseline_start = today_start - timedelta(days=_PACE_BASELINE_DAYS)
+    cutoff_hour = now.hour
+    cutoff_frac = now.minute / 60.0
+    today_key = today_start.date().isoformat()
+    baseline_keys = _pace_baseline_days(today_start.date())
+
+    # --- top-ups per (day, hour, source) --------------------------------
+    topup_rows = await db[TX_FLAT].aggregate([
+        {"$match": {**_TOPUP_MATCH, "dt": {"$type": "date",
+                                           "$gte": baseline_start}}},
+        {"$group": {
+            "_id": {"day": {"$dateTrunc": {"date": "$dt", "unit": "day"}},
+                    "hour": {"$hour": "$dt"},
+                    "source": {"$ifNull": ["$source", "other"]}},
+            "net": {"$sum": NET_AMOUNT},
+            "count": {"$sum": 1},
+        }},
+    ]).to_list(length=None)
+
+    # --- renewals per (day, hour) ---------------------------------------
+    renewal_rows = await db[TX_FLAT].aggregate([
+        {"$match": {"direction": "debit", "kind": "renewal",
+                    "dt": {"$type": "date", "$gte": baseline_start}}},
+        {"$group": {"_id": {"day": {"$dateTrunc": {"date": "$dt",
+                                                   "unit": "day"}},
+                            "hour": {"$hour": "$dt"}},
+                    "count": {"$sum": 1}}},
+    ]).to_list(length=None)
+
+    # --- registrations per (day, hour) ----------------------------------
+    reg_rows = await db[USERS_FLAT].aggregate([
+        {"$match": {"joined_at": {"$type": "date", "$gte": baseline_start}}},
+        {"$group": {"_id": {"day": {"$dateTrunc": {"date": "$joined_at",
+                                                   "unit": "day"}},
+                            "hour": {"$hour": "$joined_at"}},
+                    "count": {"$sum": 1}}},
+    ]).to_list(length=None)
+
+    # --- fold into per-day hourly profiles ------------------------------
+    net_by_day: dict[str, dict[int, float]] = {}
+    cnt_by_day: dict[str, dict[int, float]] = {}
+    src_by_day: dict[str, dict[str, dict[int, float]]] = {}
+    for row in topup_rows:
+        key = row.get("_id") or {}
+        day = _day_key(key.get("day"))
+        if day is None:
+            continue
+        hour = int(key.get("hour") or 0)
+        source = str(key.get("source") or "other")
+        net = float(row.get("net") or 0)
+        net_by_day.setdefault(day, {})
+        net_by_day[day][hour] = net_by_day[day].get(hour, 0.0) + net
+        cnt_by_day.setdefault(day, {})
+        cnt_by_day[day][hour] = (cnt_by_day[day].get(hour, 0.0)
+                                 + float(row.get("count") or 0))
+        src_by_day.setdefault(day, {}).setdefault(source, {})
+        src_by_day[day][source][hour] = (
+            src_by_day[day][source].get(hour, 0.0) + net)
+
+    def hourly_counts(rows: list[dict]) -> dict[str, dict[int, float]]:
+        out: dict[str, dict[int, float]] = {}
+        for row in rows:
+            key = row.get("_id") or {}
+            day = _day_key(key.get("day"))
+            if day is None:
+                continue
+            hour = int(key.get("hour") or 0)
+            out.setdefault(day, {})
+            out[day][hour] = out[day].get(hour, 0.0) + float(
+                row.get("count") or 0)
+        return out
+
+    renewals_by_day = hourly_counts(renewal_rows)
+    regs_by_day = hourly_counts(reg_rows)
+
+    base_days = [d for d in baseline_keys if d in net_by_day
+                 or d in regs_by_day or d in renewals_by_day]
+
+    def baseline_median(profiles: dict[str, dict[int, float]],
+                        full_day: bool = False) -> float:
+        values = []
+        for day in base_days:
+            by_hour = profiles.get(day, {})
+            values.append(sum(by_hour.values()) if full_day
+                          else _cum_at_cutoff(by_hour, cutoff_hour,
+                                              cutoff_frac))
+        return _median_or_zero(values)
+
+    today_net = net_by_day.get(today_key, {})
+    today_so_far = round(sum(today_net.values()), 2)
+    expected_so_far = round(baseline_median(net_by_day), 2)
+    expected_full = round(baseline_median(net_by_day, full_day=True), 2)
+
+    deviation_pct = (round((today_so_far - expected_so_far)
+                           / expected_so_far * 100, 1)
+                     if expected_so_far > 0 else None)
+    projected = (round(today_so_far / expected_so_far * expected_full, 2)
+                 if expected_so_far > 0 and expected_full > 0 else None)
+
+    if not base_days or expected_so_far <= 0:
+        status = "no_data"
+    elif deviation_pct is not None and deviation_pct < -_PACE_BAND_PCT:
+        status = "behind"
+    elif deviation_pct is not None and deviation_pct > _PACE_BAND_PCT:
+        status = "ahead"
+    else:
+        status = "on_track"
+
+    # --- hourly cumulative series for the chart -------------------------
+    series = []
+    for hour in range(24):
+        expected_cum = _median_or_zero([
+            _cum_at_cutoff(net_by_day.get(d, {}), hour, 1.0)
+            for d in base_days])
+        today_cum = (round(_cum_at_cutoff(today_net, hour, 1.0), 2)
+                     if hour <= cutoff_hour else None)
+        series.append({"hour": hour, "today": today_cum,
+                       "expected": round(expected_cum, 2)})
+
+    # --- factor decomposition -------------------------------------------
+    def factor(key: str, label: str, unit: str, today_value: float,
+               expected_value: float) -> dict[str, Any]:
+        delta = (round((today_value - expected_value) / expected_value * 100, 1)
+                 if expected_value > 0 else None)
+        return {"key": key, "label": label, "unit": unit,
+                "today": round(today_value, 2),
+                "expected": round(expected_value, 2),
+                "delta_pct": delta}
+
+    today_cnt = sum(cnt_by_day.get(today_key, {}).values())
+    exp_cnt = baseline_median(cnt_by_day)
+    today_check = today_so_far / today_cnt if today_cnt else 0.0
+    check_baseline = []
+    for day in base_days:
+        c = _cum_at_cutoff(cnt_by_day.get(day, {}), cutoff_hour, cutoff_frac)
+        n = _cum_at_cutoff(net_by_day.get(day, {}), cutoff_hour, cutoff_frac)
+        if c > 0:
+            check_baseline.append(n / c)
+    exp_check = _median_or_zero(check_baseline)
+
+    factors = [
+        factor("payments_count", "Число пополнений", "шт",
+               today_cnt, exp_cnt),
+        factor("avg_check", "Средний чек", "₽", today_check, exp_check),
+        factor("renewals", "Продления (списания)", "шт",
+               sum(renewals_by_day.get(today_key, {}).values()),
+               baseline_median(renewals_by_day)),
+        factor("registrations", "Регистрации", "шт",
+               sum(regs_by_day.get(today_key, {}).values()),
+               baseline_median(regs_by_day)),
+    ]
+
+    # per-source contributions, biggest absolute gap first
+    sources = {s for day in base_days
+               for s in src_by_day.get(day, {})} | set(
+                   src_by_day.get(today_key, {}))
+    source_factors = []
+    for source in sources:
+        expected_src = _median_or_zero([
+            _cum_at_cutoff(src_by_day.get(d, {}).get(source, {}),
+                           cutoff_hour, cutoff_frac) for d in base_days])
+        today_src = sum(src_by_day.get(today_key, {}).get(source, {}).values())
+        if expected_src < 1 and today_src < 1:
+            continue
+        f = factor(f"source:{source}", source, "₽", today_src, expected_src)
+        f["gap_rub"] = round(today_src - expected_src, 2)
+        source_factors.append(f)
+    source_factors.sort(key=lambda f: abs(f.get("gap_rub") or 0),
+                        reverse=True)
+    factors.extend(source_factors[:5])
+
+    # --- human verdict ---------------------------------------------------
+    verdict = ""
+    if status == "no_data":
+        verdict = "Мало истории для оценки — нужен хотя бы день данных."
+    elif status == "on_track":
+        verdict = "Темп в пределах нормы (±15% от обычного к этому часу)."
+    else:
+        word = "Отстаём" if status == "behind" else "Опережаем"
+        reasons = []
+        for f in factors:
+            d = f.get("delta_pct")
+            if d is None:
+                continue
+            same_sign = (d < 0) == (status == "behind")
+            if abs(d) >= 20 and same_sign and f["key"] != "avg_check":
+                reasons.append(f"{f['label'].lower()}: {d:+.0f}%")
+            elif abs(d) >= 20 and same_sign:
+                reasons.append(f"средний чек: {d:+.0f}%")
+            if len(reasons) == 2:
+                break
+        verdict = (f"{word} на {abs(deviation_pct):.0f}% от обычного темпа"
+                   + (": " + "; ".join(reasons) if reasons else "."))
+
+    return {
+        "now_hour": cutoff_hour,
+        "baseline_days": len(base_days),
+        "today_so_far": today_so_far,
+        "expected_so_far": expected_so_far,
+        "expected_full_day": expected_full,
+        "projected_today": projected,
+        "deviation_pct": deviation_pct,
+        "status": status,
+        "series": series,
+        "factors": factors,
+        "verdict": verdict,
+    }
+
+
+@router.get("/pace")
+async def pace() -> dict[str, Any]:
+    """Сегодняшняя выручка против обычного темпа + факторы отклонения."""
+    return await _pace()
