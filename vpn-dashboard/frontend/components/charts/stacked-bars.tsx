@@ -59,6 +59,7 @@ export function StackedBars({
             <ChartTooltip
               labelFormatter={(l) => (xFormatter ? xFormatter(String(l)) : String(l))}
               valueFormatter={valueFormatter}
+              showTotal={keys.length > 1}
             />
           }
           cursor={{ fill: "var(--hairline)" }}
