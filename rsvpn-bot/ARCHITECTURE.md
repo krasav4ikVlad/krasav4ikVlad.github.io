@@ -101,7 +101,7 @@ rsvpn-bot/
 │   ├── m0001_indexes.py
 │   └── m0002_transactions_format.py
 ├── scripts/seed_demo.py
-├── tests/                       # 362 теста, идут без Mongo и без Telegram
+├── tests/                       # 366 тестов, идут без Mongo и без Telegram
 │   ├── conftest.py              # заглушки Mongo и Bot API
 │   ├── test_pricing.py test_settings.py test_users_repo.py
 │   ├── test_campaigns.py test_texts.py test_admin_panel.py
@@ -154,7 +154,7 @@ handlers → services → repositories → Mongo
 
 ## Что уже работает в скелете
 
-`pytest -q` → **362 passed**. Тесты идут на заглушках Mongo и Telegram
+`pytest -q` → **366 passed**. Тесты идут на заглушках Mongo и Telegram
 (`tests/conftest.py`), включая сценарии, которые иначе проверяются только на
 живых пользователях:
 

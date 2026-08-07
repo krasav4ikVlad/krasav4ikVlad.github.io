@@ -99,3 +99,34 @@ def test_services_that_touch_renamed_collections_go_through_the_switch(container
     assert c.promo.codes.name == 'promo_codes '
     assert c.promo.usages.name == 'promo_usages '
     assert c.survey.answers.name == 'churn_surveys '
+
+
+# ── страховка при переименовании коллекций ──────────────────────────────────
+async def test_stranded_data_is_reported(container):
+    """Переименовали не всё — бот читает пустую коллекцию и молчит.
+
+    Именно так «пропадают» промокоды: данные остались в имени с пробелом,
+    а бот смотрит в чистое. Одна строка в логе при старте дешевле разбора
+    по жалобам.
+    """
+    await container.db['promo_codes '].insert_one({'code': 'СТАРЫЙ'})
+
+    assert await container.warn_about_legacy_leftovers() == ['promo_codes ']
+
+
+async def test_nothing_is_reported_after_a_proper_rename(container):
+    await container.db['promo_codes'].insert_one({'code': 'ПЕРЕЕХАЛ'})
+
+    assert await container.warn_about_legacy_leftovers() == []
+
+
+async def test_legacy_mode_has_nothing_to_warn_about(container):
+    """В режиме совместимости бот и должен читать имена с пробелом."""
+    c = legacy_container(container)
+    await c.db['promo_codes '].insert_one({'code': 'СТАРЫЙ'})
+
+    assert await c.warn_about_legacy_leftovers() == []
+
+
+async def test_empty_database_is_silent(container):
+    assert await container.warn_about_legacy_leftovers() == []

@@ -170,6 +170,33 @@ class Container:
         docs = await self.db[names.CONTENT_OVERRIDES].find({}).to_list(length=None)
         texts.set_overrides({d['_id']: d.get('value', '') for d in docs if d.get('value')})
 
+    async def warn_about_legacy_leftovers(self) -> list[str]:
+        """Данные остались в коллекции с пробелом, а бот смотрит в чистую.
+
+        Ровно так «пропадают» промокоды и быстрые ответы после переименования:
+        бот молча читает пустую коллекцию, и понять это можно только по
+        жалобам пользователей. Одна строка в логе при старте дешевле.
+        """
+        if self.config.legacy_collections:
+            return []
+
+        stranded = []
+        for old_name, new_name in names.LEGACY_RENAMES.items():
+            try:
+                in_old = await self.db[old_name].count_documents({}, limit=1)
+                in_new = await self.db[new_name].count_documents({}, limit=1)
+            except Exception:      # прав на пересчёт может не быть — не мешаем старту
+                continue
+            if in_old and not in_new:
+                stranded.append(old_name)
+
+        if stranded:
+            log.warning('данные остались в старых коллекциях: %s. Бот читает '
+                        'имена без пробела и их не увидит — переименуйте '
+                        'коллекции или поставьте LEGACY_COLLECTIONS=1',
+                        ', '.join(repr(name) for name in stranded))
+        return stranded
+
     # ── старт ───────────────────────────────────────────────────────────────
     async def startup(self, strict: bool = False) -> None:
         """Индексы, сиды, прогрев кэшей. Идемпотентно — можно вызывать всегда.
@@ -190,6 +217,8 @@ class Container:
         await self.media_cache.load()
         if self.payments is not None:
             await self.payments.configure()
+
+        await self.warn_about_legacy_leftovers()
 
         failed = [name for repo in (self.users, self.plans, self.payments_repo)
                   for name in repo.failed_indexes]
