@@ -14,6 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.admin import broadcast
+from app.admin import moderation as admin_moderation
 from app.admin import payouts as admin_payouts
 from app.admin.entities import EntityAdmin
 from app.admin.stats import build_stats_text
@@ -53,6 +54,7 @@ def main_kb(c) -> InlineKeyboardBuilder:
     for entity in c.entities.values():
         kb.row(btn(entity.title, 'elist', entity.code))
     kb.row(btn('💬 Рассылка', 'broadcast'))
+    kb.row(btn('🚫 Заблокированные', 'banned'))
     kb.row(btn('🔄 Обновить статистику', 'main', 'refresh'))
     return kb
 
@@ -406,4 +408,5 @@ def create_router(admin_ids) -> Router:
     # разделы в своих файлах: панель не должна расти на каждую новую функцию
     broadcast.register(router)
     admin_payouts.register(router)
+    admin_moderation.register(router)
     return router

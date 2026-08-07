@@ -11,10 +11,10 @@ from aiogram import Dispatcher
 
 from app.bot.handlers import (bypass, common, devices, fallback, gifts, payments,
                               payouts, profile, promo, referrals, start, subscription,
-                              support)
+                              support, trial)
 
 SECTIONS = (common, start, profile, subscription, devices, bypass, payments,
-            referrals, payouts, gifts, promo, support, fallback)
+            referrals, payouts, gifts, promo, trial, support, fallback)
 
 
 def register(dp: Dispatcher) -> None:

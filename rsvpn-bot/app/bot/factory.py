@@ -11,6 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.admin import panel as admin_panel
 from app.bot.handlers import register
+from app.bot.middlewares.ban import BanMiddleware
 from app.bot.middlewares.deps import DependenciesMiddleware
 from app.bot.middlewares.errors import ErrorsMiddleware
 from app.bot.middlewares.maintenance import MaintenanceMiddleware
@@ -37,6 +38,9 @@ def create_dispatcher(container: Container, storage=None) -> Dispatcher:
         ThrottleMiddleware(),
         MaintenanceMiddleware(container.settings, container.config.admin_ids),
         UserMiddleware(container.users),
+        # строго после UserMiddleware: документ уже прочитан, отдельного
+        # запроса за флагом бана не появляется
+        BanMiddleware(container.settings, container.config.admin_ids),
     )
     for middleware in outer:
         dp.message.outer_middleware(middleware)

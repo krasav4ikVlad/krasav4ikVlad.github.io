@@ -89,8 +89,10 @@ async def register(tg_user: types.User, args: str, c, settings) -> dict:
     elif args.isdigit():
         referrer = int(args)
 
-    start_balance = (await settings.int('price.start_balance')
-                     if await settings.flag('features.trial_enabled') else 0)
+    # По умолчанию 0: вместо денег новичок получает бесплатный период за
+    # подписку на канал. Тумблер features.trial_enabled к балансу отношения
+    # больше не имеет — он про кнопку бесплатного периода.
+    start_balance = await settings.int('price.start_balance')
 
     document = new_user_document(tg_user, referrer, args, start_balance)
     await c.users.create(document)

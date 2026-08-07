@@ -43,6 +43,8 @@ rsvpn-bot/
 │   │   ├── topup.py             # единственный путь зачисления денег
 │   │   ├── devices.py           # доп. устройства (перенести из utils)
 │   │   ├── notifier.py          # единственный отправитель в админ-чат
+│   │   ├── moderation.py        # блокировка пользователей
+│   │   ├── trial.py             # бесплатный период за подписку на канал
 │   │   ├── payouts.py           # реквизиты + заявки на вывод
 │   │   ├── promo.py, gifts.py, referrals.py, analytics.py
 │   │
@@ -79,6 +81,7 @@ rsvpn-bot/
 │   │   ├── entities.py          # универсальный CRUD: тарифы, ответы, промо, тексты
 │   │   ├── stats.py             # статистика (одна реализация)
 │   │   ├── payouts.py           # решения по заявкам на вывод
+│   │   ├── moderation.py        # /ban, /unban и список заблокированных
 │   │   └── broadcast.py         # ручные рассылки поверх того же движка
 │   │
 │   ├── campaigns/               # автоворонки
@@ -98,7 +101,7 @@ rsvpn-bot/
 │   ├── m0001_indexes.py
 │   └── m0002_transactions_format.py
 ├── scripts/seed_demo.py
-├── tests/                       # 323 теста, идут без Mongo и без Telegram
+├── tests/                       # 347 тестов, идут без Mongo и без Telegram
 │   ├── conftest.py              # заглушки Mongo и Bot API
 │   ├── test_pricing.py test_settings.py test_users_repo.py
 │   ├── test_campaigns.py test_texts.py test_admin_panel.py
@@ -151,7 +154,7 @@ handlers → services → repositories → Mongo
 
 ## Что уже работает в скелете
 
-`pytest -q` → **323 passed**. Тесты идут на заглушках Mongo и Telegram
+`pytest -q` → **347 passed**. Тесты идут на заглушках Mongo и Telegram
 (`tests/conftest.py`), включая сценарии, которые иначе проверяются только на
 живых пользователях:
 

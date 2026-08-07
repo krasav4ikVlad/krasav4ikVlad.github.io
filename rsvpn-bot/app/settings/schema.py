@@ -62,7 +62,8 @@ SCHEMA: tuple[Group, ...] = (
         Setting('features.referrals_enabled', 'Реферальная программа', 'bool', True),
         Setting('features.payouts_enabled', 'Вывод реф. баланса', 'bool', True),
         Setting('features.promo_enabled', 'Промокоды', 'bool', True),
-        Setting('features.trial_enabled', 'Стартовый баланс новичкам', 'bool', True),
+        Setting('features.trial_enabled', 'Бесплатный период новичкам', 'bool', True,
+                hint='Кнопка «получить бесплатно» — см. раздел «Бесплатный период»'),
     )),
 
     Group('payments', '💳 Платёжные методы', (
@@ -92,12 +93,15 @@ SCHEMA: tuple[Group, ...] = (
     Group('pricing', '💰 Цены и лимиты', (
         Setting('price.device_extra', 'Доп. устройство в месяц', 'int', 75, unit='₽', min=0),
         Setting('price.devices_free_limit', 'Бесплатных устройств в подписке', 'int', 2, min=1),
-        Setting('price.start_balance', 'Стартовый баланс при регистрации', 'int', 18, unit='₽', min=0),
+        Setting('price.start_balance', 'Стартовый баланс при регистрации', 'int', 0,
+                unit='₽', min=0,
+                hint='0 — ничего не начисляем: вместо денег новичок получает '
+                     'бесплатный период за подписку на канал'),
         # Цены подарков сюда не переезжают: подарок — это тот же тариф, и
         # списывается ровно plan['price'] из раздела «Тарифы». Отдельная
         # настройка означала бы две цены на одно и то же и расхождение
         # между витриной и списанием.
-        Setting('price.trial_days', 'Длительность бесплатного периода', 'int', 3, unit=' дн.', min=0),
+
         Setting('price.default_device_limit', 'Устройств в новой подписке', 'int', 2, min=1),
         # Сами тарифы (цена/дни/подарки) — отдельная сущность, см. core/plans.py
     )),
@@ -122,6 +126,21 @@ SCHEMA: tuple[Group, ...] = (
         Setting('squads.fingerprint', 'Сквады для «отпечатка»', 'str', '',
                 hint='UUID через запятую'),
         Setting('squads.fingerprint_pick', 'Сколько выдавать из них', 'int', 5, min=0),
+    )),
+
+    Group('trial', '🎁 Бесплатный период', (
+        Setting('price.trial_days', 'Сколько дней выдавать', 'int', 3, unit=' дн.', min=1),
+        Setting('trial.require_subscription', 'Требовать подписку на канал', 'bool', True),
+        Setting('trial.channel', 'Канал для проверки', 'str', '@rsconnect_vpn',
+                hint='@юзернейм или числовой id. Бот должен быть админом канала — '
+                     'иначе Telegram не даст проверить подписку'),
+    )),
+
+    Group('moderation', '🚫 Блокировки', (
+        Setting('moderation.ban_silent', 'Молча игнорировать забаненных', 'bool', False,
+                hint='Выключено — бот один раз отвечает текстом ниже'),
+        Setting('moderation.ban_message', 'Что видит забаненный', 'text',
+                '🚫 Доступ к боту ограничен. Если это ошибка — напишите в поддержку.'),
     )),
 
     Group('bypass', '🚧 ByPass (белые списки)', (

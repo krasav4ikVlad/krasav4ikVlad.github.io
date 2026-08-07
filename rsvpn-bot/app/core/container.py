@@ -53,6 +53,8 @@ class Container:
     survey: Any = None
     devices: Any = None
     links: Any = None
+    trial: Any = None
+    moderation: Any = None
     entities: dict = field(default_factory=dict)
 
     def collection(self, name: str):
@@ -80,6 +82,12 @@ class Container:
 
         from app.admin.stats import StatsService
         self.stats = StatsService(self.users, self.config.admin_ids)
+
+        from app.services.moderation import ModerationService
+        self.moderation = ModerationService(self.users, self.settings)
+
+        from app.services.trial import TrialService
+        self.trial = TrialService(self.users, self.settings, vpn=None)
         self.survey = SurveyService(self.users, self.db['survey_bonus'], self.settings)
 
     # ── медиа ───────────────────────────────────────────────────────────────
@@ -229,6 +237,7 @@ class Container:
         from app.services.gifts import GiftService
         container.gifts = GiftService(container.users, container.db[names.GIFTS],
                                       container.plans, container.settings, container.vpn)
+        container.trial.vpn = container.vpn
         container.promo.vpn = container.vpn
         container.entities = build_entities(container)
         return container
@@ -261,6 +270,8 @@ class Container:
             if service is not None:
                 service.notifier = self.notifier
 
+        if self.trial is not None:
+            self.trial.bot = bot        # getChatMember проверяет подписку на канал
         self.lifeline = LifelineService(self.users, self.settings, self.vpn)
         self.expiry = ExpiryNotifier(self.users, self.settings, Sender(), bot,
                                      campaign_keyboards(), self.lifeline)

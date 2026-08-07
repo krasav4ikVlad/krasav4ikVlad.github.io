@@ -22,9 +22,16 @@ class EmailInput(StatesGroup):
     value = State()
 
 
-async def profile_keyboard(user: dict, settings) -> InlineKeyboardBuilder:
+async def profile_keyboard(user: dict, settings, trial=None) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     has_sub = bool((user.get('vpn') or {}).get('shortUuid'))
+
+    # Бесплатный период — первым: это главное, что может сделать новичок,
+    # и пока он не забран, кнопка покупки для человека вторична
+    if trial is not None and await trial.available(user):
+        days = await settings.int('price.trial_days')
+        kb.row(types.InlineKeyboardButton(
+            text=f'🎁 {days} дня бесплатно', callback_data=Menu(screen='trial').pack()))
 
     kb.row(types.InlineKeyboardButton(
         text='🛡 Ваша подписка' if has_sub else '➕ Подключить RS VPN',
@@ -55,7 +62,7 @@ async def profile_keyboard(user: dict, settings) -> InlineKeyboardBuilder:
 async def show_profile(event, c, user: dict, settings) -> None:
     await render(event, Screen(
         text=profile_caption(user),
-        markup=(await profile_keyboard(user, settings)).as_markup(),
+        markup=(await profile_keyboard(user, settings, c.trial)).as_markup(),
         image=c.media('profile'),
     ))
 

@@ -68,6 +68,12 @@ class FakeVpn:
         return []
 
 
+class FakeMember:
+    def __init__(self, status='member', is_member=True):
+        self.status = status
+        self.is_member = is_member
+
+
 class FakeCryptoResponse:
     status_code = 200
 
@@ -101,6 +107,12 @@ async def env(container):
     from app.services.gifts import GiftService
     from app.services.topup import TopupService
 
+    import dataclasses
+    # В проде и роутер, и проверки внутри хендлеров берут один и тот же
+    # config.admin_ids. В тестах должно быть так же, иначе «админа нельзя
+    # забанить» проверялось бы против другого списка.
+    container.config = dataclasses.replace(container.config, admin_ids=(TG_USER.id,))
+
     await container.startup()
     container.vpn = FakeVpn()
     container.topup = TopupService(container.users, container.payments_repo, container.settings)
@@ -110,6 +122,7 @@ async def env(container):
     container.gifts = GiftService(container.users, container.db['gifts'], container.plans,
                                   container.settings, container.vpn)
     container.links = LinkEncryptor(FakeCryptoHttp())
+    container.trial.vpn = container.vpn
     container.payments = PaymentRegistry(
         [HeleketProvider('key', 'merchant', FakeCryptoHttp())], container.settings)
 
@@ -131,8 +144,14 @@ async def env(container):
     dp.inline_query.outer_middleware(DependenciesMiddleware(container))
     # админом делаем самого тестового пользователя: так проверяются и кнопки
     # под заявкой на вывод, и фильтр «только админ» на реальном роутере
-    dp.include_router(admin_panel.create_router((TG_USER.id,)))
+    dp.include_router(admin_panel.create_router(container.config.admin_ids))
     register(dp)
+    # BanMiddleware в проде висит на диспетчере — здесь тоже, иначе бан
+    # проверялся бы не так, как работает
+    from app.bot.middlewares.ban import BanMiddleware
+    ban = BanMiddleware(container.settings, ())
+    dp.message.outer_middleware(ban)
+    dp.callback_query.outer_middleware(ban)
 
     yield dp, bot, session, container
     await bot.session.close()
@@ -156,7 +175,8 @@ async def test_start_registers_user_and_shows_profile(env):
 
     user = await c.users.get(5)
     assert user is not None
-    assert user['info']['balance'] == 18                # стартовый баланс из настроек
+    # денег за регистрацию больше не дают: вместо них бесплатный период
+    assert user['info']['balance'] == 0
     assert user['growth']['segment'] == 'new_trial_d0'
     assert 'Профиль' in session.last_text
 
@@ -173,7 +193,17 @@ async def test_referral_link_is_recorded(env):
     assert referrer['info']['ref_stats']['referrals'] == [5]
 
 
-async def test_start_balance_can_be_disabled(env):
+async def test_start_balance_can_be_turned_back_on(env):
+    """Раздача денег никуда не делась — она просто выключена по умолчанию."""
+    dp, bot, session, c = env
+    await c.settings.set('price.start_balance', 50)
+
+    await dp.feed_update(bot, message('/start'))
+    assert (await c.users.get(5))['info']['balance'] == 50
+
+
+async def test_free_period_toggle_does_not_hand_out_money(env):
+    """Тумблер бесплатного периода к балансу отношения не имеет."""
     dp, bot, session, c = env
     await c.settings.set('features.trial_enabled', False)
 
@@ -200,7 +230,7 @@ async def test_buying_plan_charges_and_creates_subscription(env):
 
     user = await c.users.get(5)
     assert user['vpn']['shortUuid'] == 's-new'
-    assert user['info']['balance'] == 68                # 18 + 200 − 150
+    assert user['info']['balance'] == 50                # 200 − 150
 
 
 async def test_buying_without_money_shows_shortfall(env):
@@ -209,7 +239,7 @@ async def test_buying_without_money_shows_shortfall(env):
 
     await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
 
-    assert 'не хватает 132' in session.last_text.lower()
+    assert 'не хватает 150' in session.last_text.lower()
     assert (await c.users.get(5))['vpn']['shortUuid'] == ''
 
 
@@ -234,7 +264,7 @@ async def test_promo_flow_credits_balance(env):
     await dp.feed_update(bot, callback(Menu(screen='promo').pack()))
     await dp.feed_update(bot, message('hello'))
 
-    assert (await c.users.get(5))['info']['balance'] == 118
+    assert (await c.users.get(5))['info']['balance'] == 100
     assert 'активирован' in session.last_text
 
 
@@ -467,7 +497,7 @@ async def test_payout_to_balance_moves_the_money_and_closes_the_request(env):
 
     user = await c.users.get(5)
     assert user['info']['ref_stats']['withdrawable'] == 0
-    assert user['info']['balance'] == 918                 # 18 стартовых + 900
+    assert user['info']['balance'] == 900
     assert user['info']['ref_stats']['pending_payout_active'] is False
 
 
@@ -881,3 +911,191 @@ async def test_extend_without_money_offers_a_top_up(env):
     await dp.feed_update(bot, callback(Menu(screen='extend').pack()))
 
     assert 'не хватает 140' in session.last_text.lower()
+
+
+# ── блокировка пользователей ────────────────────────────────────────────────
+async def test_banned_user_gets_no_screens(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.moderation.ban(5, admin_id=1, reason='спам')
+    # middleware в этой сборке не знает про админов — проверяем сам механизм
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='payments').pack()))
+
+    assert not [name for name, _ in session.calls if name.startswith('Edit')]
+
+
+async def test_banned_user_is_told_why(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.moderation.ban(5, admin_id=1)
+
+    session.calls.clear()
+    await dp.feed_update(bot, message('/start'))
+
+    assert 'ограничен' in session.last_text
+
+
+async def test_silent_mode_says_nothing_at_all(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.moderation.ban(5, admin_id=1)
+    await c.settings.set('moderation.ban_silent', True)
+
+    session.calls.clear()
+    await dp.feed_update(bot, message('/start'))
+
+    assert session.calls == []
+
+
+async def test_unban_restores_access(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.moderation.ban(5, admin_id=1)
+    await c.moderation.unban(5, admin_id=1)
+
+    session.calls.clear()
+    await dp.feed_update(bot, message('/start'))
+
+    assert 'Профиль' in session.last_text
+
+
+async def test_ban_does_not_touch_the_subscription_or_money(env):
+    """Бан — запрет на общение с ботом, а не изъятие оплаченного."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 500, 'тест')
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+
+    await c.moderation.ban(5, admin_id=1)
+
+    user = await c.users.get(5)
+    assert user['vpn']['shortUuid'] == 's-new'
+    assert user['info']['balance'] == 350
+
+
+async def test_ban_command_finds_user_by_username(env):
+    dp, bot, session, c = env
+    await c.users.create({'user_data': {'user_id': 900, 'username': 'petya'},
+                          'info': {'balance': 0}})
+
+    await dp.feed_update(bot, message('/ban @petya надоел'))
+
+    user = await c.users.get(900)
+    assert user['moderation']['banned'] is True
+    assert user['moderation']['reason'] == 'надоел'
+
+
+async def test_ban_command_finds_user_by_id(env):
+    dp, bot, session, c = env
+    await c.users.create({'user_data': {'user_id': 900}, 'info': {'balance': 0}})
+
+    await dp.feed_update(bot, message('/ban 900'))
+    assert (await c.users.get(900))['moderation']['banned'] is True
+
+    await dp.feed_update(bot, message('/unban 900'))
+    assert (await c.users.get(900))['moderation']['banned'] is False
+
+
+async def test_ban_command_reports_an_unknown_user(env):
+    dp, bot, session, c = env
+
+    await dp.feed_update(bot, message('/ban 404404'))
+    assert 'не найден' in session.last_text
+
+
+async def test_admin_cannot_be_banned(env):
+    """Иначе одной опечаткой можно отрезать себя от собственной админки."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    await dp.feed_update(bot, message('/ban 5'))
+
+    assert 'Администратора' in session.last_text
+    assert not (await c.users.get(5)).get('moderation', {}).get('banned')
+
+
+# ── бесплатный период за подписку ───────────────────────────────────────────
+async def test_free_period_is_offered_to_a_newcomer(env):
+    dp, bot, session, c = env
+    session.markups.clear()
+
+    await dp.feed_update(bot, message('/start'))
+
+    assert any('бесплатно' in b.text for b in session.buttons())
+
+
+async def test_free_period_needs_a_channel_subscription(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    async def not_subscribed(chat_id, user_id):
+        return FakeMember(status='left', is_member=False)
+
+    bot.get_chat_member = not_subscribed
+    c.trial.bot = bot
+
+    await dp.feed_update(bot, callback(Menu(screen='trial_claim').pack()))
+
+    assert (await c.users.get(5))['vpn']['shortUuid'] == ''
+
+
+async def test_subscriber_gets_the_free_period(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    async def subscribed(chat_id, user_id):
+        return FakeMember(status='member')
+
+    bot.get_chat_member = subscribed
+    c.trial.bot = bot
+
+    await dp.feed_update(bot, callback(Menu(screen='trial_claim').pack()))
+
+    user = await c.users.get(5)
+    assert user['vpn']['shortUuid'] == 's-new'
+    assert user['vpn']['period'] == 3
+    assert user['growth']['trial_claimed_at']
+    assert user['info']['balance'] == 0        # деньгами по-прежнему не сыпем
+
+
+async def test_free_period_is_given_only_once(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    created = []
+    original = c.vpn.create_subscription
+
+    async def counting(user_id, days):
+        created.append(days)
+        return await original(user_id, days)
+
+    c.vpn.create_subscription = counting
+    bot.get_chat_member = lambda chat_id, user_id: __import__('asyncio').sleep(
+        0, result=FakeMember())
+    c.trial.bot = bot
+
+    await dp.feed_update(bot, callback(Menu(screen='trial_claim').pack()))
+    await c.users.set_vpn(5, {'shortUuid': '', 'uuid': ''})   # как будто подписка ушла
+    await dp.feed_update(bot, callback(Menu(screen='trial_claim').pack()))
+
+    assert created == [3], 'бесплатный период не должен выдаваться дважды'
+
+
+async def test_unverifiable_subscription_is_not_the_users_fault(env):
+    """Бота не добавили админом канала — виноваты мы, а отказ получает человек."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    async def broken(chat_id, user_id):
+        raise RuntimeError('bot is not a member of the channel')
+
+    bot.get_chat_member = broken
+    c.trial.bot = bot
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='trial_claim').pack()))
+
+    assert (await c.users.get(5))['vpn']['shortUuid'] == ''
+    assert any('поддержку' in text.lower() for _, text in session.calls)
