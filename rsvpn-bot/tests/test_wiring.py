@@ -54,3 +54,48 @@ async def test_scheduler_jobs_survive_an_unwired_container(container, caplog):
     await jobs.charge_subscriptions(container)
 
     assert 'renewal' in caplog.text
+
+
+# ── работа на старой базе без изменений в ней ───────────────────────────────
+#
+# Режим LEGACY_COLLECTIONS: бот читает и пишет туда же, куда старый бот, —
+# в коллекции с пробелом на конце имени. Если хоть одна из них уедет в
+# «правильное» имя, данные окажутся не там, куда смотрит работающий бот.
+import dataclasses
+
+from app.core import db as names
+
+
+def legacy_container(container):
+    config = dataclasses.replace(container.config, legacy_collections=True)
+    return Container(config=config, db=container.db)
+
+
+def test_renamed_collections_keep_old_names_in_legacy_mode(container):
+    c = legacy_container(container)
+
+    assert c.collection(names.PROMO_CODES).name == 'promo_codes '
+    assert c.collection(names.PROMO_USAGES).name == 'promo_usages '
+    assert c.collection(names.QUICK_REPLIES).name == 'support_quick_replies '
+    assert c.collection(names.CHURN_SURVEYS).name == 'churn_surveys '
+
+
+def test_normal_mode_uses_clean_names(container):
+    assert container.collection(names.PROMO_CODES).name == 'promo_codes'
+
+
+def test_untouched_collections_are_the_same_in_both_modes(container):
+    """У users и plans пробела в имени не было — переключать нечего."""
+    c = legacy_container(container)
+
+    for name in (names.USERS, names.PLANS, names.GIFTS, names.PAYMENTS):
+        assert c.collection(name).name == container.collection(name).name
+
+
+def test_services_that_touch_renamed_collections_go_through_the_switch(container):
+    """Промокоды и опросы должны подхватывать режим, а не жёсткое имя."""
+    c = legacy_container(container)
+
+    assert c.promo.codes.name == 'promo_codes '
+    assert c.promo.usages.name == 'promo_usages '
+    assert c.survey.answers.name == 'churn_surveys '

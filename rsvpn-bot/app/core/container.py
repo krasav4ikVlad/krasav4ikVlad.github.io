@@ -88,7 +88,11 @@ class Container:
 
         from app.services.trial import TrialService
         self.trial = TrialService(self.users, self.settings, vpn=None)
-        self.survey = SurveyService(self.users, self.db['survey_bonus'], self.settings)
+        # именно collection(): в старой базе коллекция называется
+        # 'churn_surveys ' — с пробелом на конце, см. app/core/db.py
+        self.survey = SurveyService(self.users,
+                                    self.collection(names.CHURN_SURVEYS),
+                                    self.settings)
 
     # ── медиа ───────────────────────────────────────────────────────────────
     MEDIA_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp')
