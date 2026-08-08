@@ -6,6 +6,7 @@ from aiogram import types
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Plan
+from app.bot.screens.pricing import price_tag
 from app.content.emoji import e
 from app.domain.pricing import discounted
 
@@ -27,10 +28,9 @@ async def plans_keyboard(plans_repo, balance: int, action: str = 'buy',
         gift = f' + {e("gift")}' if plan.get('gift_count') else ''
         mark = f'{e("ok")} ' if action == 'change' and plan['code'] == current else ''
         full = int(plan['price'])
-        price = discounted(full, discount)
-        money = f'{price}₽ вместо {full}₽' if price != full else f'{full}₽'
         builder.row(types.InlineKeyboardButton(
-            text=f'{mark}{plan["title"]}{gift} — {money}',
+            text=f'{mark}{plan["title"]}{gift} — '
+                 f'{price_tag(full, discounted(full, discount), html=False)}',
             callback_data=Plan(action=action, code=plan['code']).pack(),
         ))
     return builder

@@ -16,7 +16,7 @@ from app.bot.filters.feature import Feature
 from app.bot.keyboards.common import footer
 from app.bot.keyboards.subscription import plans_keyboard
 from app.bot.screens.base import Screen, render
-from app.bot.screens.pricing import price_line_for
+from app.bot.screens.pricing import price_line_for, price_tag
 from app.bot.screens.profile import period_label, profile_caption, subscription_block
 from app.content import texts
 from app.core.errors import NotEnoughBalance
@@ -78,7 +78,7 @@ async def set_period(call: types.CallbackQuery, callback_data: Plan, c, user: di
     await change_period(call, c, fresh, settings,
                         note=f'Готово. При следующем продлении подписка продлится '
                              f'на {period_label(int(plan["days"]))} за '
-                             f'{await c.discounts.price(fresh, plan)}₽. '
+                             f'{price_tag(int(plan["price"]), await c.discounts.price(fresh, plan))}. '
                              f'Текущая дата окончания не меняется.')
 
 

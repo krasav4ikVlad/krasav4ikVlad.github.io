@@ -32,7 +32,8 @@ def period_label(days: int) -> str:
         int(days or 0), f'{days} дн.')
 
 
-def price_line(plan_price: int, days: int, devices_price: int) -> str:
+def price_line(plan_price: int, days: int, devices_price: int,
+               full_price: int = 0) -> str:
     """«150₽ за месяц» плюс, если есть, отдельная строка про устройства.
 
     Раньше это была одна строка «150₽ за месяц + 1125₽/мес за устройства»:
@@ -40,8 +41,17 @@ def price_line(plan_price: int, days: int, devices_price: int) -> str:
     и переносилась посередине. Складывать их в одно число тоже нельзя —
     это разные циклы: тариф списывается раз в период, устройства всегда
     раз в 30 дней, и на дневном тарифе сумма была бы бессмыслицей.
+
+    full_price — цена без скидки. Если она больше, рядом встаёт зачёркнутая
+    старая и размер скидки: человек должен видеть, что цена низкая не по
+    ошибке. Вне <code>: внутри него разметка не разбирается.
     """
-    line = f'<code>{plan_price}₽ за {period_label(days)}</code>'
+    if full_price and full_price > plan_price:
+        percent = round((1 - plan_price / full_price) * 100)
+        line = (f'<code>{plan_price}₽ за {period_label(days)}</code> '
+                f'вместо <s>{full_price}₽</s> −{percent}%')
+    else:
+        line = f'<code>{plan_price}₽ за {period_label(days)}</code>'
     if devices_price:
         line += (f'\n<b>{e("devices")} Плата за устройства:</b> '
                  f'<code>{devices_price}₽ в месяц</code>')

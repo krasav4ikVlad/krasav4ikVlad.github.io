@@ -184,16 +184,51 @@ async def test_devices_are_not_discounted(container, discounts):
 
 
 # ── экран ───────────────────────────────────────────────────────────────────
+def test_price_tag_strikes_the_old_price():
+    """В тексте зачёркивание — тег, в подписи кнопки — символы: разметки
+    там нет вовсе, и <s> показался бы буквами."""
+    from app.bot.screens.pricing import price_tag, strike
+
+    assert price_tag(150, 100) == '100₽ вместо <s>150₽</s> −33%'
+    assert price_tag(150, 100, html=False) == f'100₽ вместо {strike("150₽")} −33%'
+    assert '<' not in price_tag(150, 100, html=False)
+
+
+def test_price_tag_without_a_discount_is_just_the_price():
+    from app.bot.screens.pricing import price_tag
+
+    assert price_tag(150, 150) == '150₽'
+    assert price_tag(0, 0) == '0₽'
+
+
+def test_strike_draws_over_every_character():
+    from app.bot.screens.pricing import STRIKE, strike
+
+    assert strike('150₽') == f'1{STRIKE}5{STRIKE}0{STRIKE}₽{STRIKE}'
+
+
+def test_price_line_shows_the_old_price_too():
+    from app.bot.screens.profile import price_line
+
+    line = price_line(100, 30, devices_price=0, full_price=150)
+
+    assert '100₽ за месяц' in line
+    assert '<s>150₽</s>' in line and '−33%' in line
+    # зачёркивание вне <code>: внутри него разметка не разбирается
+    assert '<code>' not in line.split('вместо')[1]
+
+
 async def test_plan_button_shows_both_prices(container):
     from app.bot.keyboards.subscription import plans_keyboard
+    from app.bot.screens.pricing import strike
 
     await container.startup()
     plan = await container.plans.get('1month')
     kb = await plans_keyboard(container.plans, 0, discount=0.5)
     labels = [button.text for row in kb.export() for button in row]
 
-    assert any(f'{int(plan["price"] * 0.5)}₽ вместо {plan["price"]}₽' in label
-               for label in labels), labels
+    assert any(f'{int(plan["price"] * 0.5)}₽ вместо {strike(str(plan["price"]) + "₽")} −50%'
+               in label for label in labels), labels
 
 
 async def test_plan_button_stays_plain_without_a_discount(container):
