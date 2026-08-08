@@ -201,6 +201,63 @@ pm2 monit                     # память и загрузка
 Настройки из админки перезапуска не требуют — они читаются из базы с кэшем
 в десять секунд.
 
+## Обновление на сервере
+
+Что обновление **не трогает никогда**: `.env`, `media/`, `emoji_ids.json`,
+`logs/`. Все четыре вне git, и в архиве их тоже нет.
+
+Один раз, до первого обновления, выгрузите свои id кастомных эмодзи из кода
+в отдельный файл — иначе они перезапишутся вместе с `app/content/emoji.py`:
+
+```bash
+cd /home/rsvpn-bot
+.venv/bin/python -m scripts.emoji_ids --export     # → emoji_ids.json
+```
+
+Дальше id живут там, а `emoji.py` можно обновлять свободно: файл читается
+при старте и перекрывает то, что в коде. Проверить, что бот их видит:
+`python -m scripts.emoji_ids` (без аргументов ничего не меняет).
+
+### Если ставили из git
+
+```bash
+cd /home/rsvpn-bot
+git pull
+.venv/bin/pip install -r requirements.txt      # если менялись зависимости
+pm2 restart rsvpn-bot rsvpn-api
+```
+
+`git pull` не тронет `.env`, `media/` и `emoji_ids.json` — они в
+`.gitignore`. Если он ругается на локальные правки в отслеживаемых файлах,
+значит что-то менялось прямо в коде: посмотрите `git diff`, и либо
+`git stash`, либо перенесите правку в настройки.
+
+### Если ставили из архива
+
+Распаковывать поверх нельзя: удалённые файлы останутся, а `emoji.py`
+перезапишется. Правильно — рядом, с переносом своего:
+
+```bash
+cd /home
+unzip -q rsvpn-bot-NN.zip -d new            # получится new/rsvpn-bot
+
+cp rsvpn-bot/.env            new/rsvpn-bot/
+cp rsvpn-bot/emoji_ids.json  new/rsvpn-bot/
+cp -r rsvpn-bot/media/.      new/rsvpn-bot/media/
+
+cd new/rsvpn-bot
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+pm2 stop rsvpn-bot rsvpn-api
+cd /home && mv rsvpn-bot rsvpn-bot-old && mv new/rsvpn-bot rsvpn-bot
+cd rsvpn-bot && pm2 restart rsvpn-bot rsvpn-api --update-env
+```
+
+Откат — вернуть каталог обратно: `mv rsvpn-bot-old rsvpn-bot`.
+
+Миграции при обновлении обычно не нужны; если в CHANGES.md сказано иначе —
+`.venv/bin/python -m migrations.runner`.
+
 ## Сменили токен бота
 
 Ничего делать не нужно: в ключе кэша картинок стоит номер бота, поэтому

@@ -32,12 +32,20 @@ API и какое поле.
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ЗАПОЛНИТЕ ID ЗДЕСЬ. Пустая строка — останется обычный значок, это нормально.
+# Значок и id по умолчанию. Пустая строка — останется обычный значок.
+#
+# Свои id лучше держать не здесь, а в emoji_ids.json рядом с .env: этот файл
+# при обновлении бота перезаписывается, а тот — нет. См. IDS_FILE ниже.
 #
 # Где взять id: перешлите сообщение с эмодзи боту вроде @idstickerbot, либо
 # возьмите из старого кода — там они проставлены прямо в тегах tg-emoji.
@@ -137,15 +145,80 @@ EMOJI: dict[str, tuple[str, str]] = {
 }
 
 BY_CHAR: dict[str, str] = {}
-for _name, (_char, _id) in EMOJI.items():
-    # один символ у двух имён (payout и crypto — оба 💸): в тег превращаем
-    # по первому, id у них всё равно общий
-    BY_CHAR.setdefault(_char, _id)
+_PATTERN = re.compile(r'(?!x)x')      # заполняется в _rebuild()
 
-# Длинные символы вперёд: «⚠️» начинается с «⚠», и без сортировки
-# короткий вариант съел бы модификатор.
-_PATTERN = re.compile('|'.join(re.escape(char) for char in
-                               sorted(BY_CHAR, key=len, reverse=True)))
+
+def _rebuild() -> None:
+    """Пересобрать обратный указатель символ → id."""
+    BY_CHAR.clear()
+    for name, (char, emoji_id) in EMOJI.items():
+        # один символ у двух имён (payout и crypto — оба 💸): в тег
+        # превращаем по первому, id у них всё равно общий
+        BY_CHAR.setdefault(char, emoji_id)
+
+    # Длинные символы вперёд: «⚠️» начинается с «⚠», и без сортировки
+    # короткий вариант съел бы модификатор.
+    global _PATTERN
+    _PATTERN = re.compile('|'.join(re.escape(char) for char in
+                                   sorted(BY_CHAR, key=len, reverse=True)))
+
+
+_rebuild()
+
+
+# ── свои id: отдельным файлом, а не правкой этого ───────────────────────────
+# Таблица выше — исходник, и обновление бота её перезапишет. Свои id держите
+# в emoji_ids.json рядом с .env: обновления его не трогают, потому что он
+# вне git, как .env и media/.
+#
+#     {"back": "5321133913291135005", "money": "5317017827088049911"}
+#
+# Выгрузить текущие: python -m scripts.emoji_ids --export
+IDS_FILE = 'emoji_ids.json'
+
+
+def set_ids(values: dict[str, str]) -> int:
+    """Подставить id по именам. Возвращает, сколько применилось."""
+    applied = 0
+    for name, emoji_id in (values or {}).items():
+        entry = EMOJI.get(name)
+        if entry is None:
+            log.warning('в %s есть незнакомое имя значка: %s', IDS_FILE, name)
+            continue
+        if not str(emoji_id or '').strip():
+            continue
+        EMOJI[name] = (entry[0], str(emoji_id).strip())
+        applied += 1
+
+    _rebuild()
+    return applied
+
+
+def load_ids(path: str | Path = IDS_FILE) -> int:
+    """Прочитать emoji_ids.json, если он есть. Нет — молча ничего.
+
+    Ищется рядом с .env, а если запустили из подпапки — рядом с
+    pyproject.toml: тот же порядок, что у config.load_env_file().
+    """
+    file = Path(path)
+    if not file.is_file():
+        file = Path(__file__).resolve().parents[2] / IDS_FILE
+    if not file.is_file():
+        return 0
+
+    try:
+        values = json.loads(file.read_text(encoding='utf-8'))
+    except Exception as exc:      # битый файл не должен ронять бота
+        log.warning('%s не прочитан, значки останутся обычными: %s', file, exc)
+        return 0
+
+    if not isinstance(values, dict):
+        log.warning('%s: ожидался объект вида {"имя": "id"}', file)
+        return 0
+    return set_ids(values)
+
+
+load_ids()
 
 _enabled = True
 

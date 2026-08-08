@@ -331,6 +331,10 @@ class Container:
 
         if self.trial is not None:
             self.trial.bot = bot        # getChatMember проверяет подписку на канал
+        if self.topup is not None:
+            # зачисление приходит вебхуком, а сказать об этом надо человеку
+            self.topup.bot = bot
+            self.topup.sender = Sender()
         self.lifeline = LifelineService(self.users, self.settings, self.vpn)
         self.expiry = ExpiryNotifier(self.users, self.settings, Sender(), bot,
                                      campaign_keyboards(), self.lifeline)

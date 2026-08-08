@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 
+from app.content import texts
 from app.core.time import now
 from app.domain.pricing import PricingRules, referral_reward, topup_credit
 
@@ -26,13 +27,17 @@ AB_BONUS_GROUPS = ('bonus_30', 'bonus_15')
 
 class TopupService:
     def __init__(self, users, payments, settings, container=None,
-                 notifier=None, analytics=None):
+                 notifier=None, analytics=None, bot=None, sender=None):
         self.users = users
         self.payments = payments
         self.settings = settings
         self.container = container
         self.notifier = notifier
         self.analytics = analytics
+        # Сообщение самому плательщику. Проставляется в Container.attach_bot —
+        # зачисление приходит вебхуком, где своего Bot у сервиса нет.
+        self.bot = bot
+        self.sender = sender
 
     async def process(self, *, provider: str, txid: str, amount: int,
                       user_id: int | None, payload: dict | None = None) -> dict:
@@ -90,6 +95,18 @@ class TopupService:
         # 5. Реферальное вознаграждение — от базовой суммы, не от бонусов
         reward, referrer_id = await self._pay_referrer(user, amount, rules)
 
+        # 6. Сообщение тому, кто заплатил. Деньги приходят вебхуком, человек
+        #    в этот момент смотрит на страницу платёжки — без сообщения он
+        #    видит только «оплачено» у провайдера и не знает, дошло ли до бота.
+        balance = int(self.users.pick(user, 'info.balance', 0) or 0) + credit
+        await self._tell_user(user_id, texts.render(
+            'topup.success_bonus' if bonus + ab_bonus else 'topup.success',
+            amount=amount, bonus=bonus + ab_bonus, credit=credit, balance=balance))
+
+        if reward and referrer_id:
+            await self._tell_user(referrer_id, texts.render(
+                'topup.referral', amount=amount, reward=reward))
+
         if self.notifier:
             await self.notifier.topup(user_id, amount=amount, bonus=bonus + ab_bonus,
                                       credit=credit, provider=provider)
@@ -105,6 +122,35 @@ class TopupService:
         return {'status': 'ok', 'user_id': user_id, 'amount': amount,
                 'bonus': bonus, 'ab_bonus': ab_bonus, 'credit': credit,
                 'referral_reward': reward, 'referrer_id': referrer_id}
+
+    async def _tell_user(self, user_id: int, text: str) -> bool:
+        """Сообщение человеку. Не ушло — деньги всё равно зачислены.
+
+        Через Sender: он знает про флуд-лимит Telegram и про тех, кто
+        заблокировал бота, — а заблокировавший вполне может оплатить
+        по старой ссылке.
+        """
+        if not self.bot or not user_id:
+            log.warning('некому отправить сообщение о пополнении %s: '
+                        'у сервиса нет Bot (забыт attach_bot?)', user_id)
+            return False
+
+        markup = None
+        try:
+            from app.bot.keyboards.common import subscription_button
+
+            markup = subscription_button()
+        except Exception:      # клавиатура не обязательна, текст важнее
+            pass
+
+        if self.sender is not None:
+            return await self.sender.send(self.bot, user_id, text, markup)
+        try:
+            await self.bot.send_message(user_id, text, reply_markup=markup)
+            return True
+        except Exception as exc:
+            log.warning('сообщение о пополнении %s не доставлено: %s', user_id, exc)
+            return False
 
     # ── настройки расчётов ──────────────────────────────────────────────────
     async def rules(self) -> PricingRules:

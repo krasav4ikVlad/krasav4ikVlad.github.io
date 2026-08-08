@@ -1,4 +1,5 @@
 .env
+emoji_ids.json
 .venv/
 venv/
 __pycache__/

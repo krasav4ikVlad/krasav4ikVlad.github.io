@@ -27,6 +27,15 @@ def topup_button() -> types.InlineKeyboardButton:
         text=f'{e("card")} Пополнить баланс', callback_data=Menu(screen='payments').pack())
 
 
+def subscription_button() -> types.InlineKeyboardMarkup:
+    """«Моя подписка» — куда идти сразу после пополнения."""
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(
+        text=f'{e("shield")} Моя подписка',
+        callback_data=Menu(screen='my_subscription').pack()))
+    return builder.as_markup()
+
+
 def extend_button() -> types.InlineKeyboardButton:
     return types.InlineKeyboardButton(
         text=f'{e("renew")} Продлить подписку', callback_data=Menu(screen='extend').pack())

@@ -127,3 +127,110 @@ async def test_bad_input_is_rejected(db, user_factory, topup):
     assert (await topup.process(provider='wata', txid='x', amount=0, user_id=1))['status'] == 'bad_amount'
     assert (await topup.process(provider='wata', txid='', amount=10, user_id=1))['status'] == 'no_txid'
     assert (await topup.process(provider='wata', txid='y', amount=10, user_id=None))['status'] == 'unknown_user'
+
+
+# ── человек должен узнать, что деньги дошли ─────────────────────────────────
+#
+# Зачисление приходит вебхуком: человек в этот момент смотрит на страницу
+# платёжки и видит только её «оплачено». Раньше бот сообщал о пополнении
+# админам и молчал самому плательщику — со стороны это выглядело как
+# «деньги ушли, бот не отреагировал».
+
+class RecordingBot:
+    def __init__(self, fail: bool = False):
+        self.sent: list[dict] = []
+        self.fail = fail
+
+    async def send_message(self, user_id, text, reply_markup=None, **kwargs):
+        if self.fail:
+            raise RuntimeError('бот заблокирован пользователем')
+        self.sent.append({'user_id': user_id, 'text': text, 'markup': reply_markup})
+        return True
+
+
+@pytest.fixture
+def talking(db):
+    service = TopupService(
+        UsersRepository(db['users']),
+        PaymentsRepository(db['payments']),
+        SettingsService(db['bot_settings']),
+    )
+    service.bot = RecordingBot()
+    return service
+
+
+async def test_payer_gets_a_message(db, user_factory, talking):
+    await user_factory()
+
+    await talking.process(provider='wata', txid='t1', amount=100, user_id=1)
+
+    sent = talking.bot.sent[0]
+    assert sent['user_id'] == 1
+    assert 'Баланс пополнен' in sent['text']
+    assert '120₽' in sent['text']          # зачислено с бонусом
+    assert sent['markup'] is not None      # кнопка «Моя подписка»
+
+
+async def test_the_message_shows_the_bonus_separately(db, user_factory, talking):
+    await user_factory()
+
+    await talking.process(provider='wata', txid='t1', amount=100, user_id=1)
+    text = talking.bot.sent[0]['text']
+
+    assert '100₽' in text and '+20₽' in text
+
+
+async def test_without_a_bonus_the_message_is_short(db, user_factory, talking):
+    await user_factory()
+    await talking.settings.set('bonus.topup_enabled', False)
+
+    await talking.process(provider='wata', txid='t1', amount=100, user_id=1)
+    text = talking.bot.sent[0]['text']
+
+    assert 'Бонус' not in text
+    assert '100₽' in text
+
+
+async def test_referrer_is_told_about_the_reward(db, user_factory, talking):
+    await user_factory()                                   # id 1 — пригласивший
+    await user_factory(**{'user_data.referrer': 1})         # id 2 — друг
+
+    await talking.process(provider='wata', txid='t1', amount=100, user_id=2)
+
+    to_referrer = [s for s in talking.bot.sent if s['user_id'] == 1]
+    assert to_referrer, 'пригласившему не сказали о начислении'
+    assert '30₽' in to_referrer[0]['text']                  # 30% от 100₽
+
+
+async def test_a_blocked_user_does_not_break_the_topup(db, user_factory):
+    """Заблокировавший бота вполне может оплатить по старой ссылке."""
+    service = TopupService(
+        UsersRepository(db['users']),
+        PaymentsRepository(db['payments']),
+        SettingsService(db['bot_settings']),
+    )
+    service.bot = RecordingBot(fail=True)
+    await user_factory()
+
+    result = await service.process(provider='wata', txid='t1', amount=100, user_id=1)
+
+    assert result['status'] == 'ok'
+    assert await balance(db, 1) == 120
+
+
+async def test_topup_works_even_without_a_bot(db, user_factory, topup):
+    """attach_bot забыт — деньги всё равно зачисляются, в логе предупреждение."""
+    await user_factory()
+    result = await topup.process(provider='wata', txid='t1', amount=100, user_id=1)
+
+    assert result['status'] == 'ok'
+    assert await balance(db, 1) == 120
+
+
+async def test_the_message_goes_out_once_per_payment(db, user_factory, talking):
+    await user_factory()
+
+    await talking.process(provider='wata', txid='same', amount=100, user_id=1)
+    await talking.process(provider='wata', txid='same', amount=100, user_id=1)
+
+    assert len(talking.bot.sent) == 1

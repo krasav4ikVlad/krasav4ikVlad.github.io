@@ -291,3 +291,76 @@ def test_every_registered_character_is_reachable():
     """BY_CHAR строится из EMOJI — расхождение означало бы, что часть
     значков не превратится в кастомные при отправке."""
     assert set(BY_CHAR) == {char for char, _ in EMOJI.values()}
+
+
+# ── свои id живут отдельно от кода ──────────────────────────────────────────
+#
+# app/content/emoji.py — исходник, и обновление бота его перезаписывает.
+# Проставленные вручную id при этом терялись. Теперь они лежат в
+# emoji_ids.json рядом с .env: он вне git, обновления его не трогают.
+
+@pytest.fixture
+def registry():
+    """Вернуть реестр в исходное состояние после подмены id."""
+    before = dict(emoji.EMOJI)
+    yield emoji
+    emoji.EMOJI.clear()
+    emoji.EMOJI.update(before)
+    emoji._rebuild()
+
+
+def test_ids_from_the_file_win_over_the_code(registry):
+    applied = registry.set_ids({'money': '999', 'hot': '111'})
+
+    assert applied == 2
+    assert registry.EMOJI['money'] == ('💰', '999')
+    assert registry.EMOJI['hot'] == ('🔥', '111')
+
+
+def test_new_ids_reach_the_outgoing_text(registry):
+    """Мало положить id в таблицу — от него зависит и обратный указатель."""
+    registry.set_ids({'hot': '111'})
+
+    assert registry.BY_CHAR['🔥'] == '111'
+    assert decorate('🔥 акция') == '<tg-emoji emoji-id="111">🔥</tg-emoji> акция'
+
+
+def test_unknown_name_is_skipped_not_added(registry):
+    """Опечатка в файле не должна создавать значок-призрак без символа."""
+    assert registry.set_ids({'нет такого': '1'}) == 0
+    assert 'нет такого' not in registry.EMOJI
+
+
+def test_empty_value_keeps_the_default(registry):
+    registry.set_ids({'back': ''})
+
+    assert registry.EMOJI['back'][1] == '5321133913291135005'
+
+
+def test_missing_file_is_normal(tmp_path, registry):
+    assert registry.load_ids(tmp_path / 'нет.json') == 0
+
+
+def test_broken_file_does_not_break_the_bot(tmp_path, registry):
+    """Битый JSON — значки останутся обычными, но бот запустится."""
+    path = tmp_path / 'emoji_ids.json'
+    path.write_text('{это не json', encoding='utf-8')
+
+    assert registry.load_ids(path) == 0
+
+
+def test_file_with_a_list_instead_of_an_object_is_ignored(tmp_path, registry):
+    path = tmp_path / 'emoji_ids.json'
+    path.write_text('["back", "money"]', encoding='utf-8')
+
+    assert registry.load_ids(path) == 0
+
+
+def test_file_is_read_and_applied(tmp_path, registry):
+    import json
+
+    path = tmp_path / 'emoji_ids.json'
+    path.write_text(json.dumps({'ok': '555'}), encoding='utf-8')
+
+    assert registry.load_ids(path) == 1
+    assert registry.EMOJI['ok'] == ('✅', '555')

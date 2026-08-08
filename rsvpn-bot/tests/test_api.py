@@ -20,6 +20,15 @@ from app.api.remnawave import router as remnawave_router
 from app.api.webhooks import router as webhooks_router
 
 
+class RecordingBot:
+    def __init__(self):
+        self.sent: list[dict] = []
+
+    async def send_message(self, user_id, text, reply_markup=None, **kwargs):
+        self.sent.append({'user_id': user_id, 'text': text})
+        return True
+
+
 class FakeVpn:
     async def update_subscription(self, uuid, **kwargs):
         return {}
@@ -41,6 +50,8 @@ async def api(container):
     container.vpn = FakeVpn()
     container.topup = TopupService(container.users, container.payments_repo,
                                    container.settings)
+    # как в main_api: вебхук зачисляет деньги И сообщает об этом человеку
+    container.topup.bot = RecordingBot()
 
     await make_all_providers(container)
 
@@ -189,3 +200,20 @@ async def test_remnawave_rejects_a_wrong_signature_without_retries(api):
 
     assert response.status_code == 200
     assert response.json().get('note') == 'bad_signature'
+
+
+async def test_the_payer_hears_about_it_over_http(api, user_factory):
+    """Сквозь настоящий роутер: вебхук пришёл — человеку ушло сообщение.
+
+    Именно этого не хватало: деньги зачислялись, админам уходило
+    уведомление, а плательщику — ничего.
+    """
+    client, container = api
+    await user_factory()
+
+    await client.post('/payment/webhook_wata',
+                      json={'txid': 'http-1', 'amount': 100, 'user_id': 1})
+
+    sent = container.topup.bot.sent
+    assert sent and sent[0]['user_id'] == 1
+    assert 'Баланс пополнен' in sent[0]['text']
