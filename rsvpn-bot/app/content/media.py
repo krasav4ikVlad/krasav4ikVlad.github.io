@@ -12,6 +12,15 @@ Telegram на первую загрузку отвечает `file_id`, и да�
 Ключ кэша включает размер и время изменения файла: заменили картинку в
 media/ — ключ поменялся, и она перезальётся сама. Иначе бот показывал бы
 старое изображение до ручной чистки.
+
+И номер бота — тоже часть ключа
+────────────────────────────────
+file_id выдаётся конкретному боту и другому не годится: Telegram отвечает
+«wrong file identifier». Поэтому смена токена ломала картинки на всех
+экранах разом — кэш оставался полон чужих идентификаторов, отправка падала,
+и экран уходил текстом (render() гасит ошибку, чтобы не остаться совсем без
+ответа). Теперь номер бота стоит в ключе: новый токен просто не находит
+старых записей и заливает картинки заново.
 """
 
 from __future__ import annotations
@@ -23,13 +32,23 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-def file_token(path: str) -> str:
-    """Отпечаток файла: путь + размер + mtime."""
+def file_token(path: str, scope: str = '') -> str:
+    """Отпечаток файла: номер бота + путь + размер + mtime."""
     try:
         stat = Path(path).stat()
-        return f'{path}:{stat.st_size}:{int(stat.st_mtime)}'
+        token = f'{path}:{stat.st_size}:{int(stat.st_mtime)}'
     except OSError:
-        return path
+        token = path
+    return f'{scope}:{token}' if scope else token
+
+
+def bot_scope(token: str) -> str:
+    """Номер бота из токена: «123456789:AA…» → «123456789».
+
+    Именно номер, а не сам токен: он попадает в базу как часть ключа, и
+    класть туда секрет незачем.
+    """
+    return str(token or '').partition(':')[0]
 
 
 class MediaCache:
@@ -67,6 +86,21 @@ class MediaCache:
         except Exception as exc:      # кэш — ускорение, а не обязательство
             log.warning('file_id не сохранён: %s', exc)
 
+    async def forget(self, token: str) -> None:
+        """Забыть идентификатор: Telegram его не принял.
+
+        Страховка на случай, когда ключа мало: file_id перестают работать и
+        сами по себе (файл удалён на стороне Telegram, бот пересобран). Без
+        этого один отказ означал бы экран без картинки навсегда.
+        """
+        self._ids.pop(token, None)
+        if self._col is None:
+            return
+        try:
+            await self._col.delete_one({'_id': token})
+        except Exception as exc:
+            log.warning('устаревший file_id не удалён: %s', exc)
+
 
 @dataclass(frozen=True)
 class Photo:
@@ -80,6 +114,12 @@ class Photo:
         from aiogram.types import FSInputFile
 
         return self.cache.get(self.token) or FSInputFile(self.path)
+
+    def cached(self) -> bool:
+        return bool(self.cache.get(self.token))
+
+    async def forget(self) -> None:
+        await self.cache.forget(self.token)
 
     async def remember(self, result) -> None:
         """Достать file_id из ответа Telegram и запомнить."""

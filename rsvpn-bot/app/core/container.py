@@ -149,12 +149,14 @@ class Container:
         file_id вместо файла. Без этого бот заливал PNG заново на каждое
         нажатие кнопки — отсюда и пауза перед обновлением сообщения.
         """
-        from app.content.media import Photo, file_token
+        from app.content.media import Photo, bot_scope, file_token
 
         path = self.media_path(key)
         if not path:
             return None
-        return Photo(path=path, token=file_token(path), cache=self.media_cache)
+        # номер бота в ключе: file_id чужого бота Telegram не примет
+        token = file_token(path, bot_scope(self.config.bot_token))
+        return Photo(path=path, token=token, cache=self.media_cache)
 
     # ── контент ─────────────────────────────────────────────────────────────
     async def notify(self, bot, topic_key: str, text: str) -> None:

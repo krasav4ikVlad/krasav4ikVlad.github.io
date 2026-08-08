@@ -173,3 +173,138 @@ async def test_render_sends_the_file_id_on_the_second_call(bot, picture):
     sent = [payload for name, payload in session.log if name == 'EditMessageMedia']
     assert isinstance(sent[0], FSInputFile)            # первый раз — файл
     assert sent[1] == 'AgACAgIAAx'                     # второй — идентификатор
+
+
+# ── смена токена бота ───────────────────────────────────────────────────────
+#
+# file_id выдаётся конкретному боту. После смены токена все запомненные
+# идентификаторы стали чужими, Telegram отвечал «wrong file identifier», а
+# render() гасил ошибку и уходил в текстовый запасной путь — картинки
+# пропали разом на всех экранах.
+
+def test_the_key_depends_on_the_bot(picture):
+    from app.content.media import bot_scope
+
+    old = file_token(str(picture), bot_scope('111111:AAA-old'))
+    new = file_token(str(picture), bot_scope('222222:BBB-new'))
+
+    assert old != new
+    assert file_token(str(picture), bot_scope('111111:AAA-old')) == old
+
+
+def test_the_key_holds_the_number_not_the_secret(picture):
+    """Ключ уезжает в базу — секрету там делать нечего."""
+    from app.content.media import bot_scope
+
+    token = file_token(str(picture), bot_scope('111111:AAA-очень-секретный'))
+
+    assert '111111' in token
+    assert 'секретный' not in token
+
+
+async def test_a_new_token_uploads_the_pictures_again(picture):
+    from app.content.media import bot_scope
+
+    cache = MediaCache()
+    old = Photo(path=str(picture), cache=cache,
+                token=file_token(str(picture), bot_scope('111111:AAA')))
+    await old.remember(FakeSent('id-старого-бота'))
+
+    new = Photo(path=str(picture), cache=cache,
+                token=file_token(str(picture), bot_scope('222222:BBB')))
+
+    assert isinstance(new.as_input(), FSInputFile)
+    assert old.as_input() == 'id-старого-бота'    # чужую запись не портим
+
+
+async def test_container_puts_the_bot_number_into_the_key(container, tmp_path):
+    """Ключ строит контейнер — там и должен появиться номер бота."""
+    import dataclasses
+
+    (tmp_path / 'profile.png').write_bytes(b'\x89PNG' + b'0' * 16)
+    container.config = dataclasses.replace(container.config, media_dir=str(tmp_path))
+
+    first = container.media('profile')
+    container.config = dataclasses.replace(container.config, bot_token='999:ZZZ')
+    second = container.media('profile')
+
+    assert first.token != second.token
+    assert second.token.startswith('999:')
+
+
+# ── отказ Telegram лечится перезаливкой ─────────────────────────────────────
+class Rejecting:
+    """Telegram, который не принимает file_id, но принимает файл."""
+
+    def __init__(self):
+        self.sent: list = []
+
+    async def __call__(self, media):
+        self.sent.append(media)
+        if isinstance(media, str):
+            raise RuntimeError('Bad Request: wrong file identifier')
+        return FakeSent('свежий-id')
+
+
+async def test_rejected_file_id_is_replaced_by_the_file(picture):
+    from app.bot.screens.base import send_photo
+
+    cache = MediaCache()
+    photo = photo_of(picture, cache)
+    await photo.remember(FakeSent('протухший-id'))
+
+    telegram = Rejecting()
+    await send_photo(telegram, photo)
+
+    assert telegram.sent[0] == 'протухший-id'
+    assert isinstance(telegram.sent[1], FSInputFile)     # вторая попытка — файлом
+    assert cache.get(photo.token) == 'свежий-id'         # запомнили новый
+
+
+async def test_the_file_is_not_sent_twice(picture):
+    """Без кэша первая попытка уже идёт файлом — повторять её незачем."""
+    from app.bot.screens.base import send_photo
+
+    telegram = Rejecting()
+
+    async def always_broken(media):
+        telegram.sent.append(media)
+        raise RuntimeError('канал недоступен')
+
+    with pytest.raises(RuntimeError):
+        await send_photo(always_broken, photo_of(picture))
+
+    assert len(telegram.sent) == 1
+
+
+async def test_a_second_failure_gives_up_to_the_text_fallback(picture):
+    """Перезалить не вышло — ошибка идёт наверх, render() отправит текстом."""
+    from app.bot.screens.base import send_photo
+
+    cache = MediaCache()
+    photo = photo_of(picture, cache)
+    await photo.remember(FakeSent('протухший-id'))
+    tries = []
+
+    async def always_broken(media):
+        tries.append(media)
+        raise RuntimeError('и файл не принят')
+
+    with pytest.raises(RuntimeError):
+        await send_photo(always_broken, photo)
+
+    assert len(tries) == 2
+    assert cache.get(photo.token) is None        # протухшее из кэша убрали
+
+
+async def test_forgetting_also_clears_the_database(db, picture):
+    """Иначе перезапуск поднял бы протухший file_id обратно из базы."""
+    cache = MediaCache(db['media_cache'])
+    photo = photo_of(picture, cache)
+    await photo.remember(FakeSent('протухший-id'))
+
+    await photo.forget()
+
+    restarted = MediaCache(db['media_cache'])
+    await restarted.load()
+    assert restarted.get(photo.token) is None

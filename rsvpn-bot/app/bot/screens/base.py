@@ -39,6 +39,27 @@ async def stop_spinner(event: types.CallbackQuery) -> None:
         pass
 
 
+async def send_photo(send, photo, *, tries: int = 2):
+    """Отправить картинку, а если Telegram не принял file_id — перезалить.
+
+    file_id принадлежит конкретному боту и живёт не вечно: сменили токен —
+    и все запомненные идентификаторы стали чужими, Telegram отвечает «wrong
+    file identifier». Раньше это означало экран без картинки: ошибка гасла,
+    и дальше шёл текстовый запасной путь. Теперь первый отказ стирает запись
+    из кэша, и вторая попытка уходит с самим файлом.
+    """
+    for attempt in range(tries):
+        cached = photo.cached()
+        try:
+            result = await send(photo.as_input())
+            await photo.remember(result)
+            return result
+        except Exception:
+            if not cached or attempt == tries - 1:
+                raise
+            await photo.forget()      # следующая попытка возьмёт файл с диска
+
+
 async def render(event: types.Message | types.CallbackQuery, screen: Screen):
     """Показать экран: правкой текущего сообщения (callback) или новым (message)."""
     photo = screen.image
@@ -48,13 +69,10 @@ async def render(event: types.Message | types.CallbackQuery, screen: Screen):
         message = event.message
         if photo:
             try:
-                result = await message.bot.edit_message_media(
+                return await send_photo(lambda media: message.bot.edit_message_media(
                     chat_id=message.chat.id, message_id=message.message_id,
-                    media=types.InputMediaPhoto(media=photo.as_input(),
-                                                caption=screen.text),
-                    reply_markup=screen.markup)
-                await photo.remember(result)
-                return result
+                    media=types.InputMediaPhoto(media=media, caption=screen.text),
+                    reply_markup=screen.markup), photo)
             except Exception:
                 pass
         try:
@@ -68,10 +86,8 @@ async def render(event: types.Message | types.CallbackQuery, screen: Screen):
 
     if photo:
         try:
-            result = await event.answer_photo(photo.as_input(), caption=screen.text,
-                                              reply_markup=screen.markup)
-            await photo.remember(result)
-            return result
+            return await send_photo(lambda media: event.answer_photo(
+                media, caption=screen.text, reply_markup=screen.markup), photo)
         except Exception:
             pass
     return await event.answer(screen.text, reply_markup=screen.markup,
