@@ -97,17 +97,28 @@ async def settings_group(call: types.CallbackQuery, callback_data: Adm, state: F
         return
 
     values = await settings.all()
+    # Скольких человек касается настройка. Скидка «истёкшим 50%» без числа
+    # получателей не говорит ничего о своей цене — можно раздать полсотни
+    # процентов и десяти людям, и десяти тысячам.
+    people = await c.audiences.all() if any(s.audience for s in group.items) else {}
+
     kb = InlineKeyboardBuilder()
     lines = [f'<b>{group.title}</b>\n']
 
     for setting in group.items:
         value = values.get(setting.key, setting.default)
-        lines.append(f'• {setting.title}: <b>{format_value(setting, value)}</b>')
+        count = people.get(setting.audience) if setting.audience else None
+        who = f' — <code>{count}</code> чел.' if count is not None else ''
+
+        lines.append(f'• {setting.title}: <b>{format_value(setting, value)}</b>{who}')
         if setting.type == 'bool':
             mark = e('ok') if value else e('cross')
             kb.row(btn(f'{mark} {setting.title}', 'tgl', setting.key))
         else:
-            kb.row(btn(f'{e("edit")} {setting.title}: {format_value(setting, value)}', 'fld', setting.key))
+            label = f'{e("edit")} {setting.title}: {format_value(setting, value)}'
+            if count is not None:
+                label += f' ({count})'
+            kb.row(btn(label, 'fld', setting.key))
 
     kb.row(btn(f'{e("back")} Назад', 'sets'))
     await edit(call, '\n'.join(lines), kb)
@@ -139,12 +150,16 @@ async def settings_field(call: types.CallbackQuery, callback_data: Adm, state: F
     await state.set_state(AdminEdit.setting_value)
     await state.update_data(setting_key=setting.key, group_code=group_code)
 
+    people = (f'<b>Касается:</b> <code>{await c.audiences.get(setting.audience)}</code> чел.\n'
+              if setting.audience else '')
+
     await edit(
         call,
         f'<b>{e("edit")} {setting.title}</b>\n\n'
         f'<b>Ключ:</b> <code>{setting.key}</code>\n'
         f'<b>Сейчас:</b> {format_value(setting, value)}\n'
         f'<b>По умолчанию:</b> {format_value(setting, setting.default)}\n'
+        + people
         + (f'\n<blockquote>{setting.hint}</blockquote>\n' if setting.hint else '')
         + f'\n{input_hint(setting)}',
         kb,

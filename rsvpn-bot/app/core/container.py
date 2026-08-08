@@ -57,6 +57,7 @@ class Container:
     moderation: Any = None
     discounts: Any = None
     wipe: Any = None
+    audiences: Any = None
     entities: dict = field(default_factory=dict)
 
     def collection(self, name: str):
@@ -85,6 +86,9 @@ class Container:
 
         from app.admin.stats import StatsService
         self.stats = StatsService(self.users, self.config.admin_ids)
+
+        from app.admin.audiences import AudienceCounts
+        self.audiences = AudienceCounts(self.users)
 
         from app.services.moderation import ModerationService
         self.moderation = ModerationService(self.users, self.settings, vpn=None)

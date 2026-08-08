@@ -35,6 +35,10 @@ class Setting:
     unit: str = ''
     min: float | None = None
     max: float | None = None
+    # Код аудитории из domain/segments.AUDIENCES. Проставлен — админка
+    # допишет к настройке, скольких человек она касается: скидка «истёкшим»
+    # без числа получателей ничего не говорит о её цене.
+    audience: str = ''
 
 
 @dataclass(frozen=True)
@@ -121,20 +125,25 @@ SCHEMA: tuple[Group, ...] = (
     # ничего не делали: значение читалось в PricingRules и не применялось
     # нигде. Ниже — то же самое, но по-настоящему и для любой аудитории.
     Group('discounts', f'{e("discount")} Скидки по аудиториям', (
-        Setting('discount.all', 'Всем', 'percent', 0.0, min=0, max=0.9,
+        Setting('discount.all', 'Всем', 'percent', 0.0, min=0, max=0.9, audience='all',
                 hint='Скидка на цену тарифа. Действует и при покупке, и при '
                      'автопродлении, и на подарки — на экране сразу видна '
                      'новая цена. Плата за доп. устройства не уценивается'),
-        Setting('discount.trial', 'На триале', 'percent', 0.0, min=0, max=0.9),
-        Setting('discount.active', 'С активной подпиской', 'percent', 0.0, min=0, max=0.9),
+        Setting('discount.trial', 'На триале', 'percent', 0.0, min=0, max=0.9,
+                audience='trial'),
+        Setting('discount.active', 'С активной подпиской', 'percent', 0.0, min=0, max=0.9,
+                audience='active'),
         Setting('discount.no_active', 'Без активной подписки', 'percent', 0.0, min=0, max=0.9,
+                audience='no_active',
                 hint='Все, у кого подписка сейчас не работает: закончилась, '
                      'ушли давно, был триал или не было ничего. Шире, чем '
                      '«истёкшие» — те входят сюда же'),
-        Setting('discount.expired', 'Истёкшие', 'percent', 0.0, min=0, max=0.9,
+        Setting('discount.expired', 'Истёкшие', 'percent', 0.0, min=0, max=0.9, audience='expired',
                 hint='Та самая «спящая скидка»: человек ушёл, но недавно'),
-        Setting('discount.churned', 'Давно ушедшие', 'percent', 0.0, min=0, max=0.9),
-        Setting('discount.no_sub', 'Без подписки и оплат', 'percent', 0.0, min=0, max=0.9),
+        Setting('discount.churned', 'Давно ушедшие', 'percent', 0.0, min=0, max=0.9,
+                audience='churned'),
+        Setting('discount.no_sub', 'Без подписки и оплат', 'percent', 0.0, min=0, max=0.9,
+                audience='no_sub'),
         Setting('discount.notice', 'Подпись к скидке на экране', 'str',
                 'Скидка {percent} уже в цене',
                 hint='{percent} подставится само. Пусто — строка не показывается'),

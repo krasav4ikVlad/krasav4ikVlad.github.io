@@ -346,3 +346,86 @@ async def test_deluser_without_arguments_explains_itself(admin_env):
     await dp.feed_update(bot, message('/deluser'))
 
     assert 'Кого удалить?' in session.last_text
+
+
+# ── сколько людей в аудитории ───────────────────────────────────────────────
+#
+# Скидка «истёкшим 50%» без числа получателей ничего не говорит о своей
+# цене: полсотни процентов можно раздать и десяти людям, и десяти тысячам.
+
+async def make_segments(container, **by_segment):
+    for segment, count in by_segment.items():
+        for i in range(count):
+            await container.users.create({
+                'user_data': {'user_id': hash((segment, i)) % 10 ** 8},
+                'growth': {'segment': segment}})
+
+
+async def test_discount_screen_shows_the_number_of_people(admin_env):
+    dp, bot, session, container = admin_env
+    await make_segments(container, expired_3d=3, active_paid=2, inactive_no_sub=1)
+
+    await dp.feed_update(bot, callback(Adm(act='grp', a='discounts').pack()))
+    text = session.last_text
+
+    assert 'Истёкшие: <b>0%</b> — <code>3</code> чел.' in text
+    assert 'С активной подпиской: <b>0%</b> — <code>2</code> чел.' in text
+    assert 'Всем: <b>0%</b> — <code>6</code> чел.' in text
+    # «без активной» шире «истёкших»: плюс тот, у кого подписки не было
+    assert 'Без активной подписки: <b>0%</b> — <code>4</code> чел.' in text
+
+
+async def test_the_number_is_on_the_button_too(admin_env):
+    dp, bot, session, container = admin_env
+    await make_segments(container, expired_3d=3)
+
+    await dp.feed_update(bot, callback(Adm(act='grp', a='discounts').pack()))
+    labels = [b.text for row in session.markups[-1].inline_keyboard for b in row]
+
+    assert any('Истёкшие' in label and '(3)' in label for label in labels), labels
+
+
+async def test_setting_screen_repeats_the_number(admin_env):
+    dp, bot, session, container = admin_env
+    await make_segments(container, churned_60d=4)
+
+    await dp.feed_update(bot, callback(Adm(act='fld', a='discount.churned').pack()))
+
+    assert 'Касается:</b> <code>4</code> чел.' in session.last_text
+
+
+async def test_settings_without_an_audience_say_nothing_about_people(admin_env):
+    """Цены и лимиты к аудиториям отношения не имеют — там числа лишние."""
+    dp, bot, session, _ = admin_env
+
+    await dp.feed_update(bot, callback(Adm(act='grp', a='pricing').pack()))
+
+    assert 'чел.' not in session.last_text
+
+
+async def test_broken_count_is_not_shown_as_zero(container):
+    """«Не смогли посчитать» и «никого нет» на экране должны отличаться:
+    мнимый ноль получателей — повод отменить нужную рассылку."""
+    class Broken:
+        async def count_documents(self, *a, **kw):
+            raise RuntimeError('база недоступна')
+
+    container.users.col = Broken()
+
+    assert await container.audiences.all() == {}
+
+
+async def test_counts_are_cached(container):
+    calls = {'n': 0}
+    original = container.users.col.count_documents
+
+    async def counting(*args, **kwargs):
+        calls['n'] += 1
+        return await original(*args, **kwargs)
+
+    container.users.col.count_documents = counting
+    await container.audiences.all()
+    first = calls['n']
+    await container.audiences.all()
+
+    assert calls['n'] == first, 'второе открытие экрана не должно ходить в базу'

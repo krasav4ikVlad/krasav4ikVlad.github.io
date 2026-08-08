@@ -49,7 +49,8 @@ def _btn(text: str, act: str, a: str = '', b: str = '') -> types.InlineKeyboardB
 
 
 async def _count(c, audience: str) -> int:
-    return await c.users.col.count_documents(audience_query(audience))
+    # общий счётчик на всю админку: см. app/admin/audiences.py
+    return await c.audiences.get(audience)
 
 
 # ── выбор аудитории ─────────────────────────────────────────────────────────
