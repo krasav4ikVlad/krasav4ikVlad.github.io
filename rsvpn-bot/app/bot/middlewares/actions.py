@@ -41,6 +41,27 @@ def who(user: types.User | None) -> str:
     return f'{user.id}{name}'
 
 
+def detail(event) -> str:
+    """То, что уходит в поле details журнала: сырой адрес действия.
+
+    Именно сырой, без слова «кнопка»: журнал разбирает внешняя платформа
+    операторов, и ей нужен `menu:bypass`, а не фраза вокруг него.
+    """
+    if isinstance(event, types.CallbackQuery):
+        return event.data or ''
+    if isinstance(event, types.InlineQuery):
+        return f'inline:{(event.query or "")[:MAX_TEXT]}'
+    if isinstance(event, types.Message):
+        if event.text and event.text.startswith('/'):
+            return event.text[:MAX_TEXT]
+        if event.successful_payment:
+            return 'payment'
+        if event.text:
+            return f'text:{len(event.text)}'
+        return str(event.content_type)
+    return type(event).__name__
+
+
 def what(event) -> str:
     """Короткое описание действия — по нему оператор понимает, куда нажали."""
     if isinstance(event, types.CallbackQuery):
@@ -99,7 +120,9 @@ class ActionLogMiddleware(BaseMiddleware):
         try:
             if not await self.container.settings.flag('log.actions_to_db'):
                 return
-            await self.container.users.log(user.id, what(event), note)
+            users = self.container.users
+            details = detail(event) + (f'  {note}' if note else '')
+            await users.log(user.id, users.ACTION_USER, details)
         except Exception as exc:      # история не должна мешать работе бота
             log.debug('история не записана: %s', exc)
 

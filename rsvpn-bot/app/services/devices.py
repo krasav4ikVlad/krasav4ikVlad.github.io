@@ -262,6 +262,10 @@ class DeviceBillingService:
         if charged.modified_count == 1:
             report.charged += 1
             report.amount += total
+            # списание идёт одним запросом мимо users.charge(), поэтому в
+            # журнал пишем здесь: для человека это списание «само собой»
+            await self.users.log(user_id, self.users.ACTION_AUTO,
+                                 f'−{total}₽ Продление {amount} доп. устройств')
             if self.notifier:
                 await self.notifier.devices_charged(user_id, amount=amount, price=total,
                                                     next_charge=due + timedelta(days=CHARGE_PERIOD_DAYS))

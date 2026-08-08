@@ -86,8 +86,6 @@ class TopupService:
 
         await self.payments.mark(txid, 'done', credited=credit,
                                  bonus=bonus + ab_bonus, ab_group=ab_group)
-        await self.users.log(user_id, 'Пополнение баланса',
-                             f'+{credit}₽ ({provider}), база {amount}₽')
 
         # 4. Пометки для аналитики воронок
         await self._mark_campaign_conversion(user, amount)
@@ -249,6 +247,8 @@ class TopupService:
         if result.matched_count == 0:
             return 0, referrer_id
 
-        await self.users.log(referrer_id, 'Реферальное начисление',
-                             f'+{reward}₽ от друга {friend_id}')
+        # начисление идёт сырым $inc мимо users.credit(), поэтому журналим
+        # здесь: для пригласившего это деньги, пришедшие сами по себе
+        await self.users.log(referrer_id, self.users.ACTION_AUTO,
+                             f'+{reward}₽ Реферальное начисление от друга {friend_id}')
         return reward, referrer_id

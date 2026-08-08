@@ -39,8 +39,15 @@ class UsersRepository(Repository):
         return document
 
     # ── баланс ──────────────────────────────────────────────────────────────
-    async def credit(self, user_id: int, amount: int, description: str) -> bool:
-        """Начисление. Транзакция пишется единым форматом-словарём."""
+    async def credit(self, user_id: int, amount: int, description: str,
+                     auto: bool = False) -> bool:
+        """Начисление. Транзакция пишется единым форматом-словарём.
+
+        auto=True — деньги двинул бот, а не человек: автопродление, плата за
+        устройства, реферальное начисление. В журнале такие идут отдельной
+        категорией, иначе на платформе операторов «списал сам» и «списалось
+        само» выглядят одинаково, а вопросы по ним разные.
+        """
         result = await self.col.update_one(
             {'user_data.user_id': user_id},
             {
@@ -56,9 +63,12 @@ class UsersRepository(Repository):
         # Поддержке нужен ответ на «за что списали», а не только результат.
         if result.matched_count == 1:
             money.info('%s +%s₽  %s', user_id, amount, description)
+            await self.log(user_id, self.ACTION_AUTO if auto else self.ACTION_CREDIT,
+                           f'+{amount}₽ {description}')
         return result.matched_count == 1
 
-    async def charge(self, user_id: int, amount: int, description: str) -> bool:
+    async def charge(self, user_id: int, amount: int, description: str,
+                     auto: bool = False) -> bool:
         """Списание с проверкой в самом запросе.
 
         Условие 'info.balance': {'$gte': amount} внутри update гарантирует, что
@@ -77,8 +87,12 @@ class UsersRepository(Repository):
         )
         if result.modified_count == 1:
             money.info('%s −%s₽  %s', user_id, amount, description)
+            await self.log(user_id, self.ACTION_AUTO if auto else self.ACTION_CHARGE,
+                           f'−{amount}₽ {description}')
         else:
             money.info('%s не хватило %s₽  %s', user_id, amount, description)
+            await self.log(user_id, self.ACTION_AUTO if auto else self.ACTION_CHARGE,
+                           f'не хватило {amount}₽ {description}')
         return result.modified_count == 1
 
     # ── кто заблокировал бота ───────────────────────────────────────────────
@@ -142,6 +156,18 @@ class UsersRepository(Repository):
         return result.modified_count == 1
 
     # ── логи действий ───────────────────────────────────────────────────────
+    #
+    # Журнал читает не только этот код: у операторов своя платформа, которая
+    # разбирает записи по полю action и ждёт время строкой в том же виде,
+    # что был у старого бота. Поэтому набор категорий фиксированный, а
+    # формат времени менять нельзя — это чужой контракт, а не наш выбор.
+    ACTION_USER = 'Действие пользователя'      # нажатие или команда
+    ACTION_CHARGE = 'Списание'                 # деньги ушли
+    ACTION_CREDIT = 'Начисление'               # деньги пришли
+    ACTION_AUTO = 'Автоматическое действие'    # сделал бот, человек не нажимал
+
+    TIME_FORMAT = '%d.%m.%Y %H:%M:%S'
+
     async def log(self, user_id: int, action: str, details: str = '') -> None:
         """История действий человека — в его же документе, последние 350.
 
@@ -159,7 +185,8 @@ class UsersRepository(Repository):
             await self.col.update_one(
                 {'user_data.user_id': user_id},
                 {'$push': {'logs': {
-                    '$each': [{'action': action, 'details': details, 'dt': now()}],
+                    '$each': [{'action': action, 'details': details,
+                               'timestamp': now().strftime(self.TIME_FORMAT)}],
                     '$slice': -350,
                 }}},
             )
