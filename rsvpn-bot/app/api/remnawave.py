@@ -16,6 +16,7 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.admin import health
 from app.core.security import verify_hmac_signature
 
 log = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ async def remnawave_webhook(request: Request):
 
     if not verify_hmac_signature(body, signature, container.config.vpn.webhook_secret):
         log.warning('remnawave: неверная подпись вебхука')
+        await container.health.mark(health.PANEL_WEBHOOK, note='bad_signature')
         return JSONResponse({'ok': True, 'note': 'bad_signature'})
 
     try:
@@ -49,6 +51,18 @@ async def remnawave_webhook(request: Request):
         result = await container.expiry.handle(event, data, meta)
     except Exception:
         log.exception('remnawave: ошибка обработки события %s', event)
+        await container.health.mark(health.PANEL_WEBHOOK, event=event, note='error')
         return JSONResponse({'ok': True, 'note': 'error'})
 
+    # Строка на КАЖДОЕ событие, а не только на отправленное напоминание.
+    # Иначе «панель не зовёт» и «зовёт, но событие отбрасывается» выглядят
+    # в логе одинаково — пустотой, и искать причину приходится вслепую.
+    note = str(result.get('note', ''))
+    log.info('remnawave: %s → %s', event or 'без события', note)
+
+    await container.health.mark(health.PANEL_WEBHOOK, event=event, note=note)
+    if note.startswith('sent_'):
+        await container.health.mark(health.EXPIRY_SENT, key=note[5:],
+                                    user_id=result.get('user_id'),
+                                    delivered=result.get('delivered'))
     return JSONResponse(result)

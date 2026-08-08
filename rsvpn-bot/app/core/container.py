@@ -58,6 +58,7 @@ class Container:
     discounts: Any = None
     wipe: Any = None
     audiences: Any = None
+    health: Any = None
     entities: dict = field(default_factory=dict)
 
     def collection(self, name: str):
@@ -89,6 +90,9 @@ class Container:
 
         from app.admin.audiences import AudienceCounts
         self.audiences = AudienceCounts(self.users)
+
+        from app.admin.health import HealthLog
+        self.health = HealthLog(self.db[names.JOB_RUNS])
 
         from app.services.moderation import ModerationService
         self.moderation = ModerationService(self.users, self.settings, vpn=None)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 
+from app.admin import health
 from app.campaigns.definitions import EXPIRED_STEPS, NEW_TRIAL_STEPS, TRIAL_STEPS
 
 log = logging.getLogger(__name__)
@@ -16,6 +17,8 @@ log = logging.getLogger(__name__)
 
 async def run_campaigns(container, bot, engine) -> None:
     report = await engine.run(NEW_TRIAL_STEPS + EXPIRED_STEPS + TRIAL_STEPS)
+    await container.health.mark(health.CAMPAIGNS, sent=report.sent,
+                                credited=getattr(report, 'credited', 0))
     if report.sent and container.notifier:
         await container.notifier.campaign_report(report)
 
@@ -31,12 +34,21 @@ async def charge_subscriptions(container) -> None:
     # автопродление и плата за устройства молча не работают вообще, и по
     # логам это выглядело как «задача отработала».
     if container.renewal:
-        await container.renewal.run()
+        report = await container.renewal.run()
+        # Отметка для /diag: по логам видно то же самое, но за ними надо
+        # идти на сервер, а вопрос «работает ли автопродление» возникает
+        # обычно с телефона.
+        await container.health.mark(
+            health.RENEWAL, checked=report.checked, renewed=report.renewed,
+            no_funds=report.no_funds, failed=report.failed)
     else:
         log.warning('автопродление пропущено: сервис renewal не собран')
 
     if container.device_billing:
         report = await container.device_billing.run()
+        await container.health.mark(
+            health.DEVICES, charged=report.charged, amount=report.amount,
+            deactivated=report.deactivated)
         if report.charged or report.deactivated:
             log.info('устройства: списано %s пакетов на %s₽, отключено %s',
                      report.charged, report.amount, report.deactivated)

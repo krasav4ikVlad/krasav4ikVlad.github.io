@@ -29,6 +29,8 @@ CONTENT_OVERRIDES = 'content_overrides'
 MEDIA_CACHE = 'media_cache'
 CAMPAIGN_RUNS = 'campaign_runs'
 MIGRATIONS = 'migrations'
+# отметки «что и когда отработало», см. app/admin/health.py
+JOB_RUNS = 'job_runs'
 
 PAYMENTS = 'payments'
 PAYMENT_WEBHOOKS = 'payments_webhooks'

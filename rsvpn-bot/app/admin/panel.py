@@ -14,6 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.admin import broadcast
+from app.admin import diag as admin_diag
 from app.admin import moderation as admin_moderation
 from app.admin import payouts as admin_payouts
 from app.admin import trial as admin_trial
@@ -59,6 +60,7 @@ def main_kb(c) -> InlineKeyboardBuilder:
         kb.row(btn(entity.title, 'elist', entity.code))
     kb.row(btn(f'{e("broadcast")} Рассылка', 'broadcast'))
     kb.row(btn(f'{e("trial")} Сброс бесплатного периода', 'trial'))
+    kb.row(btn(f'{e("tools")} Диагностика', 'diag'))
     kb.row(btn(f'{e("ban")} Заблокированные', 'banned'))
     kb.row(btn(f'{e("refresh")} Обновить статистику', 'main', 'refresh'))
     return kb
@@ -438,4 +440,5 @@ def create_router(admin_ids) -> Router:
     admin_moderation.register(router)
     admin_trial.register(router)
     admin_wipe.register(router)
+    admin_diag.register(router)
     return router

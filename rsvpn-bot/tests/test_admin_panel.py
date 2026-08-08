@@ -429,3 +429,91 @@ async def test_counts_are_cached(container):
     await container.audiences.all()
 
     assert calls['n'] == first, 'второе открытие экрана не должно ходить в базу'
+
+
+# ── /diag: что из фонового работает ─────────────────────────────────────────
+#
+# Автопродление живёт в планировщике бота, напоминания приходят вебхуками
+# панели в другой процесс. Понять по симптомам, что именно молчит, нельзя —
+# отсюда экран, который показывает обе стороны и, главное, пустоту.
+
+async def test_diag_says_the_panel_never_called(admin_env):
+    """Самый частый и самый полезный ответ: вебхуков не было вовсе."""
+    dp, bot, session, _ = admin_env
+
+    await dp.feed_update(bot, message('/diag'))
+
+    assert 'Событий от панели: <b>не было</b>' in session.last_text
+    assert 'WEBHOOK_ENABLED=true' in session.last_text, 'нет подсказки, что чинить'
+
+
+async def test_diag_shows_the_last_renewal_run(admin_env):
+    from app.admin import health
+
+    dp, bot, session, container = admin_env
+    await container.health.mark(health.RENEWAL, checked=120, renewed=8,
+                                no_funds=3, failed=0)
+
+    await dp.feed_update(bot, message('/diag'))
+    text = session.last_text
+
+    assert 'Последний проход: <b>только что</b>' in text
+    assert 'renewed=8' in text and 'no_funds=3' in text
+
+
+async def test_diag_reports_a_disabled_scheduler(admin_env):
+    """SCHEDULER_ENABLED=0 — списаний не будет, и это надо сказать прямо."""
+    import dataclasses
+
+    dp, bot, session, container = admin_env
+    container.config = dataclasses.replace(container.config, scheduler_enabled=False)
+
+    await dp.feed_update(bot, message('/diag'))
+
+    assert 'Планировщик выключен' in session.last_text
+
+
+async def test_diag_reports_a_disabled_setting(admin_env):
+    dp, bot, session, container = admin_env
+    await container.settings.set('features.autorenew_enabled', False)
+
+    await dp.feed_update(bot, message('/diag'))
+
+    assert 'Выключено в настройках' in session.last_text
+
+
+async def test_diag_notices_a_wrong_secret(admin_env):
+    """Панель зовёт, но подпись не сходится — это отдельная беда, и по
+    молчанию бота её не отличить от ненастроенных вебхуков."""
+    from app.admin import health
+
+    dp, bot, session, container = admin_env
+    await container.health.mark(health.PANEL_WEBHOOK, note='bad_signature')
+
+    await dp.feed_update(bot, message('/diag'))
+
+    assert 'подпись не сходится' in session.last_text
+
+
+async def test_diag_lists_the_enabled_reminders(admin_env):
+    dp, bot, session, container = admin_env
+    await container.settings.set('expiry.send_2d', True)
+
+    await dp.feed_update(bot, message('/diag'))
+
+    assert 'Включены:' in session.last_text
+    assert '2d' in session.last_text
+
+
+async def test_diag_changes_nothing(admin_env):
+    """Команда только читает — её можно жать смело."""
+    from app.admin import health
+
+    dp, bot, session, container = admin_env
+    before = await container.health.read()
+
+    await dp.feed_update(bot, message('/diag'))
+    await dp.feed_update(bot, callback(Adm(act='diag').pack()))
+
+    assert await container.health.read() == before
+    assert health.RENEWAL not in await container.health.read()
