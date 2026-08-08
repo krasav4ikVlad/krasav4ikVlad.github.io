@@ -60,6 +60,7 @@ def main_kb(c) -> InlineKeyboardBuilder:
         kb.row(btn(entity.title, 'elist', entity.code))
     kb.row(btn(f'{e("broadcast")} Рассылка', 'broadcast'))
     kb.row(btn(f'{e("trial")} Сброс бесплатного периода', 'trial'))
+    kb.row(btn(f'{e("cross")} Заблокировали бота', 'blocked'))
     kb.row(btn(f'{e("tools")} Диагностика', 'diag'))
     kb.row(btn(f'{e("ban")} Заблокированные', 'banned'))
     kb.row(btn(f'{e("refresh")} Обновить статистику', 'main', 'refresh'))

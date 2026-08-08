@@ -7,11 +7,15 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
 from app.core.time import now
 from app.repositories.base import Repository
+
+# отдельный логгер: `grep money` даёт только денежные события
+money = logging.getLogger('money')
 
 
 class UsersRepository(Repository):
@@ -47,6 +51,11 @@ class UsersRepository(Repository):
                 }},
             },
         )
+        # Деньги — в лог всегда и из одного места: сервисов, которые их
+        # двигают, полдесятка, и логировать в каждом значит однажды забыть.
+        # Поддержке нужен ответ на «за что списали», а не только результат.
+        if result.matched_count == 1:
+            money.info('%s +%s₽  %s', user_id, amount, description)
         return result.matched_count == 1
 
     async def charge(self, user_id: int, amount: int, description: str) -> bool:
@@ -66,7 +75,40 @@ class UsersRepository(Repository):
                 }},
             },
         )
+        if result.modified_count == 1:
+            money.info('%s −%s₽  %s', user_id, amount, description)
+        else:
+            money.info('%s не хватило %s₽  %s', user_id, amount, description)
         return result.modified_count == 1
+
+    # ── кто заблокировал бота ───────────────────────────────────────────────
+    #
+    # Telegram отвечает TelegramForbiddenError, и это не ошибка, а факт:
+    # писать такому человеку больше нельзя. Без отметки каждая рассылка
+    # заново тратила бы на него попытку и место в отчёте, а «не доставлено»
+    # росло без объяснения.
+    BLOCKED = 'growth.blocked_bot'
+
+    async def mark_blocked(self, user_id: int) -> None:
+        await self.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$set': {self.BLOCKED: True, 'growth.blocked_at': now()}})
+
+    async def unmark_blocked(self, query: dict | None = None) -> int:
+        """Снять отметку — человек мог вернуться и разблокировать бота.
+
+        Проверить это заранее нельзя: Telegram не сообщает о разблокировке
+        и не отвечает на вопрос «можно ли писать». Единственный способ
+        узнать — попробовать отправить, поэтому отметку и надо уметь
+        сбрасывать целиком.
+        """
+        result = await self.col.update_many(
+            {**(query or {}), self.BLOCKED: True},
+            {'$unset': {self.BLOCKED: '', 'growth.blocked_at': ''}})
+        return int(getattr(result, 'modified_count', 0) or 0)
+
+    async def blocked_count(self, query: dict | None = None) -> int:
+        return await self.col.count_documents({**(query or {}), self.BLOCKED: True})
 
     @staticmethod
     def _transaction(amount: int, description: str) -> dict:

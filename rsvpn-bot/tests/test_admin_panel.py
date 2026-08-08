@@ -517,3 +517,26 @@ async def test_diag_changes_nothing(admin_env):
 
     assert await container.health.read() == before
     assert health.RENEWAL not in await container.health.read()
+
+
+async def test_blocked_screen_offers_to_clear_the_list(admin_env):
+    dp, bot, session, container = admin_env
+    for user_id in (900, 901):
+        await container.users.create({'user_data': {'user_id': user_id},
+                                      'growth': {'blocked_bot': True}})
+
+    await dp.feed_update(bot, callback(Adm(act='blocked').pack()))
+    assert 'Таких сейчас: <code>2</code>' in session.last_text
+
+    await dp.feed_update(bot, callback(Adm(act='bcunbl').pack()))
+    assert await container.users.blocked_count() == 0
+    assert 'Таких сейчас: <code>0</code>' in session.last_text
+
+
+async def test_empty_blocked_screen_has_no_clear_button(admin_env):
+    dp, bot, session, container = admin_env
+
+    await dp.feed_update(bot, callback(Adm(act='blocked').pack()))
+    labels = [b.text for row in session.markups[-1].inline_keyboard for b in row]
+
+    assert not any('Очистить' in label for label in labels), labels

@@ -19,7 +19,8 @@ def create_scheduler(container, bot) -> AsyncIOScheduler:
 
     engine = CampaignEngine(
         bot=bot, users=container.users, settings=container.settings,
-        sender=Sender(), keyboards=campaign_keyboards(),
+        sender=Sender(on_blocked=container.users.mark_blocked),
+        keyboards=campaign_keyboards(),
         runs_collection=container.db[names.CAMPAIGN_RUNS],
     )
 

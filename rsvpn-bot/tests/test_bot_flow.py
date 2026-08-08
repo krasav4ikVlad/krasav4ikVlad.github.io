@@ -1430,3 +1430,72 @@ async def test_recipients_are_read_before_sending(env):
                               'growth': {'segment': 'expired_3d'}})
 
     assert await _recipients(c, {'growth.segment': 'expired_3d'}) == list(range(500, 505))
+
+
+# ── заблокировавшие бота ────────────────────────────────────────────────────
+#
+# Хук on_blocked в Sender был, но его никто не передавал: отметка не
+# ставилась, и каждая рассылка заново тратила попытку на тех, кому уже
+# нельзя писать. «Не доставлено» росло без объяснения.
+
+async def test_blocking_the_bot_is_remembered(env):
+    from aiogram.exceptions import TelegramForbiddenError
+
+    dp, bot, session, c = env
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    for user_id in (600, 601, 602):
+        await c.users.create({'user_data': {'user_id': user_id},
+                              'growth': {'segment': 'expired_3d'}})
+
+    original = bot.session.make_request
+
+    async def blocked_601(bot_, method, timeout=None):
+        if type(method).__name__ == 'SendMessage' and method.chat_id == 601:
+            raise TelegramForbiddenError(method=method, message='bot was blocked')
+        return await original(bot_, method, timeout)
+
+    bot.session.make_request = blocked_601
+    await run_broadcast(c, bot, {'growth.segment': 'expired_3d'}, 'Привет!')
+
+    assert (await c.users.get(601))['growth']['blocked_bot'] is True
+    assert 'blocked_bot' not in (await c.users.get(600)).get('growth', {})
+
+
+async def test_the_next_broadcast_skips_them(env):
+    from app.admin.broadcast import _recipients
+
+    dp, bot, session, c = env
+    await c.users.create({'user_data': {'user_id': 700},
+                          'growth': {'segment': 'expired_3d'}})
+    await c.users.create({'user_data': {'user_id': 701},
+                          'growth': {'segment': 'expired_3d', 'blocked_bot': True}})
+
+    assert await _recipients(c, {'growth.segment': 'expired_3d'}) == [700]
+
+
+async def test_clearing_the_list_brings_them_back(env):
+    """Telegram не сообщает о разблокировке — узнать можно только попыткой.
+    Поэтому список чистится руками, и после этого письмо снова пойдёт."""
+    from app.admin.broadcast import _recipients
+
+    dp, bot, session, c = env
+    await c.users.create({'user_data': {'user_id': 702},
+                          'growth': {'segment': 'expired_3d', 'blocked_bot': True}})
+
+    assert await c.users.blocked_count() == 1
+    assert await c.users.unmark_blocked() == 1
+
+    assert await c.users.blocked_count() == 0
+    assert await _recipients(c, {'growth.segment': 'expired_3d'}) == [702]
+
+
+async def test_blocked_are_counted_for_the_admin(env):
+    dp, bot, session, c = env
+    for user_id, blocked in ((800, True), (801, True), (802, False)):
+        growth = {'segment': 'expired_3d'}
+        if blocked:
+            growth['blocked_bot'] = True
+        await c.users.create({'user_data': {'user_id': user_id}, 'growth': growth})
+
+    assert await c.users.blocked_count() == 2
+    assert await c.users.blocked_count({'growth.segment': 'active_paid'}) == 0

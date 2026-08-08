@@ -90,16 +90,22 @@ async def segment_list(call: types.CallbackQuery, state: FSMContext, c, settings
 async def ask_text(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
                    c, settings) -> None:
     audience, one = callback_data.a, callback_data.b == 'one'
-    total = (await c.users.col.count_documents({'growth.segment': audience})
+    query = {'growth.segment': audience} if one else audience_query(audience)
+    total = (await c.users.col.count_documents(query)
              if one else await _count(c, audience))
+    blocked = await c.users.blocked_count(query)
 
     await state.set_state(Broadcast.text)
-    await state.update_data(audience=audience, one=one, total=total)
+    await state.update_data(audience=audience, one=one, total=total - blocked)
 
     kb = InlineKeyboardBuilder()
     kb.row(_btn(f'{e("back")} Отмена', 'broadcast'))
     await call.message.edit_text(
-        f'<b>{e("broadcast")} Рассылка</b>\n\nПолучателей: <code>{total}</code>\n\n'
+        f'<b>{e("broadcast")} Рассылка</b>\n\n'
+        f'Получателей: <code>{total - blocked}</code>\n'
+        + (f'Заблокировали бота: <code>{blocked}</code> — им не пойдёт\n'
+           if blocked else '')
+        + '\n'
         'Отправьте текст сообщения. Работает HTML-разметка: '
         '<code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, <code>&lt;a href&gt;</code>.',
         reply_markup=kb.as_markup())
@@ -181,7 +187,14 @@ async def start_sending(call: types.CallbackQuery, state: FSMContext, c, setting
 
 
 async def _recipients(c, query: dict) -> list[int]:
-    docs = await c.users.col.find(query, {'user_data.user_id': 1}).to_list(length=None)
+    """Кому реально пойдёт письмо: без тех, кто заблокировал бота.
+
+    Их отсев именно здесь, а не в подсчёте аудитории: аудитория — это
+    «сколько таких людей есть», а получатели — «кому дойдёт». Числа
+    разойдутся, и это честно; сколько именно отсеяно, видно на экране.
+    """
+    docs = await c.users.col.find({**query, c.users.BLOCKED: {'$ne': True}},
+                                  {'user_data.user_id': 1}).to_list(length=None)
     return [uid for doc in docs
             if (uid := ((doc or {}).get('user_data') or {}).get('user_id'))]
 
@@ -267,7 +280,9 @@ async def _run(c, bot, job_id: str) -> None:
 
     delay = await c.settings.int('campaign.broadcast_delay_ms') / 1000
     step = await c.settings.int('campaign.broadcast_progress_step') or 0
-    sender = Sender()
+    # Заблокировавший бота помечается прямо во время отправки: следующая
+    # рассылка на него уже не потратит ни попытки, ни строчки в отчёте.
+    sender = Sender(on_blocked=c.users.mark_blocked)
 
     recipients = job.get('recipients') or []
     total = len(recipients)
@@ -359,6 +374,40 @@ async def mark_interrupted(c) -> list[dict]:
     return jobs
 
 
+# ── список заблокировавших ──────────────────────────────────────────────────
+#
+# Telegram не сообщает о разблокировке и не отвечает на вопрос «можно ли
+# писать этому человеку». Единственный способ узнать — попробовать
+# отправить. Поэтому отметка не снимается сама, а очищается руками: перед
+# большой акцией имеет смысл сбросить её и дать всем ещё один шанс.
+
+async def blocked_menu(call: types.CallbackQuery, c, settings) -> None:
+    total = await c.users.blocked_count()
+
+    kb = InlineKeyboardBuilder()
+    if total:
+        kb.row(_btn(f'{e("broom")} Очистить список ({total})', 'bcunbl'))
+    kb.row(_btn(f'{e("back")} Назад', 'main'))
+
+    await call.message.edit_text(
+        f'<b>{e("cross")} Заблокировали бота</b>\n\n'
+        f'Таких сейчас: <code>{total}</code>. Рассылки им не отправляются.\n\n'
+        '<blockquote>Отметка ставится сама, когда Telegram отвечает отказом '
+        'на отправку. Снять её автоматически нельзя: о разблокировке Telegram '
+        'не сообщает, и узнать это можно только попыткой отправить. '
+        'Очистите список перед большой акцией — вернувшиеся получат письмо, '
+        'а те, кто не вернулся, снова пометятся при первой же рассылке.</blockquote>',
+        reply_markup=kb.as_markup())
+    await call.answer()
+
+
+async def unblock_all(call: types.CallbackQuery, c, settings) -> None:
+    cleared = await c.users.unmark_blocked()
+    log.info('админ %s очистил список заблокировавших: %s', call.from_user.id, cleared)
+    await call.answer(f'Очищено: {cleared}')
+    await blocked_menu(call, c, settings)
+
+
 def register(router: Router) -> None:
     """Подключается к админскому роутеру: фильтр «только админ» уже стоит там."""
     router.callback_query.register(menu, Adm.filter(F.act == 'broadcast'))
@@ -366,4 +415,6 @@ def register(router: Router) -> None:
     router.callback_query.register(ask_text, Adm.filter(F.act == 'bcseg'))
     router.callback_query.register(start_sending, Adm.filter(F.act == 'bcgo'))
     router.callback_query.register(resume, Adm.filter(F.act == 'bcres'))
+    router.callback_query.register(blocked_menu, Adm.filter(F.act == 'blocked'))
+    router.callback_query.register(unblock_all, Adm.filter(F.act == 'bcunbl'))
     router.message.register(preview, Broadcast.text)

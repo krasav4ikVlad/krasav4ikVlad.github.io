@@ -11,6 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.admin import panel as admin_panel
 from app.bot.handlers import register
+from app.bot.middlewares.actions import ActionLogMiddleware
 from app.bot.middlewares.ban import BanMiddleware
 from app.bot.middlewares.deps import DependenciesMiddleware
 from app.bot.middlewares.emoji import emoji_middleware
@@ -37,6 +38,9 @@ def create_dispatcher(container: Container, storage=None) -> Dispatcher:
     # Внешние middleware отрабатывают ДО фильтров — иначе фильтр Feature()
     # не увидит settings и пропустит выключенный раздел внутрь хендлера.
     outer = (
+        # первым: строка в лог должна появиться и у того действия, которое
+        # дальше отвалится по фильтру или упадёт с ошибкой
+        ActionLogMiddleware(),
         ErrorsMiddleware(),
         DependenciesMiddleware(container),
         ThrottleMiddleware(),
@@ -52,6 +56,7 @@ def create_dispatcher(container: Container, storage=None) -> Dispatcher:
     # Инлайн-режим — тоже обновление, и ему нужны и зависимости, и перехват
     # ошибок: без ErrorsMiddleware падение хендлера выглядит для человека как
     # «бот не отвечает на упоминание в чате», а в логах не остаётся ничего.
+    dp.inline_query.outer_middleware(ActionLogMiddleware())
     dp.inline_query.outer_middleware(ErrorsMiddleware())
     dp.inline_query.outer_middleware(DependenciesMiddleware(container))
 

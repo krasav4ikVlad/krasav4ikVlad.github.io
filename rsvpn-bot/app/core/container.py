@@ -372,9 +372,10 @@ class Container:
         if self.topup is not None:
             # зачисление приходит вебхуком, а сказать об этом надо человеку
             self.topup.bot = bot
-            self.topup.sender = Sender()
+            self.topup.sender = Sender(on_blocked=self.users.mark_blocked)
         self.lifeline = LifelineService(self.users, self.settings, self.vpn)
-        self.expiry = ExpiryNotifier(self.users, self.settings, Sender(), bot,
+        self.expiry = ExpiryNotifier(self.users, self.settings,
+                                     Sender(on_blocked=self.users.mark_blocked), bot,
                                      campaign_keyboards(), self.lifeline)
         self.renewal = RenewalService(self.users, self.plans, self.settings, self.vpn,
                                       self.topup, self.lifeline, self.expiry,
