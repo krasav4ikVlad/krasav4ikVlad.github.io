@@ -14,6 +14,8 @@ from aiogram import Bot
 from aiogram.exceptions import (TelegramBadRequest, TelegramForbiddenError,
                                 TelegramRetryAfter)
 
+from app.content.emoji import plain
+
 log = logging.getLogger(__name__)
 
 
@@ -23,6 +25,13 @@ class Sender:
         self.on_blocked = on_blocked  # колбэк: пометить пользователя заблокировавшим
 
     async def send(self, bot: Bot, user_id: int, text: str, markup=None) -> bool:
+        # Рассылка из админки запускается фоновой задачей прямо из хендлера, а
+        # задача забирает с собой его контекст — вместе с «обычными значками»
+        # админки. Письмо уходит пользователю, поэтому значки здесь обычные.
+        with plain(False):
+            return await self._send(bot, user_id, text, markup)
+
+    async def _send(self, bot: Bot, user_id: int, text: str, markup=None) -> bool:
         for attempt in range(self.max_retries):
             try:
                 await bot.send_message(user_id, text, reply_markup=markup)

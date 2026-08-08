@@ -17,7 +17,7 @@ from aiogram import F, Router, types
 from app.bot.callbacks import PayoutAdmin
 from app.bot.keyboards.payouts import reject_reasons_keyboard
 from app.services.payouts import REJECT_REASONS
-from app.content.emoji import e
+from app.content.emoji import e, plain
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +25,10 @@ log = logging.getLogger(__name__)
 async def _tell_user(bot, user_id: int, text: str) -> None:
     """Человек должен узнать о решении. Заблокировал бота — не наша беда."""
     try:
-        await bot.send_message(chat_id=user_id, text=text)
+        # хендлер админский, а адресат — обычный пользователь: значки ему
+        # положены такие же, как везде в боте
+        with plain(False):
+            await bot.send_message(chat_id=user_id, text=text)
     except Exception as exc:
         log.warning('не удалось сообщить %s о решении по выплате: %s', user_id, exc)
 

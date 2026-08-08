@@ -70,7 +70,8 @@ class Container:
         self.plans = PlansRepository(self.db[names.PLANS])
         self.payments_repo = PaymentsRepository(self.db[names.PAYMENTS])
         self.settings = SettingsService(
-            self.db[names.BOT_SETTINGS], self.db[names.SETTINGS_AUDIT])
+            self.db[names.BOT_SETTINGS], self.db[names.SETTINGS_AUDIT],
+            on_change=self.apply_setting)
 
         from app.content.media import MediaCache
         self.media_cache = MediaCache(self.db[names.MEDIA_CACHE])
@@ -157,13 +158,29 @@ class Container:
         if not await self.settings.flag('notify.enabled'):
             return
         try:
-            await bot.send_message(
-                chat_id=await self.settings.int('notify.chat_id'),
-                message_thread_id=await self.settings.int(f'notify.topic_{topic_key}') or None,
-                text=text,
-            )
+            from app.content.emoji import plain
+            with plain():      # админ-чат — на обычных значках, как и админка
+                await bot.send_message(
+                    chat_id=await self.settings.int('notify.chat_id'),
+                    message_thread_id=await self.settings.int(f'notify.topic_{topic_key}') or None,
+                    text=text,
+                )
         except Exception as exc:  # уведомление не должно ломать основной сценарий
             log.warning('админ-уведомление не отправлено: %s', exc)
+
+    async def apply_setting(self, key: str, value) -> None:
+        """Настройка изменилась из админки — применить её к процессу.
+
+        Всё, что читается через settings.get(), подхватится само: кэш
+        сброшен. Здесь только то, что вдобавок лежит в памяти.
+
+        Процессов два (бот и вебхуки), и память у них своя. Для эмодзи это
+        неважно: вебхуки отправляют считанные уведомления. Если такого
+        станет больше — сюда придёт общий сигнал через базу.
+        """
+        if key == 'content.custom_emoji':
+            from app.content import emoji
+            emoji.set_enabled(bool(value))
 
     async def reload_texts(self) -> None:
         from app.content import emoji, texts

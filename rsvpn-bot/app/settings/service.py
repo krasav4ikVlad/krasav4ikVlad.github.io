@@ -10,23 +10,31 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import datetime
 from typing import Any
 
 from app.settings.schema import INDEX, Setting, cast_value
 
+log = logging.getLogger(__name__)
+
 CACHE_TTL_SEC = 10.0
 
 
 class SettingsService:
     def __init__(self, values_collection, audit_collection=None,
-                 index: dict[str, Setting] | None = None):
+                 index: dict[str, Setting] | None = None, on_change=None):
         self._col = values_collection
         self._audit = audit_collection
         self._index = index or INDEX
         self._cache: dict[str, Any] = {}
         self._loaded_at = 0.0
+        # Часть настроек живёт не только в базе, но и в памяти процесса
+        # (например, тумблер кастомных эмодзи). Без этого колбэка такая
+        # настройка применялась бы только после перезапуска — а тумблер,
+        # который «не работает», хуже, чем его отсутствие.
+        self.on_change = on_change
 
     @property
     def index(self) -> dict[str, Setting]:
@@ -89,6 +97,12 @@ class SettingsService:
                 'key': key, 'before': before, 'after': value,
                 'admin_id': admin_id, 'created_at': datetime.now(),
             })
+
+        if self.on_change is not None:
+            try:
+                await self.on_change(key, value)
+            except Exception as exc:  # значение уже сохранено, откат не нужен
+                log.warning('настройка %s сохранена, но не применена: %s', key, exc)
         return value
 
     async def toggle(self, key: str, admin_id: int | None = None) -> bool:

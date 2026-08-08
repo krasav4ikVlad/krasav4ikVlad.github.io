@@ -19,6 +19,7 @@ from app.admin import payouts as admin_payouts
 from app.admin.entities import EntityAdmin
 from app.admin.stats import build_stats_text
 from app.bot.callbacks import Admin as Adm
+from app.bot.middlewares.emoji import PlainEmojiMiddleware
 from app.settings.schema import (GROUPS, INDEX, SCHEMA, format_value, input_hint,
                                  parse_value)
 from app.content.emoji import e
@@ -388,6 +389,11 @@ def create_router(admin_ids) -> Router:
     router = Router(name='admin')
     router.message.filter(F.from_user.id.in_(set(admin_ids)))
     router.callback_query.filter(F.from_user.id.in_(set(admin_ids)))
+
+    # Админка всегда на обычных значках: если кастомные вдруг начнут
+    # отклоняться Telegram, экран с тумблером должен остаться рабочим.
+    router.message.middleware(PlainEmojiMiddleware())
+    router.callback_query.middleware(PlainEmojiMiddleware())
 
     router.message.register(admin_command, Command('admin'))
     router.callback_query.register(admin_main, Adm.filter(F.act == 'main'))

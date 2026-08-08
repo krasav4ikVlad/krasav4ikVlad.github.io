@@ -95,3 +95,23 @@ async def test_failed_notification_releases_the_payout_claim(container):
 
     await payouts.cancel_request(5)
     assert (await payouts.request(5)).ok, 'после неудачной отправки заявку нельзя подать заново'
+
+
+async def test_admin_chat_gets_plain_characters(notifier, bot, container):
+    """Админ-чат — та же аварийная поверхность, что и админка: сообщение с
+    кастомным эмодзи Telegram может отклонить целиком, а терять заявку на
+    вывод из-за оформления нельзя."""
+    from app.content import emoji
+
+    seen = {}
+    original = bot.send_message
+
+    async def spy(*args, **kwargs):
+        seen['plain'] = emoji.is_plain()
+        return await original(*args, **kwargs)
+
+    bot.send_message = spy
+    await container.settings.set('notify.chat_id', -100500)
+
+    assert await notifier.registered(5)
+    assert seen['plain'] is True

@@ -10,7 +10,9 @@ from aiogram.types import CallbackQuery, Chat, Message, Update, User
 from app.admin import panel
 from app.bot.callbacks import Admin as Adm
 from app.bot.middlewares.deps import DependenciesMiddleware
+from app.bot.middlewares.emoji import PlainEmojiMiddleware, emoji_middleware
 from app.bot.middlewares.user import UserMiddleware
+from app.content.emoji import BY_CHAR, e
 
 CHAT = Chat(id=1, type='private')
 ADMIN = User(id=1, is_bot=False, first_name='Admin')
@@ -21,6 +23,7 @@ class RecordingSession(BaseSession):
         super().__init__()
         self.calls: list[tuple[str, str]] = []
         self.markups: list = []
+        self.all_markups: list = []      # markups обход чистит, этот — нет
 
     async def close(self):
         pass
@@ -30,9 +33,11 @@ class RecordingSession(BaseSession):
 
     async def make_request(self, bot, method, timeout=None):
         name = type(method).__name__
-        self.calls.append((name, getattr(method, 'text', '') or ''))
+        self.calls.append((name, getattr(method, 'text', None)
+                           or getattr(method, 'caption', None) or ''))
         if getattr(method, 'reply_markup', None) is not None:
             self.markups.append(method.reply_markup)
+            self.all_markups.append(method.reply_markup)
         if name == 'AnswerCallbackQuery':
             return True
         return Message(message_id=999, date=datetime.now(), chat=CHAT,
@@ -53,6 +58,8 @@ async def admin_env(container):
 
     session = RecordingSession()
     bot = Bot(token='1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', session=session)
+    # как в create_bot: иначе тесты админки проверяли бы не то, что уходит
+    bot.session.middleware(emoji_middleware)
 
     dp = Dispatcher()
     for middleware in (DependenciesMiddleware(container), UserMiddleware(container.users)):
@@ -139,14 +146,13 @@ def callback_targets(markup) -> list[str]:
             if button.callback_data]
 
 
-async def test_every_button_in_the_panel_leads_somewhere(admin_env):
-    dp, bot, session, container = admin_env
-
+async def crawl(dp, bot, session, limit: int = 200) -> int:
+    """Нажать каждую кнопку, до которой можно дойти. Вернуть, сколько нажали."""
     await dp.feed_update(bot, message('/admin'))
     queue = callback_targets(session.markups[-1])
     seen, clicked = set(queue), 0
 
-    while queue and clicked < 200:
+    while queue and clicked < limit:
         data = queue.pop(0)
         clicked += 1
 
@@ -158,6 +164,14 @@ async def test_every_button_in_the_panel_leads_somewhere(admin_env):
             if target not in seen:
                 seen.add(target)
                 queue.append(target)
+
+    return clicked
+
+
+async def test_every_button_in_the_panel_leads_somewhere(admin_env):
+    dp, bot, session, container = admin_env
+
+    clicked = await crawl(dp, bot, session)
 
     assert clicked > 20, f'обход прошёл всего {clicked} кнопок — меню не раскрылось'
 
@@ -180,3 +194,79 @@ async def test_back_from_a_settings_group_returns_to_the_list(admin_env):
     await dp.feed_update(bot, callback(Adm(act='sets').pack()))
 
     assert 'Настройки бота' in session.last_text
+
+
+# ── админка без кастомных эмодзи ────────────────────────────────────────────
+#
+# Аварийный выход. Право отправлять кастомные эмодзи есть не у каждого бота,
+# и id иногда протухают — Telegram отвечает ошибкой и не доставляет сообщение
+# целиком. Если бы админка ходила на тех же значках, отвалилась бы вместе со
+# всем остальным, и выключить тумблер стало бы негде.
+
+async def test_no_custom_emoji_anywhere_in_the_panel(admin_env):
+    """Обход всей админки: ни одного тега и ни одной иконки на кнопке."""
+    dp, bot, session, container = admin_env
+
+    assert await container.settings.flag('content.custom_emoji') is True
+
+    await crawl(dp, bot, session)
+
+    with_tags = [text for _, text in session.calls if '<tg-emoji' in text]
+    assert not with_tags, f'кастомные эмодзи в тексте админки: {with_tags[:3]}'
+
+    icons = [button.text for markup in session.all_markups
+             for row in markup.inline_keyboard for button in row
+             if button.icon_custom_emoji_id]
+    assert not icons, f'кастомные иконки на кнопках админки: {icons[:3]}'
+
+
+async def test_panel_keeps_the_plain_characters(admin_env):
+    """Не «убрали значки», а «оставили обычные»: подписи не должны опустеть."""
+    dp, bot, session, _ = admin_env
+
+    await dp.feed_update(bot, callback(Adm(act='sets').pack()))
+    labels = [button.text for row in session.markups[-1].inline_keyboard
+              for button in row]
+
+    assert any(char in label for label in labels for char in BY_CHAR), labels
+
+
+async def test_toggle_applies_without_a_restart(admin_env):
+    """Тумблер, который сработает «после перезапуска», бесполезен: в аварии
+    перезапускать некому и некогда."""
+    from app.content import emoji
+
+    dp, bot, session, container = admin_env
+    assert emoji.enabled() is True
+
+    await dp.feed_update(bot, callback(Adm(act='tgl', a='content.custom_emoji').pack()))
+    assert emoji.enabled() is False
+
+    await dp.feed_update(bot, callback(Adm(act='tgl', a='content.custom_emoji').pack()))
+    assert emoji.enabled() is True
+
+
+async def test_user_screens_still_get_custom_emoji(admin_env):
+    """Обычные значки — только у админки. Проверка, что заглушили не всё."""
+    dp, bot, session, _ = admin_env
+
+    await bot.send_message(chat_id=5, text=f'{e("money")} Баланс')
+
+    assert '<tg-emoji' in session.calls[-1][1]
+
+
+async def test_broadcast_reaches_users_with_custom_emoji(admin_env):
+    """Рассылка запускается из хендлера админки, и фоновая задача уносит с
+    собой его контекст. Письмо при этом уходит пользователю."""
+    from app.campaigns.sender import Sender
+
+    dp, bot, session, _ = admin_env
+    sent = {}
+
+    async def handler(call, data):
+        sent['ok'] = await Sender().send(bot, 5, f'{e("money")} Баланс')
+
+    await PlainEmojiMiddleware()(handler, None, {})
+
+    assert sent['ok'] is True
+    assert '<tg-emoji' in session.calls[-1][1]

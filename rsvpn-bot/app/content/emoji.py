@@ -33,6 +33,8 @@ API и какое поле.
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ЗАПОЛНИТЕ ID ЗДЕСЬ. Пустая строка — останется обычный значок, это нормально.
@@ -145,6 +147,29 @@ def set_enabled(value: bool) -> None:
 
 def enabled() -> bool:
     return _enabled
+
+
+# ── обычные значки на время одного сценария ─────────────────────────────────
+# Тумблер выше — общий, а этот флаг живёт внутри одного обработчика.
+# Нужен админке: если Telegram начнёт отклонять сообщения с кастомными
+# эмодзи (право их слать есть не у каждого бота, и id иногда протухают),
+# бот замолчит целиком — включая тот самый экран, где тумблер и лежит.
+# Админка ходит на обычных значках всегда, поэтому выключить есть откуда.
+_plain: ContextVar[bool] = ContextVar('plain_emoji', default=False)
+
+
+@contextmanager
+def plain(value: bool = True):
+    """Внутри блока значки уходят как есть, без тегов и иконок."""
+    token = _plain.set(value)
+    try:
+        yield
+    finally:
+        _plain.reset(token)
+
+
+def is_plain() -> bool:
+    return _plain.get()
 
 
 def e(name: str) -> str:

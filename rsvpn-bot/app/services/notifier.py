@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 
 from app.core.time import fmt
-from app.content.emoji import e
+from app.content.emoji import e, plain
 
 log = logging.getLogger(__name__)
 
@@ -47,10 +47,14 @@ class Notifier:
             return False
 
         try:
-            await self.bot.send_message(
-                chat_id=chat_id,
-                message_thread_id=await self.settings.int(f'notify.topic_{topic}') or None,
-                text=text, reply_markup=markup)
+            # адресат — админ-чат, а он живёт на обычных значках: см.
+            # PlainEmojiMiddleware. Заявку на вывод нельзя терять из-за
+            # оформления, а кастомные эмодзи Telegram иногда отклоняет
+            with plain():
+                await self.bot.send_message(
+                    chat_id=chat_id,
+                    message_thread_id=await self.settings.int(f'notify.topic_{topic}') or None,
+                    text=text, reply_markup=markup)
             return True
         except Exception as exc:
             log.warning('уведомление «%s» не отправлено: %s', topic, exc)

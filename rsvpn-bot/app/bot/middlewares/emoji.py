@@ -14,17 +14,35 @@ Telegram, — сессия. Здесь у уже собранного запро
 
 Отличить первое от третьего можно надёжно: HTML разбирается только там,
 где у метода есть parse_mode. У answerCallbackQuery его нет.
+
+Здесь же PlainEmojiMiddleware — им помечен раздел, которому кастомные
+эмодзи не положены вовсе (админка).
 """
 
 from __future__ import annotations
 
 import logging
 
-from app.content.emoji import decorate, enabled, leading_emoji_id
+from aiogram import BaseMiddleware
+
+from app.content.emoji import decorate, enabled, is_plain, leading_emoji_id, plain
 
 log = logging.getLogger(__name__)
 
 TEXT_FIELDS = ('text', 'caption')
+
+
+class PlainEmojiMiddleware(BaseMiddleware):
+    """Раздел ходит на обычных значках, что бы ни стояло в тумблере.
+
+    Висит на роутере админки. Смысл — аварийный выход: сообщение с
+    кастомным эмодзи Telegram может отклонить целиком, и тогда без этого
+    экрана тумблер стало бы нечем выключить.
+    """
+
+    async def __call__(self, handler, event, data):
+        with plain():
+            return await handler(event, data)
 
 
 def decorate_buttons(markup) -> None:
@@ -51,7 +69,7 @@ def decorate_buttons(markup) -> None:
 
 async def emoji_middleware(make_request, bot, method):
     """Session middleware aiogram: bot.session.middleware(emoji_middleware)."""
-    if not enabled():
+    if not enabled() or is_plain():
         return await make_request(bot, method)
 
     try:
