@@ -129,3 +129,72 @@ async def test_segment_change_is_recorded_in_history(db, user_factory):
     doc = await db['users'].find_one({'user_data.user_id': 1})
     assert doc['growth']['segment'] == 'inactive_no_sub'
     assert doc['growth_history'][-1]['from'] == 'active_paid'
+
+
+# ── аудитория «без активной подписки» ───────────────────────────────────────
+#
+# Собирается по флагу Segment.active, а не по названию группы. Разница
+# видна на группе trial: у одних её сегментов подписка идёт прямо сейчас,
+# у других уже закончилась, и по группе их не различить.
+
+def test_no_active_audience_holds_everyone_without_a_working_subscription():
+    from app.domain.segments import AUDIENCES, SEGMENTS
+
+    codes = set(AUDIENCES['no_active'][1])
+
+    assert 'expired_1d' in codes            # подписка закончилась
+    assert 'churned_dead' in codes          # ушли давно
+    assert 'inactive_no_sub' in codes       # подписки не было вовсе
+    assert 'trial' in codes                 # триал закончился
+    assert not codes & set(AUDIENCES['active'][1])
+    assert codes == {s.code for s in SEGMENTS if not s.active}
+
+
+def test_running_trial_is_not_in_the_no_active_audience():
+    """Триал идёт — подписка работает, человеку она не нужна второй раз."""
+    from app.domain.segments import AUDIENCES
+
+    codes = set(AUDIENCES['no_active'][1])
+    assert not codes & {'new_trial_d0', 'new_trial_d1', 'new_trial_d2',
+                        'new_trial_d2_hot', 'new_trial_d3', 'new_trial_d3_hot'}
+
+
+def test_every_segment_lands_on_exactly_one_side():
+    from app.domain.segments import AUDIENCES, SEGMENTS
+
+    active, no_active = set(AUDIENCES['active'][1]), set(AUDIENCES['no_active'][1])
+    for segment in SEGMENTS:
+        assert (segment.code in no_active) != segment.active, segment.code
+    assert active <= {s.code for s in SEGMENTS if s.active}
+
+
+def test_expired_users_are_in_both_audiences():
+    """«Истёкшие» — подмножество: скидка берётся большая из двух."""
+    from app.domain.segments import audiences_of
+
+    assert set(audiences_of('expired_7d')) >= {'all', 'expired', 'no_active'}
+
+
+async def test_discount_for_the_new_audience_applies(container):
+    from app.services.discounts import DiscountService
+
+    await container.settings.set('discount.no_active', 0.4)
+    discounts = DiscountService(container.settings)
+
+    for segment in ('expired_7d', 'churned_dead', 'inactive_no_sub', 'trial'):
+        user = {'growth': {'segment': segment}}
+        assert await discounts.rate(user) == 0.4, segment
+
+    assert await discounts.rate({'growth': {'segment': 'active_paid'}}) == 0.0
+    assert await discounts.rate({'growth': {'segment': 'new_trial_d1'}}) == 0.0
+
+
+async def test_the_bigger_of_overlapping_audiences_wins(container):
+    """Человек истёк 3 дня назад: подходят и «истёкшие», и «без активной»."""
+    from app.services.discounts import DiscountService
+
+    await container.settings.set('discount.no_active', 0.2)
+    await container.settings.set('discount.expired', 0.35)
+    discounts = DiscountService(container.settings)
+
+    assert await discounts.rate({'growth': {'segment': 'expired_3d'}}) == 0.35

@@ -37,7 +37,7 @@ def test_discount_cannot_go_below_zero_or_above_full_price():
 
 # ── выбор скидки ────────────────────────────────────────────────────────────
 def test_segment_maps_to_its_audiences():
-    assert audiences_of('expired_3d') == ('all', 'expired')
+    assert audiences_of('expired_3d') == ('all', 'no_active', 'expired')
     assert audiences_of('active_paid') == ('all', 'active')
     assert audiences_of('что-то незнакомое') == ('all',)
 

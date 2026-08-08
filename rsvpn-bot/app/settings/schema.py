@@ -127,6 +127,10 @@ SCHEMA: tuple[Group, ...] = (
                      'новая цена. Плата за доп. устройства не уценивается'),
         Setting('discount.trial', 'На триале', 'percent', 0.0, min=0, max=0.9),
         Setting('discount.active', 'С активной подпиской', 'percent', 0.0, min=0, max=0.9),
+        Setting('discount.no_active', 'Без активной подписки', 'percent', 0.0, min=0, max=0.9,
+                hint='Все, у кого подписка сейчас не работает: закончилась, '
+                     'ушли давно, был триал или не было ничего. Шире, чем '
+                     '«истёкшие» — те входят сюда же'),
         Setting('discount.expired', 'Истёкшие', 'percent', 0.0, min=0, max=0.9,
                 hint='Та самая «спящая скидка»: человек ушёл, но недавно'),
         Setting('discount.churned', 'Давно ушедшие', 'percent', 0.0, min=0, max=0.9),
