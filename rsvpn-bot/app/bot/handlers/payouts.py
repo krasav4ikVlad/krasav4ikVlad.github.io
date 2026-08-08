@@ -211,10 +211,11 @@ async def order(call: types.CallbackQuery, c, user: dict, settings):
         return
 
     if c.notifier:
+        from app.admin.payouts import card_markup, card_text
+
         sent = await c.notifier.payout_requested(
-            call.from_user.id, amount=result.amount, method=result.method,
-            details=result.method_details,
-            username=c.users.pick(user, 'user_data.username'))
+            await card_text(c, call.from_user.id),
+            await card_markup(c, call.from_user.id))
         if not sent:
             # заявка не дошла до админов — снимаем метку, чтобы человек не завис
             await c.payouts.cancel_request(call.from_user.id)

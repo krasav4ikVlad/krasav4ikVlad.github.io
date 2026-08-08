@@ -540,3 +540,127 @@ async def test_empty_blocked_screen_has_no_clear_button(admin_env):
     labels = [b.text for row in session.markups[-1].inline_keyboard for b in row]
 
     assert not any('Очистить' in label for label in labels), labels
+
+
+# ── заявки на вывод ─────────────────────────────────────────────────────────
+from app.bot.callbacks import PayoutAdmin as Pay          # noqa: E402
+
+
+def card(session) -> str:
+    """Текст самой карточки: ответ на нажатие («Обновлено») приходит позже
+    и в last_text перекрывает её."""
+    return next((text for name, text in reversed(session.calls)
+                 if name == 'EditMessageText'), '')
+
+
+async def applicant(container, user_id: int = 700, *, to_bot: bool = True,
+                    balance: int = 50, ref: int = 540):
+    stats = {'withdrawable': ref, 'pending_payout_active': True,
+             'method': [{'id': 'm1', 'type': 'sbp',
+                         'data': {'fio': 'Иван', 'phone': '+79000000000',
+                                  'bank': 'Сбербанк'}}],
+             'payout_selected': 'bot_balance' if to_bot else 'm1'}
+    await container.users.create({
+        'user_data': {'user_id': user_id, 'username': 'mazilka003',
+                      'date_joined': '09.12.2025 16:40:23', 'utm': 'ref_882698012'},
+        'info': {'balance': balance, 'ref_stats': stats}})
+    return user_id
+
+
+async def test_the_card_shows_both_balances_and_the_method(admin_env):
+    dp, bot, session, container = admin_env
+    await applicant(container)
+
+    await dp.feed_update(bot, callback(Pay(action='refresh', user_id=700).pack()))
+    text = card(session)
+
+    assert '@mazilka003 (<code>700</code>)' in text
+    assert 'Регистрация: 09.12.2025 16:40:23' in text
+    assert 'UTM: <code>ref_882698012</code>' in text
+    assert 'Обычный баланс: <b>50₽</b>' in text
+    assert 'Реферальный баланс: <b>540₽</b>' in text
+    assert 'обновлено в' in text
+
+
+async def test_the_action_button_matches_the_chosen_method(admin_env):
+    dp, bot, session, container = admin_env
+    await applicant(container, 700, to_bot=True)
+    await applicant(container, 701, to_bot=False)
+
+    await dp.feed_update(bot, callback(Pay(action='refresh', user_id=700).pack()))
+    labels = [b.text for row in session.markups[-1].inline_keyboard for b in row]
+    assert any('На баланс' in label for label in labels), labels
+    assert not any('Выведено' in label for label in labels), labels
+
+    await dp.feed_update(bot, callback(Pay(action='refresh', user_id=701).pack()))
+    labels = [b.text for row in session.markups[-1].inline_keyboard for b in row]
+    assert any('Выведено' in label for label in labels), labels
+    assert not any('На баланс' in label for label in labels), labels
+
+
+async def test_to_balance_moves_the_whole_referral_balance(admin_env):
+    dp, bot, session, container = admin_env
+    await applicant(container, balance=50, ref=540)
+
+    await dp.feed_update(bot, callback(Pay(action='balance', user_id=700).pack()))
+
+    info = (await container.users.get(700))['info']
+    assert info['balance'] == 590
+    assert info['ref_stats']['withdrawable'] == 0
+    assert any('Заявка на вывод исполнена' in text and '590₽' in text
+               for _, text in session.calls), 'человеку не сказали про баланс'
+
+
+async def test_paid_clears_the_referral_balance_only(admin_env):
+    """Выводятся реферальные деньги — их и обнуляем. Обычный баланс человек
+    пополнял сам, к заявке он отношения не имеет."""
+    dp, bot, session, container = admin_env
+    await applicant(container, to_bot=False, balance=50, ref=540)
+
+    await dp.feed_update(bot, callback(Pay(action='paid', user_id=700).pack()))
+
+    info = (await container.users.get(700))['info']
+    assert info['ref_stats']['withdrawable'] == 0
+    assert info['balance'] == 50
+    assert any('в течение пары часов' in text for _, text in session.calls)
+
+
+async def test_reject_can_be_stepped_back_from(admin_env):
+    """«Отказать» нажимают и случайно, а с экрана причин иначе не выйти."""
+    dp, bot, session, container = admin_env
+    await applicant(container)
+
+    await dp.feed_update(bot, callback(Pay(action='reject_ask', user_id=700).pack()))
+    labels = [b.text for row in session.markups[-1].inline_keyboard for b in row]
+    assert any('Назад' in label for label in labels), labels
+
+    await dp.feed_update(bot, callback(Pay(action='refresh', user_id=700).pack()))
+    labels = [b.text for row in session.markups[-1].inline_keyboard for b in row]
+    assert any('Отказать' in label for label in labels), 'назад вернул не карточку'
+    assert (await container.users.get(700))['info']['ref_stats']['withdrawable'] == 540
+
+
+async def test_reject_keeps_the_money(admin_env):
+    dp, bot, session, container = admin_env
+    await applicant(container)
+
+    await dp.feed_update(bot, callback(Pay(action='reject', user_id=700,
+                                           reason='data').pack()))
+
+    assert (await container.users.get(700))['info']['ref_stats']['withdrawable'] == 540
+    assert any('отклонена' in text for _, text in session.calls)
+
+
+async def test_refresh_shows_fresh_numbers(admin_env):
+    """Между заявкой и решением человек мог пополнить баланс — на старых
+    цифрах решение принимать нельзя."""
+    dp, bot, session, container = admin_env
+    await applicant(container, balance=50)
+
+    await dp.feed_update(bot, callback(Pay(action='refresh', user_id=700).pack()))
+    assert 'Обычный баланс: <b>50₽</b>' in card(session)
+
+    await container.users.credit(700, 100, 'пополнение')
+    await dp.feed_update(bot, callback(Pay(action='refresh', user_id=700).pack()))
+
+    assert 'Обычный баланс: <b>150₽</b>' in card(session)

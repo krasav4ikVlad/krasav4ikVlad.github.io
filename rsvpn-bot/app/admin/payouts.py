@@ -15,11 +15,72 @@ import logging
 from aiogram import F, Router, types
 
 from app.bot.callbacks import PayoutAdmin
-from app.bot.keyboards.payouts import reject_reasons_keyboard
-from app.services.payouts import REJECT_REASONS
+from app.bot.keyboards.payouts import payout_card_keyboard, reject_reasons_keyboard
 from app.content.emoji import e, plain
+from app.core.time import fmt, now, parse_dt
+from app.domain import payout_methods as pm
+from app.services.payouts import REJECT_REASONS
 
 log = logging.getLogger(__name__)
+
+
+
+# ── карточка заявки ─────────────────────────────────────────────────────────
+#
+# Собирается одной функцией и при отправке, и по кнопке «Обновить». Иначе
+# два вида одной карточки разъезжаются: человек за это время мог пополнить
+# баланс или сменить способ, и решение принималось бы по старым цифрам.
+
+async def card_text(c, user_id: int) -> str:
+    user = await c.users.get(user_id) or {}
+    data = user.get('user_data') or {}
+    info = user.get('info') or {}
+    stats = info.get('ref_stats') or {}
+
+    name = f'@{data["username"]}' if data.get('username') else 'без юзернейма'
+    joined = data.get('date_joined')
+    # в старой базе дата регистрации лежит строкой, в новой — датой
+    joined_text = joined if isinstance(joined, str) else fmt(parse_dt(joined), '%d.%m.%Y %H:%M:%S')
+
+    selected = stats.get('payout_selected') or pm.BOT_BALANCE
+    method = c.payouts.describe(stats, selected)
+
+    lines = [f'{e("payout")} <b>Заявка на вывод</b>', '',
+             f'{e("user")} {name} (<code>{user_id}</code>)',
+             f'{e("calendar")} Регистрация: {joined_text or "—"}']
+    if data.get('utm'):
+        lines.append(f'{e("link")} UTM: <code>{data["utm"]}</code>')
+
+    lines += ['',
+              f'{e("money")} Обычный баланс: <b>{int(info.get("balance", 0) or 0)}₽</b>',
+              f'{e("gift")} Реферальный баланс: '
+              f'<b>{int(stats.get("withdrawable", 0) or 0)}₽</b>',
+              '', f'Способ: {method}',
+              '', f'<i>обновлено в {now().strftime("%H:%M:%S")}</i>']
+    return '\n'.join(lines)
+
+
+async def card_markup(c, user_id: int):
+    """Кнопки зависят от способа: «На баланс» и «Выведено» — разные операции,
+    и показывать обе значит предлагать нажать не ту."""
+    user = await c.users.get(user_id, {'info.ref_stats.payout_selected': 1}) or {}
+    selected = (c.users.pick(user, 'info.ref_stats.payout_selected')
+                or pm.BOT_BALANCE)
+    return payout_card_keyboard(user_id, to_bot_balance=selected == pm.BOT_BALANCE)
+
+
+async def show_card(call: types.CallbackQuery, c, user_id: int) -> None:
+    try:
+        await call.message.edit_text(await card_text(c, user_id),
+                                     reply_markup=await card_markup(c, user_id))
+    except Exception:      # «message is not modified» — цифры не изменились
+        pass
+
+
+async def refresh(call: types.CallbackQuery, callback_data: PayoutAdmin, c) -> None:
+    """Она же «Назад» с экрана причин отказа: возвращает исходную карточку."""
+    await show_card(call, c, callback_data.user_id)
+    await call.answer('Обновлено')
 
 
 async def _tell_user(bot, user_id: int, text: str) -> None:
@@ -48,8 +109,12 @@ async def to_balance(call: types.CallbackQuery, callback_data: PayoutAdmin, c) -
         await call.answer('Баланс изменился, откройте заявку заново', show_alert=True)
         return
 
+    balance = int(c.users.pick(await c.users.get(callback_data.user_id) or {},
+                               'info.balance', 0) or 0)
     await _tell_user(call.bot, callback_data.user_id,
-                     f'{e("money")} Реферальные {amount}₽ переведены на баланс бота.')
+                     f'{e("ok")} <b>Заявка на вывод исполнена</b>\n\n'
+                     f'{amount}₽ переведены на ваш баланс в боте.\n'
+                     f'<b>Баланс:</b> <code>{balance}₽</code>')
     await _close_card(call, f'{e("money")} Переведено на баланс: {amount}₽')
     await call.answer(f'Переведено {e("ok")}')
 
@@ -61,8 +126,10 @@ async def paid_externally(call: types.CallbackQuery, callback_data: PayoutAdmin,
         return
 
     await _tell_user(call.bot, callback_data.user_id,
-                     f'{e("ok")} Выплата {amount}₽ отправлена по указанным вами реквизитам.')
-    await _close_card(call, f'{e("ok")} Выплачено вручную: {amount}₽')
+                     f'{e("ok")} <b>Заявка на вывод исполнена</b>\n\n'
+                     f'{amount}₽ отправлены по указанным вами реквизитам.\n'
+                     'Деньги поступят в течение пары часов.')
+    await _close_card(call, f'{e("ok")} Выведено: {amount}₽')
     await call.answer(f'Отмечено {e("ok")}')
 
 
@@ -85,6 +152,7 @@ async def reject(call: types.CallbackQuery, callback_data: PayoutAdmin, c) -> No
 
 def register(router: Router) -> None:
     """Подключается к админскому роутеру: фильтр «только админ» уже стоит там."""
+    router.callback_query.register(refresh, PayoutAdmin.filter(F.action == 'refresh'))
     router.callback_query.register(to_balance, PayoutAdmin.filter(F.action == 'balance'))
     router.callback_query.register(paid_externally, PayoutAdmin.filter(F.action == 'paid'))
     router.callback_query.register(ask_reason, PayoutAdmin.filter(F.action == 'reject_ask'))

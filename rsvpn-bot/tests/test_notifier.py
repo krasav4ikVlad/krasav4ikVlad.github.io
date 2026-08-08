@@ -69,10 +69,22 @@ async def test_username_is_taken_from_the_database_when_not_passed(notifier, bot
     assert '@petya' in bot.sent[0]['text']
 
 
-async def test_payout_card_carries_requisites_and_buttons(notifier, bot):
-    await notifier.payout_requested(5, amount=900, method='m1',
-                                    details='<b>Тип:</b> СБП\n• Банк: Сбербанк',
-                                    username='ivan')
+async def test_payout_card_carries_requisites_and_buttons(notifier, bot, container):
+    """Карточку собирает админский слой и отдаёт готовой: она знает про
+    балансы и кнопки решения, а notifier — только про тему чата."""
+    from app.admin.payouts import card_markup, card_text
+
+    await container.users.create({
+        'user_data': {'user_id': 5, 'username': 'ivan'},
+        'info': {'balance': 50, 'ref_stats': {
+            'withdrawable': 900,
+            'method': [{'id': 'm1', 'type': 'sbp',
+                        'data': {'fio': 'Иван', 'phone': '+79000000000',
+                                 'bank': 'Сбербанк'}}],
+            'payout_selected': 'm1'}}})
+
+    await notifier.payout_requested(await card_text(container, 5),
+                                    await card_markup(container, 5))
 
     card = bot.sent[0]
     assert '900₽' in card['text'] and 'Сбербанк' in card['text']
@@ -90,7 +102,7 @@ async def test_failed_notification_releases_the_payout_claim(container):
     result = await payouts.request(5)
     assert result.ok
 
-    sent = await notifier.payout_requested(5, amount=result.amount, method=result.method)
+    sent = await notifier.payout_requested('Заявка на вывод')
     assert sent is False
 
     await payouts.cancel_request(5)

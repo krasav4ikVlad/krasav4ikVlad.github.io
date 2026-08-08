@@ -58,27 +58,38 @@ def payout_menu_keyboard(methods: list[dict], selected: str) -> InlineKeyboardBu
     return kb
 
 
-def payout_card_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
-    """Кнопки под заявкой в админ-чате."""
+def _admin_btn(text: str, action: str, user_id: int,
+               reason: str = '') -> types.InlineKeyboardButton:
+    return types.InlineKeyboardButton(
+        text=text,
+        callback_data=PayoutAdmin(action=action, user_id=user_id, reason=reason).pack())
+
+
+def payout_card_keyboard(user_id: int, to_bot_balance: bool = True) -> types.InlineKeyboardMarkup:
+    """Кнопки под заявкой в админ-чате.
+
+    Действие показывается ровно одно и то, которое человек заказал:
+    «На баланс» переводит реферальные деньги на обычный баланс внутри бота,
+    «Выведено» отмечает перевод по реквизитам наружу. Показывать обе разом
+    значит предлагать нажать не ту — а обе необратимы.
+    """
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(
-        text=f'{e("money")} На баланс бота',
-        callback_data=PayoutAdmin(action='balance', user_id=user_id).pack()))
-    kb.row(types.InlineKeyboardButton(
-        text=f'{e("ok")} Выплачено вручную',
-        callback_data=PayoutAdmin(action='paid', user_id=user_id).pack()))
-    kb.row(types.InlineKeyboardButton(
-        text=f'{e("cross")} Отказать',
-        callback_data=PayoutAdmin(action='reject_ask', user_id=user_id).pack()))
+    kb.row(_admin_btn(f'{e("refresh")} Обновить', 'refresh', user_id))
+    if to_bot_balance:
+        kb.row(_admin_btn(f'{e("money")} На баланс', 'balance', user_id))
+    else:
+        kb.row(_admin_btn(f'{e("ok")} Выведено', 'paid', user_id))
+    kb.row(_admin_btn(f'{e("cross")} Отказать', 'reject_ask', user_id))
     return kb.as_markup()
 
 
 def reject_reasons_keyboard(user_id: int, reasons: dict[str, str]) -> types.InlineKeyboardMarkup:
+    """Причины отказа и обязательный шаг назад: «Отказать» нажимают и
+    случайно, а отсюда иначе не выйти, не отказав."""
     kb = InlineKeyboardBuilder()
     titles = {'data': 'Неверные реквизиты', 'form': 'Неверный формат данных',
               'min': 'Меньше минимума', 'other': 'Другое'}
     for code in reasons:
-        kb.row(types.InlineKeyboardButton(
-            text=titles.get(code, code),
-            callback_data=PayoutAdmin(action='reject', user_id=user_id, reason=code).pack()))
+        kb.row(_admin_btn(titles.get(code, code), 'reject', user_id, code))
+    kb.row(_admin_btn(f'{e("back")} Назад', 'refresh', user_id))
     return kb.as_markup()

@@ -147,11 +147,11 @@ class Notifier:
                                + ('\n\n' + '\n'.join(lines) if lines else ''))
 
     # ── заявка на вывод: единственное место, где важен ответ ────────────────
-    async def payout_requested(self, user_id: int, amount: int, method: str,
-                               details: str = '', username: str | None = None) -> bool:
-        from app.bot.keyboards.payouts import payout_card_keyboard
+    async def payout_requested(self, text: str, markup=None) -> bool:
+        """Карточку собирает admin/payouts.py и передаёт готовой.
 
-        text = (f'{e("withdraw")} <b>Заявка на вывод</b>\n{await self._who(user_id, username)}\n'
-                f'<b>Сумма:</b> <code>{amount}₽</code>\n\n'
-                f'{details or method}')
-        return await self.send('payout', text, markup=payout_card_keyboard(user_id))
+        Здесь ей не место: карточка знает про баланс, реквизиты и кнопки
+        решения — это админский экран, а не уведомление. Notifier остаётся
+        тем, чем был: одним способом положить сообщение в тему админ-чата.
+        """
+        return await self.send('payout', text, markup=markup)
