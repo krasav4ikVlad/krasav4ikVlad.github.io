@@ -49,7 +49,7 @@ def price_line(plan_price: int, days: int, devices_price: int,
     if full_price and full_price > plan_price:
         percent = round((1 - plan_price / full_price) * 100)
         line = (f'<code>{plan_price}₽ за {period_label(days)}</code> '
-                f'вместо <s>{full_price}₽</s> −{percent}%')
+                f'вместо <s>{full_price}₽</s> {e("hot")} −{percent}%')
     else:
         line = f'<code>{plan_price}₽ за {period_label(days)}</code>'
     if devices_price:

@@ -33,7 +33,7 @@ async def show_plans(event, c, user: dict, settings):
     notice = await c.discounts.notice(user)
     await render(event, Screen(
         text=(profile_caption(user) + texts.render('screen.subscription.empty')
-              + (f'\n\n<b>{e("discount")} {notice}</b>' if notice else '')),
+              + (f'\n\n<b>{e("hot")} {notice}</b>' if notice else '')),
         markup=builder.as_markup(),
         image=c.media('subscription'),
     ))

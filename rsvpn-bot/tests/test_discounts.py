@@ -184,14 +184,23 @@ async def test_devices_are_not_discounted(container, discounts):
 
 
 # ── экран ───────────────────────────────────────────────────────────────────
-def test_price_tag_strikes_the_old_price():
-    """В тексте зачёркивание — тег, в подписи кнопки — символы: разметки
-    там нет вовсе, и <s> показался бы буквами."""
-    from app.bot.screens.pricing import price_tag, strike
+def test_price_tag_strikes_the_old_price_in_text():
+    from app.bot.screens.pricing import price_tag
+    from app.content.emoji import e
 
-    assert price_tag(150, 100) == '100₽ вместо <s>150₽</s> −33%'
-    assert price_tag(150, 100, html=False) == f'100₽ вместо {strike("150₽")} −33%'
-    assert '<' not in price_tag(150, 100, html=False)
+    assert price_tag(150, 100) == f'100₽ вместо <s>150₽</s> {e("hot")} −33%'
+
+
+def test_button_price_has_no_markup_and_no_combining_marks():
+    """В кнопке разметки нет, а зачёркивание символами (U+0336) шрифт кнопок
+    рисует низко — «150₽» выходило подчёркнутым. Поэтому просто «вместо»."""
+    from app.bot.screens.pricing import price_tag
+
+    label = price_tag(150, 100, html=False)
+
+    assert label.startswith('100₽ вместо 150₽')
+    assert '<' not in label
+    assert not any(0x0300 <= ord(char) <= 0x036F for char in label), label
 
 
 def test_price_tag_without_a_discount_is_just_the_price():
@@ -199,12 +208,6 @@ def test_price_tag_without_a_discount_is_just_the_price():
 
     assert price_tag(150, 150) == '150₽'
     assert price_tag(0, 0) == '0₽'
-
-
-def test_strike_draws_over_every_character():
-    from app.bot.screens.pricing import STRIKE, strike
-
-    assert strike('150₽') == f'1{STRIKE}5{STRIKE}0{STRIKE}₽{STRIKE}'
 
 
 def test_price_line_shows_the_old_price_too():
@@ -220,15 +223,14 @@ def test_price_line_shows_the_old_price_too():
 
 async def test_plan_button_shows_both_prices(container):
     from app.bot.keyboards.subscription import plans_keyboard
-    from app.bot.screens.pricing import strike
 
     await container.startup()
     plan = await container.plans.get('1month')
     kb = await plans_keyboard(container.plans, 0, discount=0.5)
     labels = [button.text for row in kb.export() for button in row]
 
-    assert any(f'{int(plan["price"] * 0.5)}₽ вместо {strike(str(plan["price"]) + "₽")} −50%'
-               in label for label in labels), labels
+    assert any(f'{int(plan["price"] * 0.5)}₽ вместо {plan["price"]}₽' in label
+               and '−50%' in label for label in labels), labels
 
 
 async def test_plan_button_stays_plain_without_a_discount(container):

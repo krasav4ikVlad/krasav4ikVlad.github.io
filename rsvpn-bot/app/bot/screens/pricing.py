@@ -9,23 +9,21 @@
 
 Про зачёркивание
 ────────────────
-В тексте сообщения это тег <s>. В подписи кнопки разметки нет вообще —
-там зачёркивание собирается символами: после каждого знака ставится
-U+0336, «объединяющая черта». Выглядит одинаково, а больше в кнопке
-ничего и не сделать.
+В тексте сообщения это тег <s>, и там всё честно.
+
+В подписи кнопки разметки нет вообще. Пробовали собрать зачёркивание
+символами — после каждого знака U+0336, «объединяющая черта»; кодировка
+верная, но шрифт кнопок рисует эту черту низко, и «150₽» выходит
+подчёркнутым, а не зачёркнутым. Починить это со стороны бота нельзя:
+шрифт выбирает клиент. Поэтому в кнопке просто «вместо 150₽» — понятно
+и не зависит ни от какого шрифта.
 """
 
 from __future__ import annotations
 
 from app.bot.screens.profile import price_line
+from app.content.emoji import e
 from app.domain.pricing import devices_price
-
-STRIKE = '̶'      # объединяющая черта: рисуется поверх предыдущего знака
-
-
-def strike(text: str) -> str:
-    """Зачёркнутый текст без разметки — для подписей кнопок."""
-    return ''.join(char + STRIKE for char in text)
 
 
 def discount_percent(full: int, price: int) -> int:
@@ -35,7 +33,7 @@ def discount_percent(full: int, price: int) -> int:
 
 
 def price_tag(full: int, price: int, *, html: bool = True) -> str:
-    """«100₽ вместо 150₽ −33%». Без скидки — просто «150₽».
+    """«100₽ вместо 150₽ 🔥 −33%». Без скидки — просто «150₽».
 
     Показывать обе цены обязательно: со скидкой цена на кнопке не сходится
     с ценой в разделе «Тарифы», и без пояснения это выглядит как ошибка
@@ -45,8 +43,8 @@ def price_tag(full: int, price: int, *, html: bool = True) -> str:
     if price >= full:
         return f'{price}₽'
 
-    old = f'<s>{full}₽</s>' if html else strike(f'{full}₽')
-    return f'{price}₽ вместо {old} −{discount_percent(full, price)}%'
+    old = f'<s>{full}₽</s>' if html else f'{full}₽'
+    return f'{price}₽ вместо {old} {e("hot")} −{discount_percent(full, price)}%'
 
 
 async def price_line_for(c, user: dict) -> str:
