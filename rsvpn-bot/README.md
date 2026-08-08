@@ -61,7 +61,7 @@ docker compose up -d
 ## Разработка
 
 ```bash
-make test    # 502 теста, без Mongo и без сети
+make test    # 508 тестов, без Mongo и без сети
 make lint
 ```
 

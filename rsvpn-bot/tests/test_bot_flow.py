@@ -617,7 +617,7 @@ async def test_broadcast_reaches_only_the_chosen_segment(env):
 
     delivered = [text for name, text in session.calls if text == 'Возвращайтесь!']
     assert len(delivered) == 2                       # 11 и 12, но не 13
-    assert 'Доставлено: <code>2</code>' in session.last_text
+    assert '<b>Доставлено:</b> <code>2</code>' in session.last_text
 
 
 # ── смена длительности ──────────────────────────────────────────────────────
@@ -1198,3 +1198,116 @@ async def test_unbind_all_is_marked_with_a_minus(env):
     labels = [button.text for row in last_markup(session).inline_keyboard
               for button in row]
     assert any(label.startswith(f'{e("minus")} Отвязать все') for label in labels), labels
+
+
+# ── счётчик рассылки по ходу дела ───────────────────────────────────────────
+#
+# Раньше админ видел «рассылка запущена» и потом молчание на несколько минут:
+# понять, идёт она вообще или зависла, было нельзя.
+
+async def broadcast_env(env, users: int, step: int, fail_every: int = 0):
+    """База из N человек и рассылка по ним. Возвращает правки сообщения."""
+    from app.admin.broadcast import _run
+
+    dp, bot, session, c = env
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    await c.settings.set('campaign.broadcast_progress_step', step)
+    for user_id in range(100, 100 + users):
+        await c.users.create({'user_data': {'user_id': user_id},
+                              'growth': {'segment': 'expired_3d'}})
+
+    if fail_every:
+        original = bot.session.make_request
+        counter = {'n': 0}
+
+        async def flaky(bot_, method, timeout=None):
+            # именно TelegramForbiddenError: так выглядит заблокировавший
+            # бота. Обычное исключение Sender считает сбоем сети и повторяет
+            # три раза — тогда «не доставлено» осталось бы нулём.
+            from aiogram.exceptions import TelegramForbiddenError
+
+            if type(method).__name__ == 'SendMessage':
+                counter['n'] += 1
+                if counter['n'] % fail_every == 0:
+                    raise TelegramForbiddenError(method=method,
+                                                 message='bot was blocked by the user')
+            return await original(bot_, method, timeout)
+
+        bot.session.make_request = flaky
+
+    msg = Message(message_id=9, date=datetime.now(), chat=CHAT, text='статус',
+                  from_user=TG_USER).as_(bot)
+    session.calls.clear()
+    await _run(c, bot, msg, {'growth.segment': 'expired_3d'}, 'Привет!', users)
+
+    return [text for name, text in session.calls if name == 'EditMessageText']
+
+
+async def test_counters_update_every_hundred(env):
+    edits = await broadcast_env(env, users=250, step=100)
+
+    # 100, 200 и итог — три правки, не двести пятьдесят
+    assert len(edits) == 3, edits
+    assert '<code>100</code>' in edits[0]
+    assert '<code>200</code>' in edits[1]
+    assert 'завершена' in edits[-1]
+
+
+async def test_progress_shows_what_is_left(env):
+    edits = await broadcast_env(env, users=150, step=100)
+
+    assert 'Осталось:</b> <code>50</code> из <code>150</code>' in edits[0]
+
+
+async def test_undelivered_are_counted_separately(env):
+    """Заблокировавшие бота — это не ошибка рассылки, но их надо видеть."""
+    edits = await broadcast_env(env, users=100, step=50, fail_every=10)
+
+    assert '<b>Не доставлено:</b> <code>5</code>' in edits[0]
+    assert '<b>Доставлено:</b> <code>90</code>' in edits[-1]
+    assert '<b>Не доставлено:</b> <code>10</code>' in edits[-1]
+
+
+async def test_short_broadcast_still_reports_at_the_end(env):
+    """Получателей меньше шага — промежуточных правок нет, итог есть."""
+    edits = await broadcast_env(env, users=5, step=100)
+
+    assert len(edits) == 1
+    assert 'завершена' in edits[0]
+    assert '<b>Доставлено:</b> <code>5</code>' in edits[0]
+
+
+async def test_zero_step_turns_the_counter_off(env):
+    edits = await broadcast_env(env, users=250, step=0)
+
+    assert len(edits) == 1, 'при шаге 0 промежуточных правок быть не должно'
+
+
+async def test_a_broken_edit_does_not_stop_the_broadcast(env):
+    """Правка сообщения упирается в лимит Telegram чаще, чем отправка.
+    Рассылка идёт ради писем, а не ради отчёта."""
+    from app.admin.broadcast import _run
+
+    dp, bot, session, c = env
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    await c.settings.set('campaign.broadcast_progress_step', 10)
+    for user_id in range(200, 230):
+        await c.users.create({'user_data': {'user_id': user_id},
+                              'growth': {'segment': 'expired_3d'}})
+
+    original = bot.session.make_request
+
+    async def no_edits(bot_, method, timeout=None):
+        if type(method).__name__ == 'EditMessageText':
+            raise RuntimeError('Too Many Requests: retry after 5')
+        return await original(bot_, method, timeout)
+
+    bot.session.make_request = no_edits
+    msg = Message(message_id=9, date=datetime.now(), chat=CHAT, text='статус',
+                  from_user=TG_USER).as_(bot)
+    session.calls.clear()
+
+    await _run(c, bot, msg, {'growth.segment': 'expired_3d'}, 'Привет!', 30)
+
+    delivered = [t for name, t in session.calls if t == 'Привет!']
+    assert len(delivered) == 30, 'письма должны уйти все'

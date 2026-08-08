@@ -142,21 +142,52 @@ async def start_sending(call: types.CallbackQuery, state: FSMContext, c, setting
     audience = data.get('audience', 'all')
     query = ({'growth.segment': audience} if data.get('one') else audience_query(audience))
 
-    await call.message.edit_text(
-        f'<b>{e("broadcast")} Рассылка запущена</b>\n\nПолучателей: <code>{data.get("total", 0)}</code>\n'
-        'Отчёт придёт сюда же, когда закончится.', reply_markup=None)
+    total = int(data.get('total', 0) or 0)
+    await call.message.edit_text(progress_text(0, 0, total), reply_markup=None)
     await call.answer('Пошла рассылка')
 
     # фоном: иначе Telegram оборвёт обработчик по таймауту на большой базе.
     # Ссылку держим сами — задачу без владельца сборщик мусора может убить
     # прямо посреди рассылки.
-    task = asyncio.create_task(_run(c, call.bot, call.message, query, text))
+    task = asyncio.create_task(_run(c, call.bot, call.message, query, text, total))
     _running.add(task)
     task.add_done_callback(_running.discard)
 
 
-async def _run(c, bot, message, query: dict, text: str) -> None:
+def progress_text(sent: int, failed: int, total: int, done: bool = False) -> str:
+    """Счётчики рассылки. Один текст на ход и на конец — чтобы цифры на
+    экране не меняли формат в момент завершения."""
+    done_count = sent + failed
+    lines = [f'<b>{e("ok")} Рассылка завершена</b>' if done
+             else f'<b>{e("broadcast")} Рассылка идёт</b>', '']
+    lines.append(f'<b>Доставлено:</b> <code>{sent}</code>')
+    lines.append(f'<b>Не доставлено:</b> <code>{failed}</code>')
+
+    if total and not done:
+        lines.append(f'<b>Осталось:</b> <code>{max(0, total - done_count)}</code> '
+                     f'из <code>{total}</code>')
+    elif not done:
+        lines.append(f'<b>Обработано:</b> <code>{done_count}</code>')
+    return '\n'.join(lines)
+
+
+async def _show(bot, message, text: str) -> None:
+    """Обновить сообщение со счётчиками. Отказ Telegram не должен ломать
+    рассылку: она уже идёт, и её цель — доставить письма, а не отчитаться.
+
+    Самый частый отказ — «message is not modified»: за сотню сообщений
+    ни одно не дошло и цифры не изменились. Это не ошибка.
+    """
+    try:
+        await bot.edit_message_text(text, chat_id=message.chat.id,
+                                    message_id=message.message_id)
+    except Exception as exc:
+        log.debug('счётчик рассылки не обновлён: %s', exc)
+
+
+async def _run(c, bot, message, query: dict, text: str, total: int = 0) -> None:
     delay = await c.settings.int('campaign.broadcast_delay_ms') / 1000
+    step = await c.settings.int('campaign.broadcast_progress_step') or 0
     sender = Sender()
     sent = failed = 0
 
@@ -168,16 +199,18 @@ async def _run(c, bot, message, query: dict, text: str) -> None:
             sent += 1
         else:
             failed += 1
+
+        # Правка сообщения — тоже запрос к Telegram, и у него свой лимит
+        # (около одного в секунду на чат). Шаг в сотню при паузе 40 мс даёт
+        # обновление раз в четыре секунды — далеко от лимита.
+        if step and (sent + failed) % step == 0:
+            await _show(bot, message, progress_text(sent, failed, total))
+
         if delay:
             await asyncio.sleep(delay)
 
     log.info('рассылка завершена: отправлено %s, не доставлено %s', sent, failed)
-    try:
-        await message.answer(f'<b>{e("ok")} Рассылка завершена</b>\n\n'
-                             f'Доставлено: <code>{sent}</code>\n'
-                             f'Не доставлено: <code>{failed}</code>')
-    except Exception as exc:
-        log.warning('отчёт о рассылке не отправлен: %s', exc)
+    await _show(bot, message, progress_text(sent, failed, total, done=True))
 
 
 def register(router: Router) -> None:

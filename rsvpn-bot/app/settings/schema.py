@@ -260,6 +260,11 @@ SCHEMA: tuple[Group, ...] = (
         Setting('campaign.hour_from', 'Не отправлять раньше', 'int', 9, unit=':00', min=0, max=23),
         Setting('campaign.hour_to', 'Не отправлять позже', 'int', 22, unit=':00', min=0, max=23),
         Setting('campaign.broadcast_delay_ms', 'Пауза между сообщениями рассылки', 'int', 40, unit='мс', min=0),
+        Setting('campaign.broadcast_progress_step', 'Обновлять счётчик рассылки каждые',
+                'int', 100, unit=' сообщ.', min=0,
+                hint='Правка сообщения — тоже запрос к Telegram, у него свой '
+                     'лимит около одного в секунду на чат. 0 — не обновлять '
+                     'по ходу, только итог'),
     )),
 
     Group('notify', f'{e("bell")} Уведомления админам', (
