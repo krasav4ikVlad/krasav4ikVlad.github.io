@@ -142,7 +142,27 @@ async def test_existing_user_keeps_his_extra_squad(db):
     service = SquadService(settings, db['settings_collection'])
 
     result = await service.for_existing_user(['b', 'custom'])
-    assert result == [await settings.get('squads.base'), 'b', 'custom']
+    assert result == ['b', 'custom']
+
+
+async def test_base_squad_is_added_to_everyone_when_set(db):
+    """Базовый сквад — дополнение к ротационному, а не замена ему."""
+    settings = SettingsService(db['bot_settings'])
+    await settings.set('squads.base', 'база')
+    await settings.set('squads.extra', 'a,b,c')
+    service = SquadService(settings, db['settings_collection'])
+
+    assert await service.for_new_user() == ['база', 'a']
+    assert await service.for_existing_user(['b', 'custom']) == ['база', 'b', 'custom']
+
+
+async def test_without_a_base_squad_the_user_gets_only_the_rotating_one(db):
+    """Пустой «Базовый сквад» — по одному скваду на человека, из ротации."""
+    settings = SettingsService(db['bot_settings'])
+    service = SquadService(settings, db['settings_collection'])
+
+    assert await settings.get('squads.base') == ''
+    assert await service.for_new_user() == [SQUADS[0]]
 
 
 async def test_legacy_fingerprints_are_not_restored(db):
@@ -200,3 +220,97 @@ async def test_dry_run_still_reads(db):
 
     assert await api.devices('u-1') == [{'hwid': 'a'}]
     assert len(http.calls) == 1
+
+
+# ── сквады из настроек по умолчанию ─────────────────────────────────────────
+SQUADS = [
+    'c55bee89-5fda-4a9e-8e8b-b5bbc12fc589',
+    'e9b8d3d5-5409-4235-a5ba-403581986b2',
+    'b174cf00-fe59-4463-9d9a-543ba07ccac3',
+    'c4ba52b0-2d16-44e1-80db-a072d6ee053d',
+    '528581b4-08ee-42e7-a461-f1757f183ff2',
+]
+
+
+def test_default_rotation_list_is_the_configured_one():
+    from app.settings.schema import INDEX
+
+    assert INDEX['squads.extra'].default.split(',') == SQUADS
+    assert INDEX['squads.base'].default == ''
+
+
+async def test_new_subscriptions_walk_the_list_in_order(db):
+    """По кругу и по порядку: шестой человек получает первый сквад."""
+    settings = SettingsService(db['bot_settings'])
+    service = SquadService(settings, db['settings_collection'])
+
+    issued = [(await service.for_new_user())[0] for _ in range(6)]
+
+    assert issued == SQUADS + SQUADS[:1]
+
+
+async def test_the_counter_is_shared_between_processes(db):
+    """Бот и API — разные процессы, счётчик один: он лежит в Mongo."""
+    settings = SettingsService(db['bot_settings'])
+    bot = SquadService(settings, db['settings_collection'])
+    api = SquadService(settings, db['settings_collection'])
+
+    assert await bot.next_extra_squad() == SQUADS[0]
+    assert await api.next_extra_squad() == SQUADS[1]
+
+
+def test_bypass_squads_are_the_configured_ones():
+    from app.settings.schema import INDEX
+
+    assert INDEX['bypass.squad_uuid'].default == 'ac03f8c3-0de7-4380-9774-00079d0385ce'
+    assert (INDEX['bypass.external_squad_uuid'].default
+            == 'dd4fd59f-415a-4fab-8af7-afde9db099bc')
+
+
+async def test_bypass_payload_carries_both_squads(db):
+    """Внутренний сквад — списком, внешний — отдельным полем."""
+    from datetime import timedelta
+
+    from app.core.time import now
+
+    settings = SettingsService(db['bot_settings'])
+    http = FakeHttp()
+    panel = RemnawaveClient('https://panel', 'token', http, settings)
+    await panel.create_bypass_subscription(5, now() + timedelta(days=30))
+
+    sent = http.last_payload
+    assert sent['activeInternalSquads'] == ['ac03f8c3-0de7-4380-9774-00079d0385ce']
+    assert sent['externalSquadUuid'] == 'dd4fd59f-415a-4fab-8af7-afde9db099bc'
+
+
+# ── проверка настроек ───────────────────────────────────────────────────────
+def test_uuid_check_catches_a_missing_character():
+    """Ровно тот случай: в UUID 11 знаков в последней группе вместо 12."""
+    from app.services.squads import looks_like_uuid
+
+    assert looks_like_uuid('c55bee89-5fda-4a9e-8e8b-b5bbc12fc589')
+    assert not looks_like_uuid('e9b8d3d5-5409-4235-a5ba-403581986b2')
+    assert not looks_like_uuid('просто текст')
+    assert not looks_like_uuid('')
+
+
+async def test_broken_squad_is_reported_by_name(db):
+    """Панель на такой сквад отвечает отказом, а человек к этому моменту
+    уже заплатил. Дешевле сказать об этом при старте."""
+    settings = SettingsService(db['bot_settings'])
+    await settings.set('squads.extra', 'c55bee89-5fda-4a9e-8e8b-b5bbc12fc589,короткий')
+    service = SquadService(settings, db['settings_collection'])
+
+    problems = await service.problems()
+
+    assert len(problems) == 1
+    assert 'squads.extra' in problems[0] and 'короткий' in problems[0]
+
+
+async def test_valid_settings_have_no_complaints(db):
+    settings = SettingsService(db['bot_settings'])
+    await settings.set('squads.extra',
+                       'c55bee89-5fda-4a9e-8e8b-b5bbc12fc589,'
+                       'b174cf00-fe59-4463-9d9a-543ba07ccac3')
+
+    assert await SquadService(settings, db['settings_collection']).problems() == []

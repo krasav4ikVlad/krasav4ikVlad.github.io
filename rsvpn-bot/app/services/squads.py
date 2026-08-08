@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from math import comb
 
 from app.core.time import now
@@ -19,6 +20,13 @@ log = logging.getLogger(__name__)
 
 ROTATION_DOC_ID = 'squad_rotation'
 FINGERPRINT_DOC_ID = 'fingerprint_combo_counter'
+
+UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+                     r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+
+
+def looks_like_uuid(value: str) -> bool:
+    return bool(UUID_RE.match(str(value or '').strip()))
 
 
 def build_active_squads(base_squad: str, extra_squad: str | None,
@@ -79,6 +87,31 @@ class SquadService:
 
     async def for_new_user(self) -> list[str]:
         return build_active_squads(await self.base_squad(), await self.next_extra_squad())
+
+    # ── проверка настроек ───────────────────────────────────────────────────
+    SQUAD_SETTINGS = (
+        ('squads.base', 'Базовый сквад', False),
+        ('squads.extra', 'Ротационные сквады', True),
+        ('squads.fingerprint', 'Сквады для «отпечатка»', True),
+        ('bypass.squad_uuid', 'Сквад ByPass', False),
+        ('bypass.external_squad_uuid', 'Внешний сквад ByPass', False),
+    )
+
+    async def problems(self) -> list[str]:
+        """Сквады, непохожие на UUID. Пустой список — всё в порядке.
+
+        Опечатка в одном символе не видна глазом, а панель на такой сквад
+        отвечает отказом — то есть человек платит, подписка не создаётся, и
+        деньги возвращаются. Дешевле поймать это при старте.
+        """
+        found = []
+        for key, title, is_list in self.SQUAD_SETTINGS:
+            raw = str(await self.settings.get(key, '') or '')
+            values = [v.strip() for v in raw.split(',')] if is_list else [raw.strip()]
+            for value in values:
+                if value and not looks_like_uuid(value):
+                    found.append(f'{title} ({key}): «{value}»')
+        return found
 
     async def for_existing_user(self, current: list[str] | None) -> list[str]:
         """Набор сквадов при продлении.

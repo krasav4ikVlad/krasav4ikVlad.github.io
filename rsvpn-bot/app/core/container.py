@@ -194,6 +194,28 @@ class Container:
         texts.set_overrides({d['_id']: d.get('value', '') for d in docs if d.get('value')})
         emoji.set_enabled(await self.settings.flag('content.custom_emoji'))
 
+    async def warn_about_squads(self) -> list[str]:
+        """Сквад с опечаткой — это отказ панели в момент покупки.
+
+        Деньги в этом случае возвращаются (см. BillingService), но подписки
+        человек не получает, а в логах остаётся только 400 от панели. Строка
+        при старте называет виноватую настройку прямым текстом.
+        """
+        from app.services.squads import SquadService
+
+        # Container.build() уже собрал сервис; без него (тесты, миграции)
+        # хватит настроек — problems() в состояние не ходит.
+        service = self.squads or SquadService(self.settings, None)
+        try:
+            broken = await service.problems()
+        except Exception:      # проверка не должна мешать старту
+            return []
+
+        if broken:
+            log.warning('сквады не похожи на UUID, панель их не примет: %s',
+                        '; '.join(broken))
+        return broken
+
     async def warn_about_legacy_leftovers(self) -> list[str]:
         """Данные остались в коллекции с пробелом, а бот смотрит в чистую.
 
@@ -243,6 +265,7 @@ class Container:
             await self.payments.configure()
 
         await self.warn_about_legacy_leftovers()
+        await self.warn_about_squads()
 
         failed = [name for repo in (self.users, self.plans, self.payments_repo)
                   for name in repo.failed_indexes]
