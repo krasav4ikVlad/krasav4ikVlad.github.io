@@ -21,6 +21,12 @@
 const ROOT = __dirname;
 const PYTHON = `${ROOT}/.venv/bin/python`;
 
+// Каталог логов создаём сами. pm2 этого не делает: если папки под
+// error_file нет, процесс падает с ENOENT ещё до запуска Python — то есть
+// без единой строки в логах приложения, только растущий счётчик
+// перезапусков. Диагностировать это по симптомам почти невозможно.
+require('fs').mkdirSync(`${ROOT}/logs`, { recursive: true });
+
 module.exports = {
   apps: [
     {
