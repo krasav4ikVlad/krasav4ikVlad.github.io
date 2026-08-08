@@ -6,6 +6,7 @@
 Структура и правила — в [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Перенос со старого бота и настройка — в [SETUP.md](SETUP.md).
+Переезд на сервер под pm2 — в [DEPLOY.md](DEPLOY.md).
 Что изменилось между версиями архива — в [CHANGES.md](CHANGES.md).
 
 ## Запуск в PyCharm
@@ -42,7 +43,7 @@ docker compose up -d
 ## Разработка
 
 ```bash
-make test    # 27 тестов, без Mongo и без сети
+make test    # 445 тестов, без Mongo и без сети
 make lint
 ```
 
