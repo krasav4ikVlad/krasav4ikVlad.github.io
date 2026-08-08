@@ -26,8 +26,12 @@ def line(status: str, name: str, detail: str = '') -> None:
 
 async def main() -> int:
     from app.core.config import Config
+    from app.version import version_line
 
     problems = 0
+    # Первым делом: обновление могло тихо не состояться, и тогда всё
+    # остальное на этом экране относится к старому коду.
+    print(f'\nСборка: {version_line()}')
     print('\n── Конфигурация ─────────────────────────────────────────────')
 
     try:

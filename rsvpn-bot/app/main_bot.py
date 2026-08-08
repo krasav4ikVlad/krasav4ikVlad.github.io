@@ -27,7 +27,10 @@ def print_startup_banner(config) -> None:
     panel = 'ИЗМЕНЯЕТ ДАННЫЕ' if not config.vpn.dry_run else 'только чтение (dry-run)'
     scheduler = 'ВКЛЮЧЁН' if config.scheduler_enabled else 'выключен'
 
+    from app.version import version_line
+
     log.info('─' * 60)
+    log.info('Сборка:       %s', version_line())
     log.info('База:         %s%s', config.mongo_db,
              '  (старые имена коллекций)' if config.legacy_collections else '')
     log.info('Панель:       %s', panel)

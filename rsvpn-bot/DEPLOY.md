@@ -22,16 +22,23 @@ mongodump --uri="$TOKEN_DB" --db RS_2 --out ~/backup-$(date +%F)
 
 Не поверх: старый каталог остаётся нетронутым, это и есть план отката.
 
+Бот лежит в подкаталоге репозитория, поэтому клонируем репозиторий целиком,
+а работаем в `rsvpn-bot` внутри него:
+
 ```bash
 cd /home
 git clone -b claude/telegram-bot-refactor-admin-mmapc3 \
-  https://github.com/krasav4ikVlad/krasav4ikVlad.github.io.git rsvpn-new
-mv rsvpn-new/rsvpn-bot /home/rsvpn-bot && rm -rf rsvpn-new
+  https://github.com/krasav4ikVlad/krasav4ikVlad.github.io.git rsvpn-src
+ln -s /home/rsvpn-src/rsvpn-bot /home/rsvpn-bot     # привычный короткий путь
 cd /home/rsvpn-bot
 ```
 
-Или распакуйте туда архив — важно, чтобы `pyproject.toml` лежал в корне
-`/home/rsvpn-bot`.
+**Не переносите подкаталог наружу** (`mv rsvpn-src/rsvpn-bot /home/rsvpn-bot`):
+вместе с ним не уедет `.git`, лежащий уровнем выше, и `git pull` в таком
+каталоге работать не будет — обновления станут молча не доходить.
+
+Или распакуйте архив — важно, чтобы `pyproject.toml` лежал в корне
+`/home/rsvpn-bot`. Тогда обновляться придётся тоже архивом.
 
 ## 2. Окружение
 
@@ -218,6 +225,36 @@ cd /home/rsvpn-bot
 при старте и перекрывает то, что в коде. Проверить, что бот их видит:
 `python -m scripts.emoji_ids` (без аргументов ничего не меняет).
 
+### Сначала — убедиться, что обновление вообще дойдёт
+
+```bash
+cd /home/rsvpn-bot && git status
+```
+
+`fatal: not a git repository` — значит каталог не связан с репозиторием, и
+`git pull` в нём молча ничего не делает (точнее, печатает ошибку, которую
+легко пропустить между `pip install` и `pm2 restart`). Так получается, если
+подкаталог `rsvpn-bot` вынесли из клона наружу: `.git` лежит уровнем выше и
+наружу не уезжает. Лечится один раз:
+
+```bash
+cd /home
+git clone -b claude/telegram-bot-refactor-admin-mmapc3 \
+  https://github.com/krasav4ikVlad/krasav4ikVlad.github.io.git rsvpn-src
+
+cp /home/rsvpn-bot/.env            /home/rsvpn-src/rsvpn-bot/
+cp /home/rsvpn-bot/emoji_ids.json  /home/rsvpn-src/rsvpn-bot/   # если есть
+cp -r /home/rsvpn-bot/media/.      /home/rsvpn-src/rsvpn-bot/media/
+
+cd /home/rsvpn-src/rsvpn-bot
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+pm2 stop rsvpn-bot rsvpn-api
+mv /home/rsvpn-bot /home/rsvpn-bot-old
+ln -s /home/rsvpn-src/rsvpn-bot /home/rsvpn-bot
+cd /home/rsvpn-bot && pm2 restart rsvpn-bot rsvpn-api --update-env
+```
+
 ### Если ставили из git
 
 ```bash
@@ -231,6 +268,16 @@ pm2 restart rsvpn-bot rsvpn-api
 `.gitignore`. Если он ругается на локальные правки в отслеживаемых файлах,
 значит что-то менялось прямо в коде: посмотрите `git diff`, и либо
 `git stash`, либо перенесите правку в настройки.
+
+### Проверить, что обновление доехало
+
+```bash
+.venv/bin/python -m scripts.check_setup | head -2
+pm2 logs rsvpn-bot --lines 30 | grep Сборка
+```
+
+Обе команды печатают номер сборки. Он же виден в стартовой сводке бота.
+Номер прежний — обновились не туда или перезапустили не тот процесс.
 
 ### Если ставили из архива
 
