@@ -25,12 +25,13 @@ async def manager(event, c, user: dict, settings):
     price = await settings.int('price.device_extra')
     connect_base = await settings.get('link.connect_base')
 
+    # По кнопке в строку: две в ряд обрезаются на телефоне, и «Увеличить на 3
+    # за 225₽» превращается в «Увеличить на…» — не видно ни числа, ни цены.
     kb = InlineKeyboardBuilder()
     for amount in PACKAGES:
-        kb.add(types.InlineKeyboardButton(
-            text=f'Увеличить на {amount} за {amount * price}₽',
+        kb.row(types.InlineKeyboardButton(
+            text=f'{e(f"plus{amount}")} Увеличить на {amount} за {amount * price}₽',
             callback_data=Devices(action='add', value=str(amount)).pack()))
-    kb.adjust(2)
 
     if int(c.users.pick(user, 'vpn.hwidDeviceLimit', 0)) > free_limit:
         kb.row(types.InlineKeyboardButton(
@@ -105,7 +106,7 @@ async def list_devices(call: types.CallbackQuery, c, user: dict, settings, note:
             callback_data=Devices(action='unbind', value=device_token(hwid)).pack()))
     if devices:
         kb.row(types.InlineKeyboardButton(
-            text=f'{e("broom")} Отвязать все ({len(devices)})',
+            text=f'{e("minus")} Отвязать все ({len(devices)})',
             callback_data=Devices(action='unbind_all').pack()))
     await footer(kb, settings, back='devices')
 
@@ -146,13 +147,13 @@ async def ask_unbind_all(call: types.CallbackQuery, c, user: dict, settings):
 
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(
-        text=f'{e("broom")} Да, отвязать все ({count})',
+        text=f'{e("minus")} Да, отвязать все ({count})',
         callback_data=Devices(action='unbind_all_ok').pack()))
     kb.row(types.InlineKeyboardButton(
         text=f'{e("back")} Отмена', callback_data=Devices(action='list').pack()))
 
     await render(call, Screen(
-        text=(f'<b>{e("broom")} Отвязать все устройства</b>\n\n'
+        text=(f'<b>{e("minus")} Отвязать все устройства</b>\n\n'
               f'Будет отвязано устройств: <code>{count}</code>.\n\n'
               '<blockquote>Лимит устройств не изменится — освободятся слоты. '
               'Каждое устройство привяжется заново при следующем подключении, '

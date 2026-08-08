@@ -55,6 +55,7 @@ class Container:
     links: Any = None
     trial: Any = None
     moderation: Any = None
+    discounts: Any = None
     entities: dict = field(default_factory=dict)
 
     def collection(self, name: str):
@@ -86,6 +87,9 @@ class Container:
 
         from app.services.moderation import ModerationService
         self.moderation = ModerationService(self.users, self.settings, vpn=None)
+
+        from app.services.discounts import DiscountService
+        self.discounts = DiscountService(self.settings)
 
         from app.services.trial import TrialService
         self.trial = TrialService(self.users, self.settings, vpn=None)
@@ -284,10 +288,11 @@ class Container:
             container.users, container.payments_repo, container.settings, container=container)
         container.billing = BillingService(
             container.users, container.plans, container.settings,
-            container.vpn, container.topup)
+            container.vpn, container.topup, discounts=container.discounts)
         from app.services.gifts import GiftService
         container.gifts = GiftService(container.users, container.db[names.GIFTS],
-                                      container.plans, container.settings, container.vpn)
+                                      container.plans, container.settings, container.vpn,
+                                      discounts=container.discounts)
         container.trial.vpn = container.vpn
         container.moderation.vpn = container.vpn
         container.promo.vpn = container.vpn
@@ -329,7 +334,7 @@ class Container:
                                      campaign_keyboards(), self.lifeline)
         self.renewal = RenewalService(self.users, self.plans, self.settings, self.vpn,
                                       self.topup, self.lifeline, self.expiry,
-                                      notifier=self.notifier)
+                                      notifier=self.notifier, discounts=self.discounts)
         # ручное продление идёт тем же путём, что и автоматическое
         if self.billing is not None:
             self.billing.renewal = self.renewal

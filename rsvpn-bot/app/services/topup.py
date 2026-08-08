@@ -114,7 +114,6 @@ class TopupService:
             free_devices=await self.settings.int('price.devices_free_limit'),
             topup_bonus_rate=await self.settings.rate('bonus.topup_rate') if bonus_on else 0.0,
             referral_rate=await self.settings.rate('bonus.ref_rate'),
-            sleeping_discount=await self.settings.rate('bonus.sleeping_discount'),
             gateway_fee_rate=await self.settings.rate('pay.fee_rate'),
         )
 

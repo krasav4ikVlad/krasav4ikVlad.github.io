@@ -252,6 +252,17 @@ class FakeCollection:
 
         return FakeResult(matched=1, modified=0 if upserted else 1, upserted_id=upserted)
 
+    async def update_many(self, query, update):
+        """То же обновление ко всем подходящим документам.
+
+        Через update_one по _id: позиционный $ при таком обходе не сработает,
+        но массовые операции его и не используют — там $set и $unset.
+        """
+        ids = [doc['_id'] for doc in self.docs if self._match(doc, query or {})]
+        for doc_id in ids:
+            await self.update_one({'_id': doc_id}, update)
+        return FakeResult(matched=len(ids), modified=len(ids))
+
     @staticmethod
     def _set_path(doc, path, value):
         parts = path.split('.')

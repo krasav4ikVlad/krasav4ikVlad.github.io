@@ -49,6 +49,33 @@ BY_GROUP: dict[str, tuple[str, ...]] = {}
 for _s in SEGMENTS:
     BY_GROUP[_s.group] = BY_GROUP.get(_s.group, ()) + (_s.code,)
 
+
+# ── аудитории: крупные наборы сегментов ─────────────────────────────────────
+# Двадцать два сегмента хороши для автокампаний, но в админке ими неудобно
+# целиться: «всем на триале» — это шесть кодов. Аудитория — один код на
+# понятную группу людей. Один и тот же словарь у рассылки, скидок и сброса
+# триала: иначе «на триале» в трёх местах означало бы три разных набора.
+AUDIENCES: dict[str, tuple[str, tuple[str, ...]]] = {
+    'all': (f'{e("channel")} Всем', ()),
+    'trial': (f'{e("trial")} На триале', BY_GROUP.get('trial', ())),
+    'active': (f'{e("green")} С активной подпиской', BY_GROUP.get('active', ())),
+    'expired': (f'{e("renew")} Истёкшие', BY_GROUP.get('expired', ())),
+    'churned': (f'{e("skull")} Давно ушедшие', BY_GROUP.get('churned', ())),
+    'no_sub': (f'{e("white")} Без подписки и оплат', ('inactive_no_sub',)),
+}
+
+
+def audience_query(audience: str) -> dict:
+    """Фильтр по сегментам для запроса в Mongo. Пустой набор = вся база."""
+    codes = AUDIENCES.get(audience, ('', ()))[1]
+    return {'growth.segment': {'$in': list(codes)}} if codes else {}
+
+
+def audiences_of(segment: str) -> tuple[str, ...]:
+    """В какие аудитории попадает сегмент. 'all' — всегда."""
+    return ('all',) + tuple(code for code, (_, codes) in AUDIENCES.items()
+                            if codes and segment in codes)
+
 # Границы «сколько дней назад истекла подписка» → сегмент.
 # Первый подходящий сверху вниз.
 EXPIRED_BOUNDS: tuple[tuple[float, str], ...] = (

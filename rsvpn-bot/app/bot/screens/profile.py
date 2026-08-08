@@ -43,7 +43,7 @@ def price_line(plan_price: int, days: int, devices_price: int) -> str:
     """
     line = f'<code>{plan_price}₽ за {period_label(days)}</code>'
     if devices_price:
-        line += (f'\n<b>{e("card")} Плата за устройства:</b> '
+        line += (f'\n<b>{e("devices")} Плата за устройства:</b> '
                  f'<code>{devices_price}₽ в месяц</code>')
     return line
 

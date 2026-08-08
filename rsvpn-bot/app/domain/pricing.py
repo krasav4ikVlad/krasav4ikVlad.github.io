@@ -17,13 +17,18 @@ class PricingRules:
     free_devices: int = 2
     topup_bonus_rate: float = 0.0
     referral_rate: float = 0.30
-    sleeping_discount: float = 0.40
     gateway_fee_rate: float = 0.05
 
 
 def devices_price(device_limit: int, rules: PricingRules) -> int:
     """Плата за устройства сверх бесплатного лимита."""
     return max(0, device_limit - rules.free_devices) * rules.device_price
+
+
+def discounted(price: int, rate: float) -> int:
+    """Цена со скидкой. Округление в пользу человека — вниз, до рубля."""
+    rate = min(max(float(rate or 0.0), 0.0), 1.0)
+    return max(0, int(price * (1 - rate)))
 
 
 def subscription_price(plan_price: int, device_limit: int, rules: PricingRules,

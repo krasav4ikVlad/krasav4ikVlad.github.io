@@ -47,7 +47,7 @@ class RenewalReport:
 
 class RenewalService:
     def __init__(self, users, plans, settings, vpn, topup,
-                 lifeline=None, expiry=None, notifier=None):
+                 lifeline=None, expiry=None, notifier=None, discounts=None):
         self.users = users
         self.plans = plans
         self.settings = settings
@@ -56,6 +56,7 @@ class RenewalService:
         self.lifeline = lifeline
         self.expiry = expiry
         self.notifier = notifier
+        self.discounts = discounts
 
     async def run(self) -> RenewalReport:
         report = RenewalReport()
@@ -70,7 +71,10 @@ class RenewalService:
 
         async for user in self.users.iterate(
             {'vpn.shortUuid': {'$ne': ''}, 'vpn.expireAt': {'$lte': border}},
-            {'user_data.user_id': 1, 'info.balance': 1, 'vpn': 1},
+            # growth.segment — по нему считается скидка аудитории; без него
+            # автопродление списывало бы полную цену там, где на экране акция
+            {'user_data.user_id': 1, 'info.balance': 1, 'vpn': 1,
+             'growth.segment': 1},
         ):
             report.checked += 1
             expires = parse_dt(self.users.pick(user, 'vpn.expireAt'))
@@ -112,7 +116,10 @@ class RenewalService:
         # Только цена тарифа. Плату за доп. устройства берёт DeviceBillingService
         # раз в 30 дней со своих пакетов — прибавлять её здесь значит списать
         # за устройства дважды, а на дневном тарифе ещё и каждый день.
-        price = int(plan['price'])
+        # Скидка аудитории действует и на автопродление: иначе цена на экране
+        # и цена в списании разошлись бы ровно на размер акции.
+        price = (await self.discounts.price(user, plan) if self.discounts
+                 else int(plan['price']))
 
         # 1. Деньги. Проверка баланса живёт внутри запроса, поэтому параллельная
         #    покупка не может увести баланс в минус, а её результат — потеряться.

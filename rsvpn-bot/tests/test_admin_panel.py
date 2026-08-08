@@ -270,3 +270,22 @@ async def test_broadcast_reaches_users_with_custom_emoji(admin_env):
 
     assert sent['ok'] is True
     assert '<tg-emoji' in session.calls[-1][1]
+
+
+async def test_trial_reset_from_the_panel(admin_env):
+    """Кнопка в админке действительно снимает метку, а не только рисует экран."""
+    from app.core.time import now
+
+    dp, bot, session, container = admin_env
+    await container.users.create({'user_data': {'user_id': 50},
+                                  'growth': {'trial_claimed_at': now(),
+                                             'segment': 'expired_3d'}})
+
+    await dp.feed_update(bot, callback(Adm(act='trial').pack()))
+    assert 'Сброс бесплатного периода' in session.last_text
+
+    await dp.feed_update(bot, callback(Adm(act='trask', a='expired').pack()))
+    assert 'Сбросим у <code>1</code>' in session.last_text
+
+    await dp.feed_update(bot, callback(Adm(act='trgo', a='expired').pack()))
+    assert 'trial_claimed_at' not in (await container.users.get(50))['growth']

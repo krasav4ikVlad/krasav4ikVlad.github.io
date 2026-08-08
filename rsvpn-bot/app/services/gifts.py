@@ -37,13 +37,14 @@ class GiftResult:
 
 
 class GiftService:
-    def __init__(self, users, gifts, plans, settings, vpn, notifier=None):
+    def __init__(self, users, gifts, plans, settings, vpn, notifier=None, discounts=None):
         self.users = users
         self.gifts = gifts
         self.plans = plans
         self.settings = settings
         self.vpn = vpn
         self.notifier = notifier
+        self.discounts = discounts
 
     async def ensure_indexes(self) -> None:
         from app.repositories.base import Repository
@@ -89,12 +90,17 @@ class GiftService:
         if claimed.modified_count != 1:
             return GiftResult(False, 'used')
 
-        sender = await self.users.get(from_user_id, {'info.balance': 1, 'info.gifts': 1})
+        sender = await self.users.get(from_user_id,
+                                      {'info.balance': 1, 'info.gifts': 1,
+                                       'growth.segment': 1})
         if not sender:
             await self._release(gift_id)
             return GiftResult(False, 'no_sender')
 
-        price = int(plan['price'])
+        # Подарок — та же покупка тарифа, и скидка берётся по дарителю:
+        # платит он, а получателя в момент списания может ещё не быть в базе.
+        price = (await self.discounts.price(sender, plan) if self.discounts
+                 else int(plan['price']))
         paid_with_free = await self._take_free_gift(from_user_id, plan_code)
 
         if not paid_with_free and not await self.users.charge(

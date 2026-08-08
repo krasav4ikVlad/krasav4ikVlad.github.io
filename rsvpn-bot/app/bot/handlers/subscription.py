@@ -25,11 +25,15 @@ from app.content.emoji import e
 
 
 async def show_plans(event, c, user: dict, settings):
-    builder = await plans_keyboard(c.plans, c.users.pick(user, 'info.balance', 0))
+    discount = await c.discounts.rate(user)
+    builder = await plans_keyboard(c.plans, c.users.pick(user, 'info.balance', 0),
+                                   discount=discount)
     await footer(builder, settings, back='profile')
 
+    notice = await c.discounts.notice(user)
     await render(event, Screen(
-        text=profile_caption(user) + texts.render('screen.subscription.empty'),
+        text=(profile_caption(user) + texts.render('screen.subscription.empty')
+              + (f'\n\n<b>{e("discount")} {notice}</b>' if notice else '')),
         markup=builder.as_markup(),
         image=c.media('subscription'),
     ))
@@ -46,7 +50,8 @@ async def change_period(event, c, user: dict, settings, note: str = ''):
     vpn = user.get('vpn') or {}
     current = await c.plans.by_days(vpn.get('period') or 0)
     kb = await plans_keyboard(c.plans, 0, action='change',
-                              current=(current or {}).get('code', ''))
+                              current=(current or {}).get('code', ''),
+                              discount=await c.discounts.rate(user))
     await footer(kb, settings, back='my_subscription')
 
     text = (profile_caption(user, f'{e("calendar")} Длительность подписки')
@@ -69,9 +74,11 @@ async def set_period(call: types.CallbackQuery, callback_data: Plan, c, user: di
 
     await c.users.set_vpn(call.from_user.id, {'period': int(plan['days'])})
     await call.answer(f'Длительность: {plan["title"]} {e("ok")}')
-    await change_period(call, c, await c.users.get(call.from_user.id), settings,
+    fresh = await c.users.get(call.from_user.id)
+    await change_period(call, c, fresh, settings,
                         note=f'Готово. При следующем продлении подписка продлится '
-                             f'на {period_label(int(plan["days"]))} за {plan["price"]}₽. '
+                             f'на {period_label(int(plan["days"]))} за '
+                             f'{await c.discounts.price(fresh, plan)}₽. '
                              f'Текущая дата окончания не меняется.')
 
 

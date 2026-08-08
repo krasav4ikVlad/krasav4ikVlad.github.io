@@ -117,10 +117,12 @@ async def env(container):
     container.vpn = FakeVpn()
     container.topup = TopupService(container.users, container.payments_repo, container.settings)
     container.billing = BillingService(container.users, container.plans, container.settings,
-                                       container.vpn, container.topup)
+                                       container.vpn, container.topup,
+                                       discounts=container.discounts)
     container.devices = DeviceBillingService(container.users, container.settings, container.vpn)
     container.gifts = GiftService(container.users, container.db['gifts'], container.plans,
-                                  container.settings, container.vpn)
+                                  container.settings, container.vpn,
+                                  discounts=container.discounts)
     container.links = LinkEncryptor(FakeCryptoHttp())
     container.trial.vpn = container.vpn
     container.moderation.vpn = container.vpn
@@ -599,7 +601,8 @@ async def test_broadcast_refuses_an_empty_message(env):
 
 
 async def test_broadcast_reaches_only_the_chosen_segment(env):
-    from app.admin.broadcast import _query, _run
+    from app.admin.broadcast import _run
+    from app.domain.segments import audience_query
 
     dp, bot, session, c = env
     await c.settings.set('campaign.broadcast_delay_ms', 0)
@@ -610,7 +613,7 @@ async def test_broadcast_reaches_only_the_chosen_segment(env):
     session.calls.clear()
     msg = Message(message_id=9, date=datetime.now(), chat=CHAT, text='отчёт',
                   from_user=TG_USER).as_(bot)
-    await _run(c, bot, msg, _query('expired'), 'Возвращайтесь!')
+    await _run(c, bot, msg, audience_query('expired'), 'Возвращайтесь!')
 
     delivered = [text for name, text in session.calls if text == 'Возвращайтесь!']
     assert len(delivered) == 2                       # 11 и 12, но не 13
@@ -1149,3 +1152,49 @@ async def test_plain_ban_does_not_call_the_panel(env):
 
     assert statuses == []
     assert '/hardban 900' in session.last_text      # подсказка, как ужесточить
+
+
+def last_markup(session):
+    """Последняя непустая клавиатура: ответ на callback уходит без неё."""
+    return next(m for m in reversed(session.markups) if m is not None)
+
+
+async def test_device_buttons_go_one_per_row(env):
+    """Две кнопки в ряд обрезаются на телефоне: «Увеличить на 3 за 225₽»
+    превращается в «Увеличить на…», и не видно ни числа, ни цены."""
+    from app.bot.callbacks import Devices
+    from app.bot.handlers.devices import PACKAGES
+    from app.content.emoji import e
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    session.markups.clear()
+    await dp.feed_update(bot, callback(Menu(screen='devices').pack()))
+
+    rows = last_markup(session).inline_keyboard
+    add_rows = [row for row in rows
+                if any('Увеличить' in button.text for button in row)]
+
+    assert len(add_rows) == len(PACKAGES)
+    assert all(len(row) == 1 for row in add_rows), 'кнопки снова встали парами'
+    for amount, row in zip(PACKAGES, add_rows):
+        assert row[0].text.startswith(e(f'plus{amount}')), row[0].text
+    assert Devices(action='add', value='1').pack() == add_rows[0][0].callback_data
+
+
+async def test_unbind_all_is_marked_with_a_minus(env):
+    from app.bot.callbacks import Devices
+    from app.content.emoji import e
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    c.vpn.devices = lambda uuid: __import__('asyncio').sleep(
+        0, result=[{'hwid': 'HW-1', 'deviceModel': 'iPhone'}])
+    await c.users.set_vpn(5, {'uuid': 'u', 'shortUuid': 's'})
+
+    session.markups.clear()
+    await dp.feed_update(bot, callback(Devices(action='list').pack()))
+
+    labels = [button.text for row in last_markup(session).inline_keyboard
+              for button in row]
+    assert any(label.startswith(f'{e("minus")} Отвязать все') for label in labels), labels

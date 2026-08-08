@@ -16,7 +16,8 @@ log = logging.getLogger(__name__)
 
 
 class BillingService:
-    def __init__(self, users, plans, settings, vpn, topup, notifier=None, renewal=None):
+    def __init__(self, users, plans, settings, vpn, topup, notifier=None, renewal=None,
+                 discounts=None):
         self.users = users
         self.plans = plans
         self.settings = settings
@@ -25,6 +26,13 @@ class BillingService:
         self.notifier = notifier
         # общий сценарий продления: проставляется в Container.attach_bot
         self.renewal = renewal
+        self.discounts = discounts
+
+    async def price_for(self, user: dict | None, plan: dict) -> int:
+        """Цена тарифа для этого человека — со скидкой его аудитории."""
+        if self.discounts is None:
+            return int(plan['price'])
+        return await self.discounts.price(user, plan)
 
     async def buy(self, user_id: int, plan_code: str) -> dict:
         if not await self.settings.flag('features.buy_enabled'):
@@ -38,7 +46,9 @@ class BillingService:
         balance = self.users.pick(user or {}, 'info.balance', 0)
         # Только цена тарифа: доп. устройства оплачиваются своими пакетами
         # в DeviceBillingService, у них отдельный тридцатидневный цикл.
-        price = int(plan['price'])
+        # Скидка аудитории — здесь же, чтобы списалось ровно то, что человек
+        # видел на кнопке.
+        price = await self.price_for(user, plan)
 
         if balance < price:
             raise NotEnoughBalance(need=price, have=balance)
@@ -107,13 +117,14 @@ class BillingService:
         expires = parse_dt(vpn.get('expireAt')) or now()
         status = await self.renewal.renew(user, expires)
 
+        price = await self.price_for(user, plan)
         if status == 'no_funds':
             balance = int(self.users.pick(user or {}, 'info.balance', 0) or 0)
-            raise NotEnoughBalance(need=int(plan['price']), have=balance)
+            raise NotEnoughBalance(need=price, have=balance)
         if status == 'unknown_plan':
             raise PlanUnavailable
         if status != 'renewed':
             raise VpnPanelError(status)
 
-        return {'plan': plan, 'price': int(plan['price']),
+        return {'plan': plan, 'price': price,
                 'subscription': ((await self.users.get(user_id)) or {}).get('vpn', {})}

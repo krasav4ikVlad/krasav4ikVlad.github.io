@@ -30,7 +30,7 @@ rsvpn-bot/
 │   ├── domain/                  # чистая логика: ни БД, ни aiogram, ни await
 │   │   ├── pricing.py           # вся денежная арифметика
 │   │   ├── payout_methods.py    # типы реквизитов таблицей + маскирование карты
-│   │   └── segments.py          # границы сегментов пользователей в одной таблице
+│   │   └── segments.py          # сегменты и аудитории в одной таблице
 │   │
 │   ├── repositories/            # единственные, кто знает структуру документов
 │   │   ├── base.py              # общий доступ + pick() для вложенных путей
@@ -44,7 +44,8 @@ rsvpn-bot/
 │   │   ├── devices.py           # доп. устройства (перенести из utils)
 │   │   ├── notifier.py          # единственный отправитель в админ-чат
 │   │   ├── moderation.py        # блокировка пользователей
-│   │   ├── trial.py             # бесплатный период за подписку на канал
+│   │   ├── trial.py             # бесплатный период + сброс из админки
+│   │   ├── discounts.py         # скидки по аудиториям: одна цена на всё
 │   │   ├── payouts.py           # реквизиты + заявки на вывод
 │   │   ├── promo.py, gifts.py, referrals.py, analytics.py
 │   │
@@ -82,6 +83,7 @@ rsvpn-bot/
 │   │   ├── stats.py             # статистика (одна реализация)
 │   │   ├── payouts.py           # решения по заявкам на вывод
 │   │   ├── moderation.py        # /ban, /unban и список заблокированных
+│   │   ├── trial.py             # сброс бесплатного периода по аудиториям
 │   │   └── broadcast.py         # ручные рассылки поверх того же движка
 │   │
 │   ├── campaigns/               # автоворонки
@@ -101,7 +103,7 @@ rsvpn-bot/
 │   ├── m0001_indexes.py
 │   └── m0002_transactions_format.py
 ├── scripts/seed_demo.py
-├── tests/                       # 392 теста, идут без Mongo и без Telegram
+├── tests/                       # 435 тестов, идут без Mongo и без Telegram
 │   ├── conftest.py              # заглушки Mongo и Bot API
 │   ├── test_pricing.py test_settings.py test_users_repo.py
 │   ├── test_campaigns.py test_texts.py test_admin_panel.py
@@ -154,7 +156,7 @@ handlers → services → repositories → Mongo
 
 ## Что уже работает в скелете
 
-`pytest -q` → **392 passed**. Тесты идут на заглушках Mongo и Telegram
+`pytest -q` → **435 passed**. Тесты идут на заглушках Mongo и Telegram
 (`tests/conftest.py`), включая сценарии, которые иначе проверяются только на
 живых пользователях:
 

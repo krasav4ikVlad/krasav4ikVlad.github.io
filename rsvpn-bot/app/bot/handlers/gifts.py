@@ -13,6 +13,7 @@ from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import gifts_block, profile_caption
 from app.content.emoji import e
+from app.domain.pricing import discounted
 
 
 async def gift_labels(plans_repo) -> dict[str, str]:
@@ -34,9 +35,12 @@ async def gifts_menu(call: types.CallbackQuery, c, user: dict, settings):
     )
 
     kb = InlineKeyboardBuilder()
+    # Скидка дарителя — она же и спишется: платит он, а не получатель
+    discount = await c.discounts.rate(user)
     for plan in await c.plans.all():
         free = int(owned.get(plan['code'], 0) or 0)
-        mark = f' (бесплатно: {free})' if free else f' — {plan["price"]}₽'
+        price = discounted(int(plan['price']), discount)
+        mark = f' (бесплатно: {free})' if free else f' — {price}₽'
         kb.row(types.InlineKeyboardButton(
             text=f'{e("gift")} {plan["title"]}{mark}',
             switch_inline_query=plan['code']))
@@ -59,6 +63,7 @@ async def inline_gifts(query: types.InlineQuery, c, settings):
 
     username = await settings.get('link.bot_username')
     wanted = (query.query or '').strip().lower()
+    sender = await c.users.get(query.from_user.id, {'growth.segment': 1})
     results = []
 
     for plan in await c.plans.all():
@@ -67,6 +72,7 @@ async def inline_gifts(query: types.InlineQuery, c, settings):
             continue
 
         gift_id = await c.gifts.pending(query.from_user.id, plan['code'])
+        price = await c.discounts.price(sender, plan)
         kb = InlineKeyboardBuilder()
         kb.row(types.InlineKeyboardButton(
             text=f'{e("gift")} Принять подарок',
@@ -75,7 +81,7 @@ async def inline_gifts(query: types.InlineQuery, c, settings):
         results.append(types.InlineQueryResultArticle(
             id=hashlib.md5(f'{plan["code"]}{gift_id}'.encode()).hexdigest(),
             title=f'{e("gift")} Подарить {plan["title"]}',
-            description=f'С баланса спишется {plan["price"]}₽ после принятия',
+            description=f'С баланса спишется {price}₽ после принятия',
             input_message_content=types.InputTextMessageContent(
                 message_text=(f'<b>{e("gift")} {query.from_user.full_name} дарит вам '
                               f'RS VPN на {plan["days"]} дней!</b>\n\n'

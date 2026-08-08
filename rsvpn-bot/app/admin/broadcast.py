@@ -30,21 +30,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Admin as Adm
 from app.campaigns.sender import Sender
-from app.domain.segments import BY_GROUP, SEGMENTS
+from app.domain.segments import AUDIENCES, SEGMENTS, audience_query
 from app.content.emoji import e
 
 log = logging.getLogger(__name__)
-
-# Готовые наборы сегментов: то, что в старой админке было кнопками
-# «Всем / активным / истёкшим / без подписки»
-AUDIENCES: dict[str, tuple[str, tuple[str, ...]]] = {
-    'all': (f'{e("channel")} Всем', ()),
-    'trial': (f'{e("trial")} На триале', BY_GROUP.get('trial', ())),
-    'active': (f'{e("green")} С активной подпиской', BY_GROUP.get('active', ())),
-    'expired': (f'{e("renew")} Истёкшие', BY_GROUP.get('expired', ())),
-    'churned': (f'{e("skull")} Давно ушедшие', BY_GROUP.get('churned', ())),
-    'no_sub': (f'{e("white")} Без подписки и оплат', ('inactive_no_sub',)),
-}
 
 
 class Broadcast(StatesGroup):
@@ -59,14 +48,8 @@ def _btn(text: str, act: str, a: str = '', b: str = '') -> types.InlineKeyboardB
     return types.InlineKeyboardButton(text=text, callback_data=Adm(act=act, a=a, b=b).pack())
 
 
-def _query(audience: str) -> dict:
-    """Фильтр по сегментам. Пустой набор = вся база."""
-    codes = AUDIENCES.get(audience, ('', ()))[1]
-    return {'growth.segment': {'$in': list(codes)}} if codes else {}
-
-
 async def _count(c, audience: str) -> int:
-    return await c.users.col.count_documents(_query(audience))
+    return await c.users.col.count_documents(audience_query(audience))
 
 
 # ── выбор аудитории ─────────────────────────────────────────────────────────
@@ -156,7 +139,7 @@ async def start_sending(call: types.CallbackQuery, state: FSMContext, c, setting
 
     await state.clear()
     audience = data.get('audience', 'all')
-    query = ({'growth.segment': audience} if data.get('one') else _query(audience))
+    query = ({'growth.segment': audience} if data.get('one') else audience_query(audience))
 
     await call.message.edit_text(
         f'<b>{e("broadcast")} Рассылка запущена</b>\n\nПолучателей: <code>{data.get("total", 0)}</code>\n'

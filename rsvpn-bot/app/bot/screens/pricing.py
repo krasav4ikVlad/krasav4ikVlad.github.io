@@ -15,10 +15,16 @@ from app.domain.pricing import devices_price
 
 
 async def price_line_for(c, user: dict) -> str:
-    """«150₽ за месяц + 225₽/мес за устройства»."""
+    """«150₽ за месяц + 225₽/мес за устройства».
+
+    Цена тарифа — со скидкой аудитории: на этом экране человек читает, сколько
+    с него спишут при следующем продлении, и полная цена здесь была бы враньём.
+    """
     vpn = user.get('vpn') or {}
     days = int(vpn.get('period') or 0)
     plan = await c.plans.by_days(days)
     rules = await c.topup.rules()
-    return price_line(int(plan['price']) if plan else 0, days,
+    price = (await c.discounts.price(user, plan)) if (plan and c.discounts) else (
+        int(plan['price']) if plan else 0)
+    return price_line(price, days,
                       devices_price(int(vpn.get('hwidDeviceLimit') or 0), rules))
