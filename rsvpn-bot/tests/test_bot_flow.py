@@ -601,7 +601,6 @@ async def test_broadcast_refuses_an_empty_message(env):
 
 
 async def test_broadcast_reaches_only_the_chosen_segment(env):
-    from app.admin.broadcast import _run
     from app.domain.segments import audience_query
 
     dp, bot, session, c = env
@@ -611,9 +610,7 @@ async def test_broadcast_reaches_only_the_chosen_segment(env):
                               'growth': {'segment': segment}})
 
     session.calls.clear()
-    msg = Message(message_id=9, date=datetime.now(), chat=CHAT, text='отчёт',
-                  from_user=TG_USER).as_(bot)
-    await _run(c, bot, msg, audience_query('expired'), 'Возвращайтесь!')
+    await run_broadcast(c, bot, audience_query('expired'), 'Возвращайтесь!')
 
     delivered = [text for name, text in session.calls if text == 'Возвращайтесь!']
     assert len(delivered) == 2                       # 11 и 12, но не 13
@@ -1205,10 +1202,20 @@ async def test_unbind_all_is_marked_with_a_minus(env):
 # Раньше админ видел «рассылка запущена» и потом молчание на несколько минут:
 # понять, идёт она вообще или зависла, было нельзя.
 
+async def run_broadcast(c, bot, query: dict, text: str, job_id: str = 'job-1'):
+    """Завести задание и прогнать его — как это делает start_sending."""
+    from app.admin.broadcast import _recipients, _run
+
+    await c.db['broadcasts'].insert_one({
+        '_id': job_id, 'text': text, 'recipients': await _recipients(c, query),
+        'position': 0, 'sent': 0, 'failed': 0, 'status': 'running',
+        'chat_id': CHAT.id, 'message_id': 9})
+    await _run(c, bot, job_id)
+    return await c.db['broadcasts'].find_one({'_id': job_id})
+
+
 async def broadcast_env(env, users: int, step: int, fail_every: int = 0):
     """База из N человек и рассылка по ним. Возвращает правки сообщения."""
-    from app.admin.broadcast import _run
-
     dp, bot, session, c = env
     await c.settings.set('campaign.broadcast_delay_ms', 0)
     await c.settings.set('campaign.broadcast_progress_step', step)
@@ -1235,10 +1242,8 @@ async def broadcast_env(env, users: int, step: int, fail_every: int = 0):
 
         bot.session.make_request = flaky
 
-    msg = Message(message_id=9, date=datetime.now(), chat=CHAT, text='статус',
-                  from_user=TG_USER).as_(bot)
     session.calls.clear()
-    await _run(c, bot, msg, {'growth.segment': 'expired_3d'}, 'Привет!', users)
+    await run_broadcast(c, bot, {'growth.segment': 'expired_3d'}, 'Привет!')
 
     return [text for name, text in session.calls if name == 'EditMessageText']
 
@@ -1286,8 +1291,6 @@ async def test_zero_step_turns_the_counter_off(env):
 async def test_a_broken_edit_does_not_stop_the_broadcast(env):
     """Правка сообщения упирается в лимит Telegram чаще, чем отправка.
     Рассылка идёт ради писем, а не ради отчёта."""
-    from app.admin.broadcast import _run
-
     dp, bot, session, c = env
     await c.settings.set('campaign.broadcast_delay_ms', 0)
     await c.settings.set('campaign.broadcast_progress_step', 10)
@@ -1303,11 +1306,127 @@ async def test_a_broken_edit_does_not_stop_the_broadcast(env):
         return await original(bot_, method, timeout)
 
     bot.session.make_request = no_edits
-    msg = Message(message_id=9, date=datetime.now(), chat=CHAT, text='статус',
-                  from_user=TG_USER).as_(bot)
     session.calls.clear()
 
-    await _run(c, bot, msg, {'growth.segment': 'expired_3d'}, 'Привет!', 30)
+    await run_broadcast(c, bot, {'growth.segment': 'expired_3d'}, 'Привет!')
 
     delivered = [t for name, t in session.calls if t == 'Привет!']
     assert len(delivered) == 30, 'письма должны уйти все'
+
+
+# ── рассылка, которая оборвалась ────────────────────────────────────────────
+#
+# «Остановилась и не завершилась» — это два разных случая, и оба раньше
+# выглядели одинаково: счётчик замер, лог пуст, отчёта нет.
+
+async def test_a_crash_is_visible_and_resumable(env):
+    """Падение посреди отправки: раньше исключение оседало внутри Task и
+    никуда не попадало — счётчик просто замирал.
+
+    Ломаем запись состояния, а не отправку: ошибки отправки Sender гасит
+    сам (заблокировавший бота — норма), а вот отказ базы прорастает наружу.
+    """
+    dp, bot, session, c = env
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    await c.settings.set('campaign.broadcast_progress_step', 5)
+    for user_id in range(300, 320):
+        await c.users.create({'user_data': {'user_id': user_id},
+                              'growth': {'segment': 'expired_3d'}})
+
+    from app.admin.broadcast import _recipients, _run
+
+    recipients = await _recipients(c, {'growth.segment': 'expired_3d'})
+    await c.db['broadcasts'].insert_one({
+        '_id': 'job-1', 'text': 'Привет!', 'recipients': recipients,
+        'position': 0, 'sent': 0, 'failed': 0, 'status': 'running',
+        'chat_id': CHAT.id, 'message_id': 9})
+
+    saves = {'n': 0}
+    original = c.db['broadcasts'].update_one
+
+    async def flaky_save(*args, **kwargs):
+        saves['n'] += 1
+        if saves['n'] == 2:          # первая отметка прошла, вторая — нет
+            raise RuntimeError('база отвалилась')
+        return await original(*args, **kwargs)
+
+    c.db['broadcasts'].update_one = flaky_save
+    session.calls.clear()
+
+    with pytest.raises(RuntimeError):
+        await _run(c, bot, 'job-1')
+
+    c.db['broadcasts'].update_one = original
+    job = await c.db['broadcasts'].find_one({'_id': 'job-1'})
+    # обработчик ошибки дописывает настоящую позицию, а не последнюю удачную
+    assert job['status'] == 'failed'
+    assert job['position'] == 10, 'позиция не сохранена — продолжить неоткуда'
+
+    edits = [t for name, t in session.calls if name == 'EditMessageText']
+    assert 'прервана' in edits[-1]
+
+
+async def test_resume_continues_from_where_it_stopped(env):
+    """Продолжение не начинает всё заново: повторно уйдёт не больше шага."""
+    dp, bot, session, c = env
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    await c.settings.set('campaign.broadcast_progress_step', 10)
+    for user_id in range(400, 430):
+        await c.users.create({'user_data': {'user_id': user_id},
+                              'growth': {'segment': 'expired_3d'}})
+
+    from app.admin.broadcast import _recipients, _run
+
+    recipients = await _recipients(c, {'growth.segment': 'expired_3d'})
+    await c.db['broadcasts'].insert_one({
+        '_id': 'job-2', 'text': 'Привет!', 'recipients': recipients,
+        'position': 20, 'sent': 18, 'failed': 2, 'status': 'running',
+        'chat_id': CHAT.id, 'message_id': 9})
+
+    session.calls.clear()
+    await _run(c, bot, 'job-2')
+
+    delivered = [t for name, t in session.calls if t == 'Привет!']
+    assert len(delivered) == 10, 'должны уйти только оставшиеся десять'
+
+    job = await c.db['broadcasts'].find_one({'_id': 'job-2'})
+    assert job['status'] == 'done' and job['sent'] == 28
+
+
+async def test_restart_marks_the_broadcast_interrupted(env):
+    """Задача живёт в памяти: перезапуск бота обрывает её без следов.
+    Отметка при старте — единственный способ об этом узнать."""
+    from app.admin.broadcast import mark_interrupted
+
+    dp, bot, session, c = env
+    await c.db['broadcasts'].insert_one({
+        '_id': 'job-3', 'text': 'x', 'recipients': [1, 2, 3],
+        'position': 1, 'sent': 1, 'failed': 0, 'status': 'running',
+        'chat_id': CHAT.id, 'message_id': 9})
+
+    interrupted = await mark_interrupted(c)
+
+    assert [job['_id'] for job in interrupted] == ['job-3']
+    assert (await c.db['broadcasts'].find_one({'_id': 'job-3'}))['status'] == 'interrupted'
+
+
+async def test_a_finished_broadcast_is_not_touched_on_restart(env):
+    from app.admin.broadcast import mark_interrupted
+
+    dp, bot, session, c = env
+    await c.db['broadcasts'].insert_one({'_id': 'job-4', 'status': 'done'})
+
+    assert await mark_interrupted(c) == []
+
+
+async def test_recipients_are_read_before_sending(env):
+    """Курсор, открытый на всё время отправки, сервер закрывает по таймауту —
+    именно так рассылка обрывалась на середине. Список читается заранее."""
+    from app.admin.broadcast import _recipients
+
+    dp, bot, session, c = env
+    for user_id in range(500, 505):
+        await c.users.create({'user_data': {'user_id': user_id},
+                              'growth': {'segment': 'expired_3d'}})
+
+    assert await _recipients(c, {'growth.segment': 'expired_3d'}) == list(range(500, 505))

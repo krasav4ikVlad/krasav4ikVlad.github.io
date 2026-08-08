@@ -71,6 +71,18 @@ async def main() -> None:
         log.warning('планировщик выключен (SCHEDULER_ENABLED=0): '
                     'списаний и кампаний не будет')
 
+    # Рассылка живёт в памяти процесса, поэтому перезапуск (в том числе
+    # обычный деплой) обрывает её. Без отметки она навсегда осталась бы
+    # «идущей», а админ ждал бы отчёта, которого не будет.
+    from app.admin.broadcast import mark_interrupted
+
+    for job in await mark_interrupted(container):
+        await container.notify(
+            bot, 'campaigns',
+            f'Рассылка прервана перезапуском: отправлено '
+            f'{job.get("position", 0)} из {len(job.get("recipients") or [])}. '
+            f'Продолжить — кнопкой под её сообщением.')
+
     await bot.set_my_commands(COMMANDS)
     await bot.delete_webhook(drop_pending_updates=False)
     log.info('бот запущен')

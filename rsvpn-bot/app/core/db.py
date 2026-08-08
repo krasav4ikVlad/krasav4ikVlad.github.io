@@ -31,6 +31,8 @@ CAMPAIGN_RUNS = 'campaign_runs'
 MIGRATIONS = 'migrations'
 # отметки «что и когда отработало», см. app/admin/health.py
 JOB_RUNS = 'job_runs'
+# состояние ручных рассылок: см. app/admin/broadcast.py
+BROADCASTS = 'broadcasts'
 
 PAYMENTS = 'payments'
 PAYMENT_WEBHOOKS = 'payments_webhooks'
