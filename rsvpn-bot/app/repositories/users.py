@@ -143,10 +143,26 @@ class UsersRepository(Repository):
 
     # ── логи действий ───────────────────────────────────────────────────────
     async def log(self, user_id: int, action: str, details: str = '') -> None:
-        await self.col.update_one(
-            {'user_data.user_id': user_id},
-            {'$push': {'logs': {
-                '$each': [{'action': action, 'details': details, 'dt': datetime.now()}],
-                '$slice': -350,
-            }}},
-        )
+        """История действий человека — в его же документе, последние 350.
+
+        Именно в документе, а не отдельной коллекцией: поддержке нужна
+        история конкретного человека, и она читается тем же запросом, что
+        и всё остальное про него. Ограничение сверху обязательно — без
+        него активный пользователь за год раздувает документ до предела
+        Mongo в 16 МБ, и тогда перестаёт работать вообще всё, включая
+        списание баланса.
+
+        Ошибка записи гасится: история полезна, но ради неё нельзя ронять
+        то действие, которое она описывает. Зато она видна в логе.
+        """
+        try:
+            await self.col.update_one(
+                {'user_data.user_id': user_id},
+                {'$push': {'logs': {
+                    '$each': [{'action': action, 'details': details, 'dt': now()}],
+                    '$slice': -350,
+                }}},
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                'история %s не записана: %s', user_id, exc)

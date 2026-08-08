@@ -15,6 +15,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.admin import broadcast
 from app.admin import diag as admin_diag
+from app.admin import history as admin_history
 from app.admin import moderation as admin_moderation
 from app.admin import payouts as admin_payouts
 from app.admin import trial as admin_trial
@@ -442,4 +443,5 @@ def create_router(admin_ids) -> Router:
     admin_trial.register(router)
     admin_wipe.register(router)
     admin_diag.register(router)
+    admin_history.register(router)
     return router

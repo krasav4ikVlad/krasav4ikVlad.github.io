@@ -540,3 +540,62 @@ async def test_empty_blocked_screen_has_no_clear_button(admin_env):
     labels = [b.text for row in session.markups[-1].inline_keyboard for b in row]
 
     assert not any('Очистить' in label for label in labels), labels
+
+
+async def test_history_shows_actions_and_money(admin_env):
+    """Оператору нужны обе стороны сразу: и нажатия, и движения денег."""
+    from app.core.time import now
+
+    dp, bot, session, container = admin_env
+    await container.users.create({
+        'user_data': {'user_id': 950, 'username': 'ivan'},
+        'info': {'balance': 300,
+                 'transactions': [{'amount': -150, 'dt': now(),
+                                   'description': 'Покупка подписки «1 месяц»'}]},
+        'logs': [{'action': 'кнопка plan:buy:1month', 'details': '', 'dt': now()}]})
+
+    await dp.feed_update(bot, message('/history 950'))
+    text = session.last_text
+
+    assert '@ivan' in text
+    assert '−150₽  Покупка подписки «1 месяц»' in text
+    assert 'кнопка plan:buy:1month' in text
+
+
+async def test_history_understands_old_transactions(admin_env):
+    """В базе три формата транзакций разом — старый список, новый словарь и
+    промо-запись. Оператор не должен видеть пустые строки."""
+    from datetime import datetime
+
+    dp, bot, session, container = admin_env
+    await container.users.create({
+        'user_data': {'user_id': 951},
+        'info': {'balance': 0, 'transactions': [
+            [50, datetime.now(), 'Пополнение картой', 'txid'],
+            {'type': 'promo_balance', 'amount': 8, 'code': 'SORRY8',
+             'created_at': datetime.now(), 'comment': 'Активация промокода SORRY8'},
+        ]}})
+
+    await dp.feed_update(bot, message('/history 951'))
+    text = session.last_text
+
+    assert '+50₽  Пополнение картой' in text
+    assert '+8₽  Активация промокода SORRY8' in text
+
+
+async def test_history_explains_an_empty_journal(admin_env):
+    dp, bot, session, container = admin_env
+    await container.users.create({'user_data': {'user_id': 952}, 'logs': []})
+
+    await dp.feed_update(bot, message('/history 952'))
+
+    assert 'пусто' in session.last_text
+
+
+async def test_history_finds_by_username(admin_env):
+    dp, bot, session, container = admin_env
+    await container.users.create({'user_data': {'user_id': 953, 'username': 'petya'}})
+
+    await dp.feed_update(bot, message('/history @petya'))
+
+    assert '953' in session.last_text

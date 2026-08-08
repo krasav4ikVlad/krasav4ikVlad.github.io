@@ -64,7 +64,17 @@ def what(event) -> str:
 
 class ActionLogMiddleware(BaseMiddleware):
     """Внешний middleware: ставится до фильтров, поэтому видит и то, что
-    не дошло ни до одного хендлера."""
+    не дошло ни до одного хендлера.
+
+    Пишет в два места, и оба нужны для разного. В stdout (его собирает pm2) —
+    чтобы grep по id давал сплошную ленту вперемешку с денежными событиями
+    и ошибками сервисов. В документ пользователя — чтобы оператор открыл
+    карточку человека и увидел его последние шаги, не имея доступа к
+    серверу вовсе.
+    """
+
+    def __init__(self, container=None):
+        self.container = container
 
     async def __call__(self, handler, event, data):
         started = time.monotonic()
@@ -74,10 +84,24 @@ class ActionLogMiddleware(BaseMiddleware):
         except Exception as exc:
             log.warning('%s %s  ОШИБКА %s: %s  (%s мс)', who(user), what(event),
                         type(exc).__name__, exc, self._ms(started))
+            await self._remember(user, event, f'ошибка: {type(exc).__name__}')
             raise
 
         log.info('%s %s  (%s мс)', who(user), what(event), self._ms(started))
+        await self._remember(user, event)
         return result
+
+    async def _remember(self, user, event, note: str = '') -> None:
+        """Запись в историю пользователя. Отдельная запись в базу на каждое
+        нажатие — цена вопроса, поэтому её можно выключить настройкой."""
+        if self.container is None or user is None:
+            return
+        try:
+            if not await self.container.settings.flag('log.actions_to_db'):
+                return
+            await self.container.users.log(user.id, what(event), note)
+        except Exception as exc:      # история не должна мешать работе бота
+            log.debug('история не записана: %s', exc)
 
     @staticmethod
     def _ms(started: float) -> int:
