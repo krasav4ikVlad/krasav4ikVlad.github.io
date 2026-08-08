@@ -77,10 +77,29 @@ def test_unknown_name_does_not_raise():
     assert e('нет такого имени') == 'нет такого имени'
 
 
-def test_registry_has_no_duplicate_ids():
-    """Один id на два значка — это copy-paste: покажется чужая картинка."""
-    ids = [emoji_id for _, emoji_id in EMOJI.values() if emoji_id]
-    assert len(ids) == len(set(ids))
+def test_one_character_never_has_two_ids():
+    """Вот это — настоящая ошибка.
+
+    Обратный указатель BY_CHAR строится по первому вхождению символа, так
+    что второй id просто потерялся бы: значок в тексте превращался бы в
+    один кастомный эмодзи, а в кнопке — в другой, и понять почему нельзя.
+
+    А один id на РАЗНЫЕ значки — нормально и сделано намеренно: 🫂 показан
+    той же картинкой, что 👥, 📩 — той же, что ✉️, 💸 общий у выплат и крипты.
+    """
+    by_char: dict[str, set[str]] = {}
+    for char, emoji_id in EMOJI.values():
+        if emoji_id:
+            by_char.setdefault(char, set()).add(emoji_id)
+
+    conflicts = {char: ids for char, ids in by_char.items() if len(ids) > 1}
+    assert not conflicts, f'у одного значка два разных id: {conflicts}'
+
+
+def nameless() -> str:
+    """Имя значка без id — их набор со временем меняется, поэтому берём
+    из реестра, а не пишем в тесте."""
+    return missing_ids()[0]
 
 
 def test_every_entry_has_a_character():
@@ -95,12 +114,14 @@ def test_missing_ids_are_listed():
 
 # ── подстановка на выходе ───────────────────────────────────────────────────
 def test_known_character_becomes_a_tag():
-    assert decorate('💰 Баланс') == (
-        '<tg-emoji emoji-id="5317017827088049911">💰</tg-emoji> Баланс')
+    char, emoji_id = EMOJI['money']
+    assert decorate(f'{char} Баланс') == (
+        f'<tg-emoji emoji-id="{emoji_id}">{char}</tg-emoji> Баланс')
 
 
 def test_character_without_id_stays_as_is():
-    assert decorate('📊 Статистика') == '📊 Статистика'
+    char = e(nameless())
+    assert decorate(f'{char} Текст') == f'{char} Текст'
 
 
 def test_toggle_turns_everything_back_into_plain_characters():
@@ -186,17 +207,18 @@ async def test_button_label_gets_an_icon():
     method = await send(button(f'{e("back")} Назад'))
     btn = method.reply_markup.inline_keyboard[0][0]
 
-    assert btn.icon_custom_emoji_id == '5321133913291135005'
+    assert btn.icon_custom_emoji_id == EMOJI['back'][1]
     assert btn.text == 'Назад'
 
 
 async def test_button_without_id_keeps_its_character():
     """Иконки нет — обычный значок лучше, чем голая подпись."""
-    method = await send(button(f'{e("stats")} Статистика'))
+    char = e(nameless())
+    method = await send(button(f'{char} Раздел'))
     btn = method.reply_markup.inline_keyboard[0][0]
 
     assert btn.icon_custom_emoji_id is None
-    assert btn.text == '📊 Статистика'
+    assert btn.text == f'{char} Раздел'
 
 
 async def test_emoji_in_the_middle_of_a_label_stays_put():
@@ -281,8 +303,10 @@ async def test_manual_icon_is_not_overridden():
 def test_leading_emoji_is_split_off():
     from app.content.emoji import leading_emoji_id
 
-    assert leading_emoji_id(f'{e("back")} Назад') == ('5321133913291135005', 'Назад')
-    assert leading_emoji_id(f'{e("stats")} Статистика') == ('', '📊 Статистика')
+    assert leading_emoji_id(f'{e("back")} Назад') == (EMOJI['back'][1], 'Назад')
+
+    char = e(nameless())
+    assert leading_emoji_id(f'{char} Раздел') == ('', f'{char} Раздел')
     assert leading_emoji_id('Просто текст') == ('', 'Просто текст')
     assert leading_emoji_id('') == ('', '')
 
@@ -332,9 +356,10 @@ def test_unknown_name_is_skipped_not_added(registry):
 
 
 def test_empty_value_keeps_the_default(registry):
+    before = registry.EMOJI['back'][1]
     registry.set_ids({'back': ''})
 
-    assert registry.EMOJI['back'][1] == '5321133913291135005'
+    assert registry.EMOJI['back'][1] == before
 
 
 def test_missing_file_is_normal(tmp_path, registry):

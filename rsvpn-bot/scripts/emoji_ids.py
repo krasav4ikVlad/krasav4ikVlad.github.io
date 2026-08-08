@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.content.emoji import EMOJI, IDS_FILE, missing_ids  # noqa: E402
+from app.content.emoji import EMOJI, IDS_FILE, OVERRIDDEN, missing_ids  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -67,6 +67,14 @@ def show(path: Path) -> int:
     if empty:
         print(f'\nБез id ({len(empty)}) — показываются обычными значками:')
         print('  ' + ', '.join(empty))
+
+    if OVERRIDDEN:
+        print(f'\n{path.name} перебивает то, что задано в коде ({len(OVERRIDDEN)}):')
+        for name, (in_code, in_file) in sorted(OVERRIDDEN.items()):
+            print(f'  {name:<14} код {in_code}  →  файл {in_file}')
+        print('\nФайл всегда сильнее кода. Если новые значки приехали с '
+              'обновлением\nи файл больше не нужен — удалите его: '
+              f'rm {path}')
 
     if not path.exists():
         print(f'\n{path.name} нет. Выгрузить id туда: '
