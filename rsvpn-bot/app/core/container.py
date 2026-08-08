@@ -56,6 +56,7 @@ class Container:
     trial: Any = None
     moderation: Any = None
     discounts: Any = None
+    wipe: Any = None
     entities: dict = field(default_factory=dict)
 
     def collection(self, name: str):
@@ -90,6 +91,11 @@ class Container:
 
         from app.services.discounts import DiscountService
         self.discounts = DiscountService(self.settings)
+
+        from app.services.wipe import WipeService
+        # vpn проставляется в build(): без панели чистится только база
+        self.wipe = WipeService(self.users, self.db, vpn=None,
+                                legacy=self.config.legacy_collections)
 
         from app.services.trial import TrialService
         self.trial = TrialService(self.users, self.settings, vpn=None)
@@ -320,6 +326,7 @@ class Container:
                                       discounts=container.discounts)
         container.trial.vpn = container.vpn
         container.moderation.vpn = container.vpn
+        container.wipe.vpn = container.vpn
         container.promo.vpn = container.vpn
         container.entities = build_entities(container)
         return container

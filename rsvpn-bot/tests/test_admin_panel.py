@@ -289,3 +289,60 @@ async def test_trial_reset_from_the_panel(admin_env):
 
     await dp.feed_update(bot, callback(Adm(act='trgo', a='expired').pack()))
     assert 'trial_claimed_at' not in (await container.users.get(50))['growth']
+
+
+# ── удаление тестового пользователя ─────────────────────────────────────────
+async def test_deluser_asks_before_deleting(admin_env):
+    """Опасное действие не должно срабатывать с одной команды."""
+    dp, bot, session, container = admin_env
+    container.wipe.vpn = None
+    await container.users.create({'user_data': {'user_id': 77, 'username': 'twink'},
+                                  'info': {'balance': 100}, 'vpn': {'uuid': 'u'}})
+
+    await dp.feed_update(bot, message('/deluser 77'))
+
+    assert 'Удалить пользователя?' in session.last_text
+    assert await container.users.get(77) is not None, 'удалил без подтверждения'
+
+
+async def test_deluser_removes_after_confirmation(admin_env):
+    dp, bot, session, container = admin_env
+    container.wipe.vpn = None
+    await container.users.create({'user_data': {'user_id': 77}, 'vpn': {}})
+
+    await dp.feed_update(bot, message('/deluser 77'))
+    await dp.feed_update(bot, callback(Adm(act='delusr', a='77').pack()))
+
+    assert await container.users.get(77) is None
+    assert 'удалён' in session.last_text.lower()
+
+
+async def test_deluser_finds_by_username(admin_env):
+    dp, bot, session, container = admin_env
+    await container.users.create({'user_data': {'user_id': 78, 'username': 'twink'},
+                                  'vpn': {}})
+
+    await dp.feed_update(bot, message('/deluser @twink'))
+
+    assert 'Удалить пользователя?' in session.last_text
+
+
+async def test_admin_cannot_delete_himself(admin_env):
+    """Иначе можно снести доступ к админке вместе с собственным документом."""
+    dp, bot, session, container = admin_env
+    admin_id = container.config.admin_ids[0]
+    await container.users.create({'user_data': {'user_id': admin_id}, 'vpn': {}})
+
+    await dp.feed_update(bot, message(f'/deluser {admin_id}'))
+    await dp.feed_update(bot, callback(Adm(act='delusr', a=str(admin_id)).pack()))
+
+    assert await container.users.get(admin_id) is not None
+    assert 'Администратора удалить нельзя' in session.last_text
+
+
+async def test_deluser_without_arguments_explains_itself(admin_env):
+    dp, bot, session, _ = admin_env
+
+    await dp.feed_update(bot, message('/deluser'))
+
+    assert 'Кого удалить?' in session.last_text

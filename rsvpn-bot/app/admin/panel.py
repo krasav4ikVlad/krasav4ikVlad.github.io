@@ -17,6 +17,7 @@ from app.admin import broadcast
 from app.admin import moderation as admin_moderation
 from app.admin import payouts as admin_payouts
 from app.admin import trial as admin_trial
+from app.admin import wipe as admin_wipe
 from app.admin.entities import EntityAdmin
 from app.admin.stats import build_stats_text
 from app.bot.callbacks import Admin as Adm
@@ -421,4 +422,5 @@ def create_router(admin_ids) -> Router:
     admin_payouts.register(router)
     admin_moderation.register(router)
     admin_trial.register(router)
+    admin_wipe.register(router)
     return router

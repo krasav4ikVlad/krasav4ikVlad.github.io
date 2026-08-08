@@ -55,10 +55,11 @@ class MongoError(Exception):
 
 
 class FakeResult:
-    def __init__(self, matched=0, modified=0, upserted_id=None):
+    def __init__(self, matched=0, modified=0, upserted_id=None, deleted=0):
         self.matched_count = matched
         self.modified_count = modified
         self.upserted_id = upserted_id
+        self.deleted_count = deleted
 
 
 class FakeCollection:
@@ -194,11 +195,17 @@ class FakeCollection:
         for doc in docs:
             await self.insert_one(doc)
 
+    async def delete_many(self, query):
+        keep = [doc for doc in self.docs if not self._match(doc, query or {})]
+        removed = len(self.docs) - len(keep)
+        self.docs[:] = keep
+        return FakeResult(matched=removed, modified=removed, deleted=removed)
+
     async def delete_one(self, query):
         for i, doc in enumerate(self.docs):
             if self._match(doc, query):
                 self.docs.pop(i)
-                return FakeResult(matched=1, modified=1)
+                return FakeResult(matched=1, modified=1, deleted=1)
         return FakeResult()
 
     async def update_one(self, query, update, upsert=False):

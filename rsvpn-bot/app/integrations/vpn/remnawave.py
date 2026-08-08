@@ -181,6 +181,26 @@ class RemnawaveClient:
         data = await self._request('GET', f'/api/hwid/devices/{uuid}')
         return (data or {}).get('devices') or []
 
+    async def delete_subscription(self, uuid: str) -> bool:
+        """Удалить пользователя панели. Нужно только тестовым аккаунтам.
+
+        Без этого удаление из базы бота бесполезно: shortUuid считается от
+        user_id, и при повторной регистрации панель ответит «User short UUID
+        already exists» — тот же отказ, что ловили при продлении.
+
+        Нет такого пользователя — это успех, а не ошибка: цель достигнута.
+        """
+        if not uuid:
+            return False
+        try:
+            await self._request('DELETE', f'/api/users/{uuid}')
+            return True
+        except VpnPanelError as exc:
+            if '404' in str(exc):
+                return True
+            log.warning('подписка %s не удалена из панели: %s', uuid, exc)
+            return False
+
     async def delete_device(self, uuid: str, hwid: str) -> bool:
         """Отвязать устройство. «Уже нет» считается успехом.
 
