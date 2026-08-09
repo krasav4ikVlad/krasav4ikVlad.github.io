@@ -28,6 +28,31 @@ log = logging.getLogger(__name__)
 
 _MISSING = object()
 
+# Ключи, под которыми панель прячет сам объект пользователя. Разные версии
+# Remnawave отвечают то плоско, то `{response: {...}}`, то ещё на уровень
+# глубже — `{response: {user: {...}}}`. Клиент снимает только внешний слой,
+# остальное разбираем здесь.
+NESTED_KEYS = ('user', 'response', 'data')
+
+
+def _unwrap(payload) -> dict:
+    """Достать объект пользователя из любой вложенности ответа панели."""
+    current = payload
+    for _ in range(4):                      # глубже четырёх слоёв не бывает
+        # часть ручек отвечает списком из одного пользователя
+        if isinstance(current, list):
+            current = current[0] if len(current) == 1 else {}
+        if not isinstance(current, dict):
+            return {}
+        if 'uuid' in current or 'usedTrafficBytes' in current:
+            return current
+        nested = next((current[key] for key in NESTED_KEYS
+                       if isinstance(current.get(key), (dict, list))), None)
+        if nested is None:
+            return current
+        current = nested
+    return current if isinstance(current, dict) else {}
+
 
 def _first(data: dict, *keys):
     """Первое непустое поле из перечисленных.
@@ -193,7 +218,16 @@ class PrivateServerService:
             return Result(False, 'panel', server=server)
 
         log.info('%s присоединился к серверу %s', user_id, server['_id'])
-        return Result(True, server=await self.servers.get(server['_id']))
+        fresh = await self.servers.get(server['_id'])
+
+        # Владелец раздал ссылку и ушёл: без сообщения он узнаёт о новом
+        # участнике, только если сам зайдёт и пересчитает места.
+        await self._tell(
+            server['owner_id'],
+            f'{e("friends")} <b>{await self._name(user_id)}</b> присоединился '
+            f'к серверу «{server.get("title")}».\n'
+            f'Занято {ps.occupied(fresh)} из {fresh.get("slots")} мест.')
+        return Result(True, server=fresh)
 
     async def kick(self, server_id: str, owner_id: int, user_id: int) -> Result:
         server = await self.servers.get(server_id)
@@ -203,13 +237,24 @@ class PrivateServerService:
             return Result(False, 'not_member', server=server)
 
         await self._revoke(server, user_id)
+        # Доступ пропал молча — человек решит, что сломался VPN, и пойдёт
+        # в поддержку. Пусть знает, что это решение владельца.
+        await self._tell(user_id,
+                         f'{e("cross")} Владелец закрыл вам доступ к серверу '
+                         f'«{server.get("title")}».')
         return Result(True, server=await self.servers.get(server_id))
 
     async def leave(self, server_id: str, user_id: int) -> Result:
         server = await self.servers.get(server_id)
         if not server or not await self.servers.remove_member(server_id, user_id):
             return Result(False, 'not_member', server=server)
+
         await self._revoke(server, user_id)
+        fresh = await self.servers.get(server_id)
+        await self._tell(
+            server['owner_id'],
+            f'{e("minus")} <b>{await self._name(user_id)}</b> вышел с сервера '
+            f'«{server.get("title")}». Свободных мест: {ps.free_slots(fresh)}.')
         return Result(True, server=server)
 
     # ── статистика ──────────────────────────────────────────────────────────
@@ -238,7 +283,7 @@ class PrivateServerService:
                 continue
 
             try:
-                panel = await self.vpn.get_subscription(uuid)
+                panel = _unwrap(await self.vpn.get_subscription(uuid))
             except Exception as exc:          # панель недоступна — не рушим экран
                 row['error'] = str(exc)
                 log.warning('статистика %s не получена: %s', user_id, exc)
@@ -255,6 +300,9 @@ class PrivateServerService:
                                                'subLastOpenedAt', 'lastOnlineAt'))
             row['status'] = panel.get('status') or ''
             row['fields'] = sorted(panel)[:40]
+            # Сырой ответ нужен /srvdiag: по именам полей видно, как эта
+            # версия панели называет трафик, и гадать больше не приходится.
+            row['raw'] = str(panel)[:400]
 
             if traffic is None:
                 row['error'] = 'панель не отдала трафик'
@@ -450,6 +498,11 @@ class PrivateServerService:
             except Exception:
                 log.exception('срок участника %s не продлён (сервер %s)',
                               user_id, server['_id'])
+
+    async def _name(self, user_id: int) -> str:
+        user = await self.users.get(user_id, {'user_data': 1})
+        return (self.users.pick(user or {}, 'user_data.first_name')
+                or f'id {user_id}')
 
     async def _tell(self, user_id: int, text: str) -> None:
         if not self.bot:

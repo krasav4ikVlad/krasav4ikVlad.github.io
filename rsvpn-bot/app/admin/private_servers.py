@@ -277,8 +277,10 @@ async def diagnose(message: types.Message, command, c, settings) -> None:
             f'статус: <code>{row["status"] or "—"}</code>\n'
             f'  сквад сервера выдан: {"да" if server.get("squad_uuid") in squads else "НЕТ"}\n'
             + (f'  {e("warning")} {row["error"]}\n' if row.get('error') else '')
-            + (f'  поля ответа: <code>{", ".join(row.get("fields") or [])}</code>'
-               if row.get('fields') else ''))
+            + (f'  поля ответа: <code>{", ".join(row.get("fields") or [])}</code>\n'
+               if row.get('fields') else '')
+            + (f'  ответ панели: <code>{row["raw"]}</code>'
+               if row.get('raw') else ''))
 
     await message.answer('\n'.join(lines))
 

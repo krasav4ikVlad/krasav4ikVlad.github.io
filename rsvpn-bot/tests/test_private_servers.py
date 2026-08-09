@@ -638,3 +638,100 @@ async def test_zero_traffic_on_a_working_panel_is_not_an_error(service):
     rows = await srv.stats(server)
 
     assert not rows[0]['error'] and rows[0]['traffic'] == 0
+
+
+async def test_stats_find_traffic_in_a_nested_response(service):
+    """Разные версии панели заворачивают пользователя на разную глубину."""
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def nested(uuid):
+        return {'response': {'user': {'uuid': uuid,
+                                      'usedTrafficBytes': 7 * 1024 ** 2}}}
+
+    vpn.get_subscription = nested
+    rows = await srv.stats(server)
+
+    assert ps.traffic(rows[0]['traffic']) == '7 МБ'
+    assert not rows[0]['error']
+
+
+async def test_stats_find_traffic_in_a_list_response(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def as_list(uuid):
+        return [{'uuid': uuid, 'usedTrafficBytes': 2 * 1024 ** 3}]
+
+    vpn.get_subscription = as_list
+    rows = await srv.stats(server)
+
+    assert ps.traffic(rows[0]['traffic']) == '2 ГБ'
+
+
+# ── уведомления об участниках ───────────────────────────────────────────────
+#
+# Владелец раздал ссылку и ушёл: без сообщения он узнаёт о новом участнике,
+# только если сам зайдёт и пересчитает места.
+
+class Telling:
+    def __init__(self):
+        self.sent: list[tuple[int, str]] = []
+
+    async def send_message(self, user_id, text, **kw):
+        self.sent.append((user_id, text))
+
+
+async def _with_friend(service, bot):
+    srv, vpn, users = service
+    srv.bot = bot
+    server = await live_server(service)
+    await users.create({'user_data': {'user_id': 2, 'first_name': 'Даша'},
+                        'info': {'balance': 0},
+                        'vpn': {'uuid': 'u-2', 'shortUuid': 's-2',
+                                'expireAt': now() + timedelta(days=1),
+                                'activeInternalSquads': []}})
+    return server
+
+
+async def test_owner_learns_that_someone_joined(service):
+    srv, _, users = service
+    bot = Telling()
+    server = await _with_friend(service, bot)
+
+    invite = await srv.invite(server['_id'], 1)
+    await srv.join(invite.reason, 2)
+
+    assert bot.sent, 'владелец не узнал о новом участнике'
+    who, text = bot.sent[-1]
+    assert who == 1
+    assert 'Даша' in text and '2 из 10' in text
+
+
+async def test_owner_learns_that_someone_left(service):
+    srv, _, users = service
+    bot = Telling()
+    server = await _with_friend(service, bot)
+    invite = await srv.invite(server['_id'], 1)
+    await srv.join(invite.reason, 2)
+    bot.sent.clear()
+
+    await srv.leave(server['_id'], 2)
+
+    who, text = bot.sent[-1]
+    assert who == 1 and 'Даша' in text
+
+
+async def test_kicked_member_is_told_why_the_vpn_stopped(service):
+    """Иначе человек решит, что сломался VPN, и пойдёт в поддержку."""
+    srv, _, users = service
+    bot = Telling()
+    server = await _with_friend(service, bot)
+    invite = await srv.invite(server['_id'], 1)
+    await srv.join(invite.reason, 2)
+    bot.sent.clear()
+
+    await srv.kick(server['_id'], 1, 2)
+
+    who, text = bot.sent[-1]
+    assert who == 2 and 'закрыл вам доступ' in text
