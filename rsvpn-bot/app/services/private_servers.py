@@ -311,59 +311,30 @@ class PrivateServerService:
         return Result(True, server=server)
 
     # ── статистика ──────────────────────────────────────────────────────────
-    async def _node_usage(self, server: dict) -> tuple[dict, str]:
-        """Расход по каждому пользователю на ноде этого сервера.
+    async def _squad_usage(self, server: dict) -> tuple[dict, str]:
+        """Расход участников именно на этом сервере: {id в панели: байты}.
 
-        Это честный ответ на вопрос владельца «кто ест мой сервер»:
-        userTraffic в карточке пользователя считает весь его трафик по всем
-        нодам, включая общие, и на личный сервер списывать его нельзя.
-
-        Панель может не дать ни ноду, ни статистику — тогда пусто, и выше
-        считается по карточкам пользователей.
+        Сервер — это внутренний сквад, и у панели есть ровно такая ручка.
+        Общий userTraffic из карточки сюда не годится: он считает весь трафик
+        человека, включая обычные серверы RS VPN, и завышает расход сервера.
         """
         squad = server.get('squad_uuid')
         if not squad:
             return {}, 'у сервера не задан сквад'
 
-        try:
-            nodes = await self.vpn.squad_nodes(squad)
-        except Exception as exc:
-            log.warning('ноды сквада %s не получены: %s', squad, exc)
-            return {}, f'ноды сквада: {exc}'
-        if not nodes:
-            return {}, 'в скваде нет нод'
-
-        # Период: оплаченный месяц. Раньше него расхода этого сервера
-        # быть не может — он просто не существовал.
+        # Период — оплаченный месяц, но не раньше запуска: до него расхода
+        # этого сервера не существовало.
         until = now()
         since = until - timedelta(days=ps.CHARGE_PERIOD_DAYS)
         started = parse_dt(server.get('activated_at'))
         if started and started > since:
             since = started
 
-        usage: dict[str, int] = {}
-        note = ''
-        for node in nodes:
-            node_uuid = node.get('uuid') or node.get('nodeUuid')
-            if not node_uuid:
-                continue
-            try:
-                rows = await self.vpn.node_users_usage(node_uuid, since, until)
-            except Exception as exc:
-                note = f'расход ноды: {exc}'
-                log.warning('расход ноды %s не получен: %s', node_uuid, exc)
-                continue
-            if not rows:
-                note = note or 'панель вернула пустой расход по ноде'
-            for row in rows:
-                total = next((_bytes(row[key]) for key in TOTAL_KEYS
-                              if key in row and _bytes(row[key]) is not None), None)
-                if total is None:
-                    continue
-                for key in USER_KEYS + NAME_KEYS:
-                    if row.get(key):
-                        usage[str(row[key])] = usage.get(str(row[key]), 0) + total
-        return usage, note
+        try:
+            return await self.vpn.squad_usage(squad, since, until), ''
+        except Exception as exc:
+            log.warning('расход сквада %s не получен: %s', squad, exc)
+            return {}, f'расход сквада: {exc}'
 
     async def stats(self, server: dict) -> list[dict]:
         """Трафик и последнее подключение по каждому участнику.
@@ -372,7 +343,7 @@ class PrivateServerService:
         пятнадцать, а отдельного пакетного метода в API нет.
         """
         rows = []
-        by_node, usage_note = await self._node_usage(server)
+        by_squad, usage_note = await self._squad_usage(server)
         people = [server.get('owner_id')] + [m.get('user_id')
                                              for m in (server.get('members') or [])]
         for user_id in [p for p in people if p]:
@@ -398,21 +369,27 @@ class PrivateServerService:
                 rows.append(row)
                 continue
 
-            # Сначала расход именно на этой ноде, и только если панель его
-            # не дала — общий трафик из карточки. Он больше настоящего, и
-            # экран об этом честно предупреждает.
-            scoped = by_node.get(str(uuid)) or by_node.get(str(user_id))
+            # Сначала расход именно на этом сервере, и только если панель
+            # его не дала — общий трафик из карточки. Он больше настоящего,
+            # и экран об этом честно предупреждает.
+            panel_id = panel.get('id')
+            scoped = by_squad.get(int(panel_id)) if isinstance(panel_id, (int, float)) else None
             traffic = scoped if scoped is not None else _traffic_of(panel)
-            row['source'] = 'node' if scoped is not None else 'user'
+            row['source'] = 'squad' if scoped is not None else 'user'
+            row['panel_id'] = panel_id
             if scoped is None and usage_note:
                 # Почему не вышло посчитать по ноде — видно в /srvdiag, а не
                 # только в логах на сервере.
                 row['usage_note'] = usage_note
             row['traffic'] = traffic or 0
-            row['online_at'] = parse_dt(_first(panel, *ONLINE_KEYS))
-            # Времени подключения в ответе может не быть вовсе — тогда «не
-            # заходил» будет выдумкой, а не фактом.
-            row['online_known'] = any(key in panel for key in ONLINE_KEYS)
+            # onlineAt лежит внутри userTraffic, а не рядом с ним: сверху
+            # его искать бесполезно, что и давало вечное «не заходил».
+            inner = panel.get('userTraffic') if isinstance(panel.get('userTraffic'),
+                                                           dict) else {}
+            row['online_at'] = parse_dt(_first(inner, *ONLINE_KEYS)
+                                        or _first(panel, *ONLINE_KEYS))
+            row['online_known'] = any(key in inner or key in panel
+                                      for key in ONLINE_KEYS)
             row['status'] = panel.get('status') or ''
             row['devices'] = panel.get('hwidDeviceLimit')
             row['fields'] = sorted(panel)[:40]

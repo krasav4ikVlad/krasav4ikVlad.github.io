@@ -195,49 +195,43 @@ class RemnawaveClient:
             return {}
         return await self._request('GET', f'/api/users/{uuid}') or {}
 
-    async def squad_nodes(self, squad_uuid: str) -> list[dict]:
-        """Ноды, доступные внутреннему скваду. Личный сервер — это одна нода."""
-        if not squad_uuid:
-            return []
-        data = await self._request(
-            'GET', f'/api/internal-squads/{squad_uuid}/accessible-nodes')
-        if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
-        # ответ бывает разложен на активные и неактивные
-        nodes: list[dict] = []
-        for value in (data or {}).values():
-            if isinstance(value, list):
-                nodes.extend(item for item in value if isinstance(item, dict))
-        return nodes
+    async def squad_usage(self, squad_uuid: str, start: datetime, end: datetime,
+                          page_limit: int = 500) -> dict[int, int]:
+        """Расход каждого участника сквада за период: {id пользователя: байты}.
 
-    # Ручка статистики работает по диапазону дат, и имена параметров у
-    # разных сборок панели разные. Перебираем варианты, а не угадываем один.
-    USAGE_PARAMS = (('start', 'end'), ('startDate', 'endDate'), ('from', 'to'))
+        Личный сервер — это внутренний сквад, поэтому здесь и есть ответ на
+        «кто ест мой сервер». Общий userTraffic из карточки для этого не
+        годится: он считает весь трафик человека по всем нодам.
 
-    async def node_users_usage(self, node_uuid: str, start: datetime,
-                               end: datetime) -> list[dict]:
-        """Расход каждого пользователя на одной ноде за период.
-
-        Это и есть «кто ест мой сервер»: userTraffic в карточке пользователя
-        считает весь его трафик по всем нодам, включая общие.
+        Даты — именно даты (YYYY-MM-DD), так объявлено в спеке панели:
+        `format: date`. С полным ISO-временем ручка отвечает отказом.
         """
-        if not node_uuid:
-            return []
+        if not squad_uuid:
+            return {}
 
-        last: Exception | None = None
-        for since, until in self.USAGE_PARAMS:
-            try:
-                data = await self._request(
-                    'GET', f'/api/bandwidth-stats/nodes/{node_uuid}/users',
-                    params={since: start.isoformat(), until: end.isoformat()})
-            except VpnPanelError as exc:
-                last = exc
-                continue
-            return _rows(data)
+        usage: dict[int, int] = {}
+        cursor = None
+        for _ in range(20):                 # предохранитель от бесконечной страницы
+            params = {'start': start.strftime('%Y-%m-%d'),
+                      'end': end.strftime('%Y-%m-%d'),
+                      'limit': page_limit}
+            if cursor is not None:
+                params['cursor'] = cursor
 
-        if last:
-            raise last
-        return []
+            data = await self._request(
+                'GET', f'/api/bandwidth-stats/internal-squads/{squad_uuid}/usage',
+                params=params)
+
+            for row in (data or {}).get('users') or []:
+                if isinstance(row, dict) and row.get('id') is not None:
+                    usage[int(row['id'])] = int(row.get('totalBytes') or 0)
+
+            if not (data or {}).get('hasMore'):
+                break
+            cursor = (data or {}).get('nextCursor')
+            if cursor is None:
+                break
+        return usage
 
     async def devices(self, uuid: str) -> list[dict]:
         if not uuid:

@@ -44,8 +44,13 @@ class FakeVpn:
 
     async def get_subscription(self, uuid: str) -> dict:
         row = self.state.get(uuid) or {}
-        return {'usedTrafficBytes': row.get('usedTrafficBytes', 0),
-                'onlineAt': None, 'status': row.get('status', 'ACTIVE')}
+        # форма ответа как в спеке панели: трафик и онлайн внутри userTraffic
+        return {'uuid': uuid, 'id': 1, 'status': row.get('status', 'ACTIVE'),
+                'userTraffic': {'usedTrafficBytes': row.get('usedTrafficBytes', 0),
+                                'onlineAt': None}}
+
+    async def squad_usage(self, squad, start, end, **kw) -> dict:
+        return {}
 
 
 @pytest.fixture
@@ -801,91 +806,91 @@ async def test_missing_online_field_is_not_reported_as_never_connected(service):
 #
 # userTraffic в карточке — весь трафик человека по всем нодам, включая общие
 # серверы RS VPN. Списывать его на личный сервер значит завышать расход и
-# врать про квоту площадки.
+# врать про квоту площадки. Сервер — это внутренний сквад, и у панели есть
+# ручка ровно под него.
 
-async def test_traffic_is_taken_from_the_server_node(service):
+async def test_traffic_is_taken_from_the_server_squad(service):
     srv, vpn, users = service
     server = await live_server(service)
 
-    async def nodes(squad):
+    async def usage(squad, since, until, **kw):
         assert squad == SQUAD
-        return [{'uuid': 'node-1'}]
-
-    async def usage(node_uuid, since, until):
-        assert since < until, 'период обязателен: без него панель отвечает отказом'
-        return [{'userUuid': 'u-1', 'total': 4 * 1024 ** 2}]
+        return {2549: 4 * 1024 ** 2}
 
     async def card(uuid):
-        return {'uuid': uuid, 'userTraffic': 900 * 1024 ** 3}   # весь трафик
+        return {'uuid': uuid, 'id': 2549,
+                'userTraffic': {'usedTrafficBytes': 900 * 1024 ** 3}}
 
-    vpn.squad_nodes, vpn.node_users_usage = nodes, usage
-    vpn.get_subscription = card
+    vpn.squad_usage, vpn.get_subscription = usage, card
     rows = await srv.stats(server)
 
-    assert rows[0]['source'] == 'node'
-    assert ps.traffic(rows[0]['traffic']) == '4 МБ'
+    assert rows[0]['source'] == 'squad'
+    assert ps.traffic(rows[0]['traffic']) == '4 МБ', 'взяли общий трафик вместо серверного'
 
 
-async def test_falls_back_to_the_user_card_when_the_node_is_silent(service):
+async def test_falls_back_to_the_user_card_when_the_squad_is_silent(service):
     srv, vpn, users = service
     server = await live_server(service)
 
-    async def no_nodes(squad):
+    async def broken(squad, since, until, **kw):
         raise RuntimeError('нет такой ручки')
 
     async def card(uuid):
-        return {'uuid': uuid, 'userTraffic': 7 * 1024 ** 2}
+        return {'uuid': uuid, 'id': 1,
+                'userTraffic': {'usedTrafficBytes': 7 * 1024 ** 2}}
 
-    vpn.squad_nodes = no_nodes
-    vpn.get_subscription = card
+    vpn.squad_usage, vpn.get_subscription = broken, card
     rows = await srv.stats(server)
 
     assert rows[0]['source'] == 'user'
     assert ps.traffic(rows[0]['traffic']) == '7 МБ'
+    assert 'нет такой ручки' in rows[0]['usage_note']
 
 
-async def test_node_usage_matches_by_username_too(service):
+async def test_last_connection_is_read_from_inside_user_traffic(service):
+    """onlineAt лежит внутри userTraffic — сверху его искать бесполезно."""
     srv, vpn, users = service
     server = await live_server(service)
+    moment = now() - timedelta(hours=2)
 
-    async def nodes(squad):
-        return [{'uuid': 'node-1'}]
+    async def card(uuid):
+        return {'uuid': uuid, 'id': 1,
+                'userTraffic': {'usedTrafficBytes': 10, 'onlineAt': moment.isoformat()}}
 
-    async def usage(node_uuid, since, until):
-        return [{'username': '1', 'total': 2048}]
-
-    vpn.squad_nodes, vpn.node_users_usage = nodes, usage
+    vpn.get_subscription = card
     rows = await srv.stats(server)
 
-    assert rows[0]['traffic'] == 2048
+    assert rows[0]['online_known'] is True
+    assert rows[0]['online_at'] is not None
 
 
-async def test_usage_endpoint_is_tried_with_every_parameter_naming(service):
-    """Имена параметров периода у сборок панели разные — перебираем."""
-    from app.core.errors import VpnPanelError
+async def test_usage_is_requested_with_plain_dates(service):
+    """В спеке параметры объявлены как format: date. С ISO-временем — отказ."""
     from app.integrations.vpn.remnawave import RemnawaveClient
 
-    seen = []
+    seen = {}
 
     class Http:
         async def request(self, method, url, headers=None, params=None, **kw):
-            seen.append(tuple(sorted(params or {})))
+            seen.update(params or {})
 
             class Reply:
-                status_code = 200 if 'from' in (params or {}) else 400
-                text = 'bad range'
+                status_code = 200
+                text = ''
 
                 @staticmethod
                 def json():
-                    return {'response': [{'userUuid': 'u-1', 'total': 5}]}
+                    return {'response': {'squadUuid': SQUAD, 'hasMore': False,
+                                         'nextCursor': None,
+                                         'users': [{'id': 7, 'totalBytes': 512}]}}
 
             return Reply()
 
     client = RemnawaveClient('https://panel', 'token', Http())
-    rows = await client.node_users_usage('node-1', now() - timedelta(days=1), now())
+    usage = await client.squad_usage(SQUAD, now() - timedelta(days=30), now())
 
-    assert rows == [{'userUuid': 'u-1', 'total': 5}]
-    assert seen == [('end', 'start'), ('endDate', 'startDate'), ('from', 'to')]
+    assert usage == {7: 512}
+    assert len(seen['start']) == 10 and len(seen['end']) == 10, seen
 
 
 async def test_fallback_reason_is_recorded_for_diagnostics(service):
@@ -893,13 +898,13 @@ async def test_fallback_reason_is_recorded_for_diagnostics(service):
     srv, vpn, users = service
     server = await live_server(service)
 
-    async def no_nodes(squad):
-        return []
+    async def broken(squad, since, until, **kw):
+        raise RuntimeError('HTTP 400 bad range')
 
-    vpn.squad_nodes = no_nodes
+    vpn.squad_usage = broken
     rows = await srv.stats(server)
 
-    assert rows[0]['usage_note'] == 'в скваде нет нод'
+    assert 'HTTP 400' in rows[0]['usage_note']
 
 
 async def test_usage_period_starts_no_earlier_than_the_server_itself(service):
@@ -908,14 +913,11 @@ async def test_usage_period_starts_no_earlier_than_the_server_itself(service):
     server = await live_server(service)
     window = {}
 
-    async def nodes(squad):
-        return [{'uuid': 'node-1'}]
-
-    async def usage(node_uuid, since, until):
+    async def usage(squad, since, until, **kw):
         window['since'] = since
-        return []
+        return {}
 
-    vpn.squad_nodes, vpn.node_users_usage = nodes, usage
+    vpn.squad_usage = usage
     await srv.stats(await srv.servers.get(server['_id']))
 
     assert window['since'] >= parse_dt(server['activated_at'])
