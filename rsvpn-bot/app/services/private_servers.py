@@ -311,7 +311,7 @@ class PrivateServerService:
         return Result(True, server=server)
 
     # ── статистика ──────────────────────────────────────────────────────────
-    async def _node_usage(self, server: dict) -> dict:
+    async def _node_usage(self, server: dict) -> tuple[dict, str]:
         """Расход по каждому пользователю на ноде этого сервера.
 
         Это честный ответ на вопрос владельца «кто ест мой сервер»:
@@ -323,24 +323,38 @@ class PrivateServerService:
         """
         squad = server.get('squad_uuid')
         if not squad:
-            return {}
+            return {}, 'у сервера не задан сквад'
 
         try:
             nodes = await self.vpn.squad_nodes(squad)
         except Exception as exc:
-            log.info('ноды сквада %s не получены: %s', squad, exc)
-            return {}
+            log.warning('ноды сквада %s не получены: %s', squad, exc)
+            return {}, f'ноды сквада: {exc}'
+        if not nodes:
+            return {}, 'в скваде нет нод'
+
+        # Период: оплаченный месяц. Раньше него расхода этого сервера
+        # быть не может — он просто не существовал.
+        until = now()
+        since = until - timedelta(days=ps.CHARGE_PERIOD_DAYS)
+        started = parse_dt(server.get('activated_at'))
+        if started and started > since:
+            since = started
 
         usage: dict[str, int] = {}
+        note = ''
         for node in nodes:
             node_uuid = node.get('uuid') or node.get('nodeUuid')
             if not node_uuid:
                 continue
             try:
-                rows = await self.vpn.node_users_usage(node_uuid)
+                rows = await self.vpn.node_users_usage(node_uuid, since, until)
             except Exception as exc:
-                log.info('расход ноды %s не получен: %s', node_uuid, exc)
+                note = f'расход ноды: {exc}'
+                log.warning('расход ноды %s не получен: %s', node_uuid, exc)
                 continue
+            if not rows:
+                note = note or 'панель вернула пустой расход по ноде'
             for row in rows:
                 total = next((_bytes(row[key]) for key in TOTAL_KEYS
                               if key in row and _bytes(row[key]) is not None), None)
@@ -349,7 +363,7 @@ class PrivateServerService:
                 for key in USER_KEYS + NAME_KEYS:
                     if row.get(key):
                         usage[str(row[key])] = usage.get(str(row[key]), 0) + total
-        return usage
+        return usage, note
 
     async def stats(self, server: dict) -> list[dict]:
         """Трафик и последнее подключение по каждому участнику.
@@ -358,7 +372,7 @@ class PrivateServerService:
         пятнадцать, а отдельного пакетного метода в API нет.
         """
         rows = []
-        by_node = await self._node_usage(server)
+        by_node, usage_note = await self._node_usage(server)
         people = [server.get('owner_id')] + [m.get('user_id')
                                              for m in (server.get('members') or [])]
         for user_id in [p for p in people if p]:
@@ -390,6 +404,10 @@ class PrivateServerService:
             scoped = by_node.get(str(uuid)) or by_node.get(str(user_id))
             traffic = scoped if scoped is not None else _traffic_of(panel)
             row['source'] = 'node' if scoped is not None else 'user'
+            if scoped is None and usage_note:
+                # Почему не вышло посчитать по ноде — видно в /srvdiag, а не
+                # только в логах на сервере.
+                row['usage_note'] = usage_note
             row['traffic'] = traffic or 0
             row['online_at'] = parse_dt(_first(panel, *ONLINE_KEYS))
             # Времени подключения в ответе может не быть вовсе — тогда «не

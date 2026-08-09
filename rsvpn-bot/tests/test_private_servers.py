@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 
-from app.core.time import now
+from app.core.time import now, parse_dt
 from app.domain import private_servers as ps
 from app.repositories.private_servers import PrivateServersRepository
 from app.repositories.users import UsersRepository
@@ -811,7 +811,8 @@ async def test_traffic_is_taken_from_the_server_node(service):
         assert squad == SQUAD
         return [{'uuid': 'node-1'}]
 
-    async def usage(node_uuid):
+    async def usage(node_uuid, since, until):
+        assert since < until, 'период обязателен: без него панель отвечает отказом'
         return [{'userUuid': 'u-1', 'total': 4 * 1024 ** 2}]
 
     async def card(uuid):
@@ -850,10 +851,71 @@ async def test_node_usage_matches_by_username_too(service):
     async def nodes(squad):
         return [{'uuid': 'node-1'}]
 
-    async def usage(node_uuid):
+    async def usage(node_uuid, since, until):
         return [{'username': '1', 'total': 2048}]
 
     vpn.squad_nodes, vpn.node_users_usage = nodes, usage
     rows = await srv.stats(server)
 
     assert rows[0]['traffic'] == 2048
+
+
+async def test_usage_endpoint_is_tried_with_every_parameter_naming(service):
+    """Имена параметров периода у сборок панели разные — перебираем."""
+    from app.core.errors import VpnPanelError
+    from app.integrations.vpn.remnawave import RemnawaveClient
+
+    seen = []
+
+    class Http:
+        async def request(self, method, url, headers=None, params=None, **kw):
+            seen.append(tuple(sorted(params or {})))
+
+            class Reply:
+                status_code = 200 if 'from' in (params or {}) else 400
+                text = 'bad range'
+
+                @staticmethod
+                def json():
+                    return {'response': [{'userUuid': 'u-1', 'total': 5}]}
+
+            return Reply()
+
+    client = RemnawaveClient('https://panel', 'token', Http())
+    rows = await client.node_users_usage('node-1', now() - timedelta(days=1), now())
+
+    assert rows == [{'userUuid': 'u-1', 'total': 5}]
+    assert seen == [('end', 'start'), ('endDate', 'startDate'), ('from', 'to')]
+
+
+async def test_fallback_reason_is_recorded_for_diagnostics(service):
+    """Иначе «показан весь трафик» опять превращается в загадку."""
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def no_nodes(squad):
+        return []
+
+    vpn.squad_nodes = no_nodes
+    rows = await srv.stats(server)
+
+    assert rows[0]['usage_note'] == 'в скваде нет нод'
+
+
+async def test_usage_period_starts_no_earlier_than_the_server_itself(service):
+    """До запуска сервера его расхода быть не может."""
+    srv, vpn, users = service
+    server = await live_server(service)
+    window = {}
+
+    async def nodes(squad):
+        return [{'uuid': 'node-1'}]
+
+    async def usage(node_uuid, since, until):
+        window['since'] = since
+        return []
+
+    vpn.squad_nodes, vpn.node_users_usage = nodes, usage
+    await srv.stats(await srv.servers.get(server['_id']))
+
+    assert window['since'] >= parse_dt(server['activated_at'])

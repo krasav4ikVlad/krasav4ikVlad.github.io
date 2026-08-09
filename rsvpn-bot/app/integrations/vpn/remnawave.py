@@ -30,6 +30,16 @@ from app.core.time import now
 log = logging.getLogger(__name__)
 
 
+def _rows(data) -> list[dict]:
+    """Список записей из ответа любой формы: сам список или список внутри."""
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    for value in (data or {}).values():
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
 def subscription_token(user_id: int, bypass: bool = False) -> str:
     """Короткий идентификатор подписки. Детерминированный: тот же вход — тот же токен."""
     raw = f'rsvpn-bypass-{user_id}-vpn-core' if bypass else f'rsvpn-{user_id}-vpn-core'
@@ -192,7 +202,7 @@ class RemnawaveClient:
         data = await self._request(
             'GET', f'/api/internal-squads/{squad_uuid}/accessible-nodes')
         if isinstance(data, list):
-            return data
+            return [item for item in data if isinstance(item, dict)]
         # ответ бывает разложен на активные и неактивные
         nodes: list[dict] = []
         for value in (data or {}).values():
@@ -200,21 +210,33 @@ class RemnawaveClient:
                 nodes.extend(item for item in value if isinstance(item, dict))
         return nodes
 
-    async def node_users_usage(self, node_uuid: str) -> list[dict]:
-        """Расход каждого пользователя на одной ноде.
+    # Ручка статистики работает по диапазону дат, и имена параметров у
+    # разных сборок панели разные. Перебираем варианты, а не угадываем один.
+    USAGE_PARAMS = (('start', 'end'), ('startDate', 'endDate'), ('from', 'to'))
+
+    async def node_users_usage(self, node_uuid: str, start: datetime,
+                               end: datetime) -> list[dict]:
+        """Расход каждого пользователя на одной ноде за период.
 
         Это и есть «кто ест мой сервер»: userTraffic в карточке пользователя
         считает весь его трафик по всем нодам, включая общие.
         """
         if not node_uuid:
             return []
-        data = await self._request(
-            'GET', f'/api/bandwidth-stats/nodes/{node_uuid}/users')
-        if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
-        for value in (data or {}).values():
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
+
+        last: Exception | None = None
+        for since, until in self.USAGE_PARAMS:
+            try:
+                data = await self._request(
+                    'GET', f'/api/bandwidth-stats/nodes/{node_uuid}/users',
+                    params={since: start.isoformat(), until: end.isoformat()})
+            except VpnPanelError as exc:
+                last = exc
+                continue
+            return _rows(data)
+
+        if last:
+            raise last
         return []
 
     async def devices(self, uuid: str) -> list[dict]:
