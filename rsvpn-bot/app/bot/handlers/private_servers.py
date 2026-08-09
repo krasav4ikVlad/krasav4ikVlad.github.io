@@ -17,7 +17,7 @@ from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import profile_caption
 from app.content.emoji import e
-from app.core.time import fmt
+from app.core.time import fmt, now
 from app.domain import private_servers as ps
 
 INVITES_ENABLED = 'info.server_invites_enabled'
@@ -308,18 +308,19 @@ async def invite(call: types.CallbackQuery, callback_data: Server, c, user: dict
         return
 
     me = await call.bot.get_me()
-    link = f'https://t.me/{me.username}?start=srv_{result.reason}'
-    server = result.server
+    invite_link = f'https://t.me/{me.username}?start=srv_{result.reason}'
+    server = await c.private.servers.get(callback_data.value)
 
-    await call.message.answer(
-        f'{e("link")} <b>Ссылка-приглашение</b>\n\n'
-        f'<code>{link}</code>\n\n'
-        f'Свободных мест: <b>{ps.free_slots(server) }</b>. Ссылка одноразовая — '
-        f'сработает только у одного человека.\n\n'
-        f'<blockquote>Друг сможет её принять, только если сам разрешил '
-        f'приглашения на серверы. Это защита от рассылок: добавить человека '
-        f'без его ведома нельзя.</blockquote>')
-    await call.answer()
+    # Тем же экраном, а не новым сообщением: иначе на каждое нажатие чат
+    # прирастает карточкой, а закреплённый экран уезжает вверх.
+    await server_screen(
+        call, c, user, settings, server,
+        note=(f'{e("link")} <b>Ссылка-приглашение</b>\n'
+              f'<code>{invite_link}</code>\n\n'
+              f'Одноразовая: сработает у одного человека. Свободных мест '
+              f'после него — {max(0, ps.free_slots(server) - 1)}.\n\n'
+              f'Друг сможет её принять, только если подтвердит это сам. '
+              f'Добавить человека без его ведома нельзя.'))
 
 
 async def accept_screen(message: types.Message, code: str, c, user: dict, settings) -> None:
@@ -476,11 +477,13 @@ async def stats(call: types.CallbackQuery, callback_data: Server, c, user: dict,
     kb.row(_btn(f'{e("refresh")} Обновить', 'stats', server['_id']))
     kb.row(_btn(f'{e("back")} К серверу', 'open', server['_id']))
 
+    # Время в тексте — чтобы «Обновить» было видно: без него экран с теми же
+    # цифрами не меняется, и понять, обновился он или завис, нельзя.
     text = (profile_caption(user, f'{e("stats")} Статистика сервера')
             + '\n'.join(lines) + '\n\n'
             + '<blockquote>Трафик считает панель нарастающим итогом с момента '
               'последнего сброса. Это ваш сервер — видеть, кто его расходует, '
-              'нормально.</blockquote>')
+              f'нормально.\n\nОбновлено в {now().strftime("%H:%M:%S")}</blockquote>')
 
     await footer(kb, settings, back=None)
     await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
@@ -493,11 +496,11 @@ async def link(call: types.CallbackQuery, callback_data: Server, c, user: dict,
     if not server or not ps.is_member(server, call.from_user.id):
         await call.answer(ERRORS['not_owner'], show_alert=True)
         return
-    await call.answer()
-    await call.message.answer(
-        f'{e("shield")} Сервер «{server.get("title")}» уже в вашей подписке — '
-        f'откройте «Ваша подписка» и обновите конфиг в приложении. '
-        f'Отдельная ссылка не нужна.')
+    await server_screen(
+        call, c, user, settings, server,
+        note=(f'{e("shield")} Сервер уже в вашей подписке — отдельная ссылка '
+              f'не нужна. Откройте «Ваша подписка» и обновите конфиг в '
+              f'приложении: сервер появится в списке.'))
 
 
 def create_router() -> Router:

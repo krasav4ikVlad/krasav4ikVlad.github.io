@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 import pytest
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.client.session.base import BaseSession
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
@@ -39,6 +40,9 @@ class RecordingSession(BaseSession):
         self.results.extend(getattr(method, 'results', None) or [])
         if name == 'AnswerCallbackQuery':
             return True
+        if name == 'GetMe':
+            # ссылки-приглашения строятся от username бота
+            return User(id=1, is_bot=True, first_name='RS VPN', username='rsconnect_bot')
         return Message(message_id=1, date=datetime.now(), chat=CHAT, text=text,
                        from_user=TG_USER)
 
@@ -1952,3 +1956,100 @@ async def test_members_screen_can_actually_be_rendered(env):
 
     labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
     assert any('Убрать Друг' in label for label in labels), labels
+
+
+# ── «Обновить» на неизменившемся экране ─────────────────────────────────────
+#
+# Telegram отвечает «message is not modified», когда править нечего. Раньше
+# это считалось ошибкой правки, и запасной путь отправлял НОВОЕ сообщение —
+# текстом, без картинки. Экран задваивался ровно тогда, когда менять нечего.
+
+async def test_refresh_of_an_unchanged_screen_does_not_send_a_new_message(env):
+    from app.bot.callbacks import Menu
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    original = bot.session.make_request
+
+    async def not_modified(bot_, method, timeout=None):
+        name = type(method).__name__
+        if name.startswith('Edit'):
+            raise TelegramBadRequest(
+                method=method,
+                message='Bad Request: message is not modified')
+        return await original(bot_, method, timeout)
+
+    bot.session.make_request = not_modified
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='profile').pack()))
+    bot.session.make_request = original
+
+    new_messages = [name for name, _ in session.calls
+                    if name in ('SendMessage', 'SendPhoto')]
+    assert not new_messages, f'экран задвоился: {session.calls}'
+
+
+async def test_a_real_edit_failure_still_falls_back_to_a_new_message(env):
+    """Сообщение слишком старое для правки — экран показать всё равно надо."""
+    from app.bot.callbacks import Menu
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+
+    original = bot.session.make_request
+
+    async def too_old(bot_, method, timeout=None):
+        if type(method).__name__.startswith('Edit'):
+            raise TelegramBadRequest(method=method,
+                                     message='Bad Request: message to edit not found')
+        return await original(bot_, method, timeout)
+
+    bot.session.make_request = too_old
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='profile').pack()))
+    bot.session.make_request = original
+
+    assert any(name == 'SendMessage' for name, _ in session.calls), session.calls
+
+
+async def _own_server(dp, bot, c, plan='mini'):
+    from app.bot.callbacks import Menu
+
+    await dp.feed_update(bot, message('/start'))
+    await c.settings.set('private.visibility', 'all')
+    await c.users.credit(5, 3000, 'тест')
+    c.private.vpn = c.vpn
+    result = await c.private.request(5, plan, location='ams', profile='reality')
+    await c.private.activate(result.server['_id'],
+                             'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+    return result.server['_id']
+
+
+async def test_invite_link_appears_on_the_same_screen(env):
+    """Новое сообщение на каждое нажатие засоряет чат и уводит экран вверх."""
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    server_id = await _own_server(dp, bot, c)
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Server(action='invite', value=server_id).pack()))
+
+    assert not [n for n, _ in session.calls if n in ('SendMessage', 'SendPhoto')], \
+        session.calls
+    assert '?start=srv_' in session.last_text
+
+
+async def test_connect_hint_appears_on_the_same_screen(env):
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    server_id = await _own_server(dp, bot, c)
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Server(action='link', value=server_id).pack()))
+
+    assert not [n for n, _ in session.calls if n in ('SendMessage', 'SendPhoto')], \
+        session.calls
+    assert 'уже в вашей подписке' in session.last_text

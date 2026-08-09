@@ -60,6 +60,17 @@ async def send_photo(send, photo, *, tries: int = 2):
             await photo.forget()      # следующая попытка возьмёт файл с диска
 
 
+def unchanged(exc: Exception) -> bool:
+    """«message is not modified» — это не ошибка, а «и так уже правильно».
+
+    Кнопка «Обновить» на экране, где ничего не поменялось, роняла все три
+    попытки правки подряд, и последний запасной путь отправлял новое
+    сообщение — текстом, без картинки. Экран задваивался ровно тогда, когда
+    менять было нечего.
+    """
+    return 'not modified' in str(exc).lower()
+
+
 async def render(event: types.Message | types.CallbackQuery, screen: Screen):
     """Показать экран: правкой текущего сообщения (callback) или новым (message)."""
     photo = screen.image
@@ -73,14 +84,17 @@ async def render(event: types.Message | types.CallbackQuery, screen: Screen):
                     chat_id=message.chat.id, message_id=message.message_id,
                     media=types.InputMediaPhoto(media=media, caption=screen.text),
                     reply_markup=screen.markup), photo)
-            except Exception:
-                pass
+            except Exception as exc:
+                if unchanged(exc):
+                    return None
         try:
             if message.photo:
                 return await message.edit_caption(caption=screen.text, reply_markup=screen.markup)
             return await message.edit_text(screen.text, reply_markup=screen.markup,
                                            disable_web_page_preview=True)
-        except Exception:
+        except Exception as exc:
+            if unchanged(exc):
+                return None
             return await message.answer(screen.text, reply_markup=screen.markup,
                                         disable_web_page_preview=True)
 
