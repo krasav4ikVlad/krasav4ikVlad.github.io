@@ -172,8 +172,29 @@ def is_member(server: dict | None, user_id: int) -> bool:
 
 
 def gb(traffic_bytes) -> float:
-    """Байты панели → гигабайты для экрана."""
+    """Байты панели → гигабайты. Для сравнения с квотой площадки."""
     try:
         return round(int(traffic_bytes or 0) / 1024 ** 3, 2)
     except (TypeError, ValueError):
         return 0.0
+
+
+UNITS = (('ТБ', 1024 ** 4), ('ГБ', 1024 ** 3), ('МБ', 1024 ** 2), ('КБ', 1024))
+
+
+def traffic(traffic_bytes) -> str:
+    """Байты → человеческая строка.
+
+    Гигабайты в чистом виде не годятся: 5 МБ округляются до 0.0, и экран
+    показывает нули там, где трафик есть. На новом сервере первые дни это
+    единственные цифры, которые вообще видны.
+    """
+    try:
+        value = int(traffic_bytes or 0)
+    except (TypeError, ValueError):
+        return '0 Б'
+
+    for title, size in UNITS:
+        if value >= size:
+            return f'{value / size:.2f}'.rstrip('0').rstrip('.') + f' {title}'
+    return f'{value} Б'

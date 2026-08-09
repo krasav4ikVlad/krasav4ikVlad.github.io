@@ -549,3 +549,54 @@ def test_frankfurt_exists_in_both_flavours():
 def test_traffic_titles_read_like_a_human_wrote_them():
     assert ps.BY_LOCATION['ams'].traffic_title == '1 ТБ'
     assert ps.BY_LOCATION['nl'].traffic_title == 'безлимит'
+
+
+# ── трафик на экране ────────────────────────────────────────────────────────
+#
+# 4.91 МБ в гигабайтах — это 0.0 после округления. На новом сервере первые
+# дни это единственные цифры, которые вообще есть, и экран показывал нули.
+
+def test_small_traffic_is_not_rounded_into_nothing():
+    assert ps.traffic(4.91 * 1024 ** 2) == '4.91 МБ'
+    assert ps.traffic(5024) == '4.91 КБ'
+    assert ps.traffic(900) == '900 Б'
+    assert ps.traffic(0) == '0 Б'
+
+
+def test_big_traffic_reads_in_the_right_unit():
+    assert ps.traffic(3 * 1024 ** 3) == '3 ГБ'
+    assert ps.traffic(2 * 1024 ** 4) == '2 ТБ'
+
+
+def test_traffic_survives_garbage_from_the_panel():
+    assert ps.traffic(None) == '0 Б'
+    assert ps.traffic('нет данных') == '0 Б'
+
+
+async def test_stats_read_traffic_under_any_field_name(service):
+    """Имена полей у панели менялись между версиями."""
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def old_panel(uuid):
+        return {'lifetimeUsedTrafficBytes': 5 * 1024 ** 2,
+                'lastConnectedAt': None, 'status': 'ACTIVE'}
+
+    vpn.get_subscription = old_panel
+    rows = await srv.stats(server)
+
+    assert ps.traffic(rows[0]['traffic']) == '5 МБ'
+
+
+async def test_a_panel_failure_is_marked_not_silently_zeroed(service):
+    """Нули и молчание панели должны различаться на экране."""
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def boom(uuid):
+        raise RuntimeError('panel down')
+
+    vpn.get_subscription = boom
+    rows = await srv.stats(server)
+
+    assert rows[0]['error'] and rows[0]['traffic'] == 0

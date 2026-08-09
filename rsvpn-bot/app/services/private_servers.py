@@ -26,6 +26,15 @@ from app.domain import private_servers as ps
 log = logging.getLogger(__name__)
 
 
+def _first(data: dict, *keys):
+    """Первое непустое поле из перечисленных."""
+    for key in keys:
+        value = (data or {}).get(key)
+        if value not in (None, '', 0):
+            return value
+    return None
+
+
 @dataclass(frozen=True)
 class Result:
     ok: bool
@@ -205,15 +214,21 @@ class PrivateServerService:
                    'name': self.users.pick(user or {}, 'user_data.first_name') or user_id,
                    'username': self.users.pick(user or {}, 'user_data.username') or '',
                    'owner': user_id == server.get('owner_id'),
-                   'traffic': 0, 'online_at': None, 'status': ''}
+                   'traffic': 0, 'online_at': None, 'status': '', 'error': ''}
             uuid = self.users.pick(user or {}, 'vpn.uuid')
             if uuid:
                 try:
                     panel = await self.vpn.get_subscription(uuid)
-                    row['traffic'] = panel.get('usedTrafficBytes') or 0
-                    row['online_at'] = parse_dt(panel.get('onlineAt'))
+                    # Имена полей у панели менялись между версиями: берём
+                    # первое непустое, иначе экран показывает нули на живом
+                    # сервере и это невозможно отличить от «трафика нет».
+                    row['traffic'] = _first(panel, 'usedTrafficBytes',
+                                            'lifetimeUsedTrafficBytes', 'usedTraffic') or 0
+                    row['online_at'] = parse_dt(_first(panel, 'onlineAt', 'lastConnectedAt',
+                                                       'subLastOpenedAt'))
                     row['status'] = panel.get('status') or ''
                 except Exception as exc:      # панель недоступна — не рушим экран
+                    row['error'] = str(exc)
                     log.warning('статистика %s не получена: %s', user_id, exc)
             rows.append(row)
         return rows
