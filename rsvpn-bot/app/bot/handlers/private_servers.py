@@ -479,7 +479,8 @@ async def stats(call: types.CallbackQuery, callback_data: Server, c, user: dict,
         # Сервер заведён до того, как появился выбор площадки: квоты у него
         # в базе нет. Врать «без ограничения» нельзя — она может быть.
         quota = ' (квота площадки не указана)'
-    lines.append(f'\n<b>{e("traffic")} Всего:</b> <code>{ps.traffic(used)}</code>{quota}')
+    lines.append(f'\n<b>{e("traffic")} Всего за 30 дней:</b> '
+                 f'<code>{ps.traffic(used)}</code>{quota}')
 
     # Панель не ответила — на экране это выглядит как «трафика нет», хотя
     # он есть. Нули и молчание должны различаться.

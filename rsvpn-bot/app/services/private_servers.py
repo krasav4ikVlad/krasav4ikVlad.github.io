@@ -311,66 +311,62 @@ class PrivateServerService:
         return Result(True, server=server)
 
     # ── статистика ──────────────────────────────────────────────────────────
-    async def _server_usage(self, server: dict) -> tuple[dict, str]:
-        """Расход участников именно на этом сервере.
+    async def _server_usage(self, server: dict) -> tuple[dict, str, bool]:
+        """Расход участников на этом сервере: (расход, заметка, ответила ли панель).
 
-        Ключи — и числовой id из панели, и username: сопоставить можно любым,
-        а какой придёт, зависит от того, какой ручкой считали.
+        Третье значение отделяет «панель сказала ноль» от «панель не
+        сказала ничего». Ноль — законный ответ на свежем сервере, и
+        подменять его общим трафиком человека нельзя: 2 ТБ вместо нуля
+        пугают сильнее, чем честный ноль.
 
-        Панели новее отдают расход прямо по скваду. У тех, что старше, такой
-        ручки нет (404), и тогда считаем по нодам сквада — это те же цифры,
-        просто в два запроса.
+        Ключи — и числовой id из панели, и username: каким совпадёт,
+        зависит от того, какая ручка ответила.
         """
         squad = server.get('squad_uuid')
         if not squad:
-            return {}, 'у сервера не задан сквад'
+            return {}, 'у сервера не задан сквад', False
 
-        # Период — с запуска сервера, но не глубже оплаченного месяца.
-        # Конец завтрашним днём: границы у панели по датам, и «сегодня —
-        # сегодня» на свежем сервере даёт пустой диапазон.
+        # Окно — последние 30 дней. Не «с даты активации»: нода могла
+        # работать и до привязки к боту, и на свежем сервере такой период
+        # схлопывается в один день, где расхода ещё нет. Тридцать дней
+        # покрывают и текущий оплаченный месяц целиком.
         until = now() + timedelta(days=1)
         since = now() - timedelta(days=ps.CHARGE_PERIOD_DAYS)
-        started = parse_dt(server.get('activated_at'))
-        if started and started > since:
-            since = started
 
         try:
             by_squad = await self.vpn.squad_usage(squad, since, until)
+            if by_squad:
+                return by_squad, '', True
         except Exception as exc:
             log.warning('расход сквада %s не получен: %s', squad, exc)
-            by_squad = {}
-        if by_squad:
-            return by_squad, ''
 
         try:
             nodes = await self.vpn.squad_nodes(squad)
         except Exception as exc:
             log.warning('ноды сквада %s не получены: %s', squad, exc)
-            return {}, f'ноды сквада: {exc}'
+            return {}, f'ноды сквада: {exc}', False
         if not nodes:
-            return {}, 'в скваде нет нод'
+            return {}, 'в скваде нет нод', False
 
         usage: dict = {}
         note = ''
-        seen = 0
+        answered = False
         for node in nodes:
             node_uuid = node.get('uuid') or node.get('nodeUuid')
             if not node_uuid:
                 continue
-            seen += 1
             try:
                 for name, total in (await self.vpn.node_users_usage(
                         node_uuid, since, until)).items():
                     usage[name] = usage.get(name, 0) + total
+                answered = True
             except Exception as exc:
                 note = f'расход ноды: {exc}'
                 log.warning('расход ноды %s не получен: %s', node_uuid, exc)
 
-        if not usage and not note:
-            note = (f'ноды сквада ({len(nodes)}) без опознаваемого uuid'
-                    if not seen else
-                    f'расход по {seen} нодам пуст за период')
-        return usage, note
+        if not answered and not note:
+            note = f'ноды сквада ({len(nodes)}) без опознаваемого uuid'
+        return usage, note, answered
 
     async def usage_probe(self, server: dict) -> list[str]:
         """Что панель отвечает на ручки расхода. Только для диагностики.
@@ -384,9 +380,6 @@ class PrivateServerService:
 
         until = now() + timedelta(days=1)
         since = now() - timedelta(days=ps.CHARGE_PERIOD_DAYS)
-        started = parse_dt(server.get('activated_at'))
-        if started and started > since:
-            since = started
 
         out = [f'период: {since:%Y-%m-%d} … {until:%Y-%m-%d}']
         try:
@@ -415,7 +408,7 @@ class PrivateServerService:
         пятнадцать, а отдельного пакетного метода в API нет.
         """
         rows = []
-        by_server, usage_note = await self._server_usage(server)
+        by_server, usage_note, answered = await self._server_usage(server)
         people = [server.get('owner_id')] + [m.get('user_id')
                                              for m in (server.get('members') or [])]
         for user_id in [p for p in people if p]:
@@ -453,6 +446,10 @@ class PrivateServerService:
                 if key not in (None, '') and key in by_server:
                     scoped = by_server[key]
                     break
+            # Панель ответила, а человека в списке нет — значит он на этом
+            # сервере ничего не потратил. Это ноль, а не отсутствие данных.
+            if scoped is None and answered:
+                scoped = 0
             traffic = scoped if scoped is not None else _traffic_of(panel)
             row['source'] = 'server' if scoped is not None else 'user'
             row['panel_id'] = panel_id

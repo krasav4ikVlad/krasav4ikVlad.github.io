@@ -916,20 +916,22 @@ async def test_fallback_reason_is_recorded_for_diagnostics(service):
     assert 'HTTP 500' in rows[0]['usage_note']
 
 
-async def test_usage_period_starts_no_earlier_than_the_server_itself(service):
-    """До запуска сервера его расхода быть не может."""
+async def test_usage_period_covers_a_full_month(service):
+    """Нода могла работать и до привязки к боту — её расход тоже наш."""
     srv, vpn, users = service
     server = await live_server(service)
     window = {}
 
     async def usage(squad, since, until, **kw):
-        window['since'] = since
+        window['since'], window['until'] = since, until
         return {}
 
     vpn.squad_usage = usage
     await srv.stats(await srv.servers.get(server['_id']))
 
-    assert window['since'] >= parse_dt(server['activated_at'])
+    assert (window['until'] - window['since']).days >= ps.CHARGE_PERIOD_DAYS
+    assert window['since'] < parse_dt(server['activated_at']), \
+        'окно с даты активации на свежем сервере схлопывается в один день'
 
 
 async def test_older_panel_is_counted_by_nodes(service):
@@ -1030,13 +1032,6 @@ async def test_empty_node_usage_names_which_case_it_is(service):
     rows = await srv.stats(server)
     assert 'без опознаваемого uuid' in rows[0]['usage_note']
 
-    async def good_nodes(squad):
-        return [{'uuid': 'node-1'}]
-
-    vpn.squad_nodes = good_nodes
-    rows = await srv.stats(await srv.servers.get(server['_id']))
-    assert 'расход по 1 нодам пуст' in rows[0]['usage_note']
-
 
 async def test_usage_probe_shows_what_the_panel_actually_returned(service):
     """Пересказ ответа своими словами трижды оказывался неточным."""
@@ -1055,3 +1050,48 @@ async def test_usage_probe_shows_what_the_panel_actually_returned(service):
     assert any('нод в скваде: 1' in line for line in probe)
     assert any('topUsers' in line for line in probe)
     assert any('период:' in line for line in probe)
+
+
+async def test_an_honest_zero_is_not_replaced_by_the_whole_traffic(service):
+    """Панель ответила «ноль» — это ответ, а не отсутствие данных.
+
+    Подставлять вместо него общий трафик человека нельзя: на свежем сервере
+    2 ТБ вместо нуля пугают сильнее, чем честный ноль.
+    """
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def nodes(squad):
+        return [{'uuid': '94c3792c-5915-41d0-929e-00b949a28635'}]
+
+    async def empty(node_uuid, since, until, **kw):
+        return {}                       # topUsers пуст, но запрос удался
+
+    async def card(uuid):
+        return {'uuid': uuid, 'id': 2549, 'username': '1',
+                'userTraffic': {'usedTrafficBytes': 2 * 1024 ** 4}}
+
+    vpn.squad_nodes, vpn.node_users_usage = nodes, empty
+    vpn.get_subscription = card
+    rows = await srv.stats(server)
+
+    assert rows[0]['source'] == 'server'
+    assert rows[0]['traffic'] == 0
+    assert not rows[0].get('usage_note')
+
+
+async def test_a_silent_panel_still_falls_back(service):
+    """А вот если панель не ответила — общий трафик лучше, чем ничего."""
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def broken(squad):
+        raise RuntimeError('HTTP 500')
+
+    async def card(uuid):
+        return {'uuid': uuid, 'id': 1, 'userTraffic': {'usedTrafficBytes': 4096}}
+
+    vpn.squad_nodes, vpn.get_subscription = broken, card
+    rows = await srv.stats(server)
+
+    assert rows[0]['source'] == 'user' and rows[0]['traffic'] == 4096
