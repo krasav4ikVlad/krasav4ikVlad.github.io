@@ -136,7 +136,7 @@ async def order(call: types.CallbackQuery, callback_data: Server, c, user: dict,
     if c.notifier:
         from app.admin.private_servers import request_card, request_markup
 
-        await c.notifier.send('payments', await request_card(c, result.server),
+        await c.notifier.send('servers', await request_card(c, result.server),
                               markup=request_markup(result.server['_id']))
 
     await call.answer('Заявка принята', show_alert=True)

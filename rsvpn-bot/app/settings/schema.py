@@ -268,8 +268,7 @@ SCHEMA: tuple[Group, ...] = (
         Setting('private.price_team', 'Команда (15 мест)', 'int', 2000, unit='₽', min=0),
         Setting('private.note', 'Подпись на витрине', 'text',
                 'Свой сервер — отдельная нода, на которой только вы и те, кого '
-                'вы позвали. Скорость не делится с чужими. Платит владелец, '
-                'друзья скидываются ему сами.'),
+                'вы позвали. Скорость не делится с чужими.'),
     )),
 
     Group('lifeline', f'{e("knot")} Lifeline (сервер после истечения)', (
@@ -316,6 +315,7 @@ SCHEMA: tuple[Group, ...] = (
         Setting('notify.topic_promo', 'Тема: промокоды', 'int', 24484),
         Setting('notify.topic_campaigns', 'Тема: отчёты кампаний', 'int', 470234),
         Setting('notify.topic_payout', 'Тема: заявки на вывод', 'int', 279680),
+        Setting('notify.topic_servers', 'Тема: личные серверы', 'int', 1561465),
         Setting('notify.enabled', 'Слать уведомления админам', 'bool', True),
     )),
 

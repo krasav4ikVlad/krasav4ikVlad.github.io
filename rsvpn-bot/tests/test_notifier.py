@@ -127,3 +127,13 @@ async def test_admin_chat_gets_plain_characters(notifier, bot, container):
 
     assert await notifier.registered(5)
     assert seen['plain'] is True
+
+
+async def test_server_notifications_go_to_their_own_topic(bot, notifier, container):
+    """Раньше они уходили в тему «payments», которой в настройках нет,
+    и падали в общий чат без ветки."""
+    await container.settings.set('notify.chat_id', -100500)
+
+    await notifier.send('servers', 'тест')
+
+    assert bot.sent[-1]['thread'] == 1561465

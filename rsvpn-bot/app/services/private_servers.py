@@ -302,7 +302,7 @@ class PrivateServerService:
                          f'{server.get("price")}₽ на балансе. Пополните — доступ '
                          f'вернётся. Через {ps.GRACE_DAYS} дня сервер закроется.')
         if self.notifier:
-            await self.notifier.send('payments',
+            await self.notifier.send('servers',
                                      f'Сервер {server["_id"]} приостановлен (нет средств)')
 
     async def close(self, server: dict, reason: str = 'оплата не поступила') -> None:
