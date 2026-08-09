@@ -19,10 +19,19 @@ from app.content.emoji import plain
 log = logging.getLogger(__name__)
 
 
+# Сколько в сумме готовы ждать флуд-паузу на ОДНОМ письме. Telegram при
+# большой рассылке отвечает 429 и просит подождать; обычно это секунды, но
+# на десятках тысяч писем попадаются паузы в десятки минут. Ждать их молча
+# нельзя — со стороны это неотличимо от зависшей рассылки.
+MAX_FLOOD_WAIT_SEC = 300
+
+
 class Sender:
-    def __init__(self, max_retries: int = 3, on_blocked=None):
+    def __init__(self, max_retries: int = 3, on_blocked=None, on_flood=None):
         self.max_retries = max_retries
         self.on_blocked = on_blocked  # колбэк: пометить пользователя заблокировавшим
+        # колбэк: сообщить наверх, что идёт вынужденная пауза и сколько секунд
+        self.on_flood = on_flood
 
     async def send(self, bot: Bot, user_id: int, text: str, markup=None) -> bool:
         # Рассылка из админки запускается фоновой задачей прямо из хендлера, а
@@ -32,13 +41,27 @@ class Sender:
             return await self._send(bot, user_id, text, markup)
 
     async def _send(self, bot: Bot, user_id: int, text: str, markup=None) -> bool:
-        for attempt in range(self.max_retries):
+        waited = 0
+        attempt = 0
+        while attempt < self.max_retries:
             try:
                 await bot.send_message(user_id, text, reply_markup=markup)
                 return True
             except TelegramRetryAfter as exc:
-                log.warning('флуд-лимит: ждём %sс', exc.retry_after)
-                await asyncio.sleep(exc.retry_after + 1)
+                # Пауза по требованию Telegram — не наша ошибка и не отказ
+                # адресата, поэтому попытку она не тратит. Раньше три подряд
+                # флуд-паузы записывали живого человека в «не доставлено».
+                wait = int(exc.retry_after) + 1
+                log.warning('флуд-лимит: ждём %sс (адресат %s)', wait, user_id)
+                if self.on_flood:
+                    await self.on_flood(wait)
+                if waited + wait > MAX_FLOOD_WAIT_SEC:
+                    log.error('флуд-пауза больше %sс — письмо %s отложено',
+                              MAX_FLOOD_WAIT_SEC, user_id)
+                    return False
+                waited += wait
+                await asyncio.sleep(wait)
+                continue
             except TelegramForbiddenError:
                 # пользователь заблокировал бота — это не ошибка, это факт
                 if self.on_blocked:
@@ -48,6 +71,7 @@ class Sender:
                 log.warning('не доставлено %s: %s', user_id, exc.message)
                 return False
             except Exception as exc:  # noqa: BLE001
-                log.warning('ошибка отправки %s (попытка %s): %s', user_id, attempt + 1, exc)
+                attempt += 1
+                log.warning('ошибка отправки %s (попытка %s): %s', user_id, attempt, exc)
                 await asyncio.sleep(1)
         return False

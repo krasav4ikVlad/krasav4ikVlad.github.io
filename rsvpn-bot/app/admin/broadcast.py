@@ -31,6 +31,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.bot.callbacks import Admin as Adm
 from app.campaigns.sender import Sender
 from app.core import db as names
+from datetime import timedelta
+
 from app.core.time import now
 from app.domain.segments import AUDIENCES, SEGMENTS, audience_query
 from app.content.emoji import e
@@ -219,8 +221,19 @@ def _log_failure(job_id: str, task: asyncio.Task) -> None:
         log.error('рассылка %s упала: %r', job_id, exc, exc_info=exc)
 
 
+def eta(left: int, delay: float) -> str:
+    """Сколько ещё идти. На 190 тысячах писем это часы, и знать это надо
+    заранее, а не гадать, зависла рассылка или просто длинная."""
+    seconds = int(left * max(delay, 0.03))
+    if seconds < 90:
+        return f'{seconds} сек'
+    if seconds < 5400:
+        return f'{seconds // 60} мин'
+    return f'{seconds / 3600:.1f} ч'
+
+
 def progress_text(sent: int, failed: int, total: int, done: bool = False,
-                  error: str = '') -> str:
+                  error: str = '', pause_until: str = '', delay: float = 0.04) -> str:
     """Счётчики рассылки. Один текст на ход, на конец и на обрыв — чтобы
     цифры на экране не меняли формат в момент завершения."""
     done_count = sent + failed
@@ -228,6 +241,8 @@ def progress_text(sent: int, failed: int, total: int, done: bool = False,
         head = f'<b>{e("attention")} Рассылка прервана</b>'
     elif done:
         head = f'<b>{e("ok")} Рассылка завершена</b>'
+    elif pause_until:
+        head = f'<b>{e("hourglass")} Пауза по требованию Telegram</b>'
     else:
         head = f'<b>{e("broadcast")} Рассылка идёт</b>'
 
@@ -236,11 +251,16 @@ def progress_text(sent: int, failed: int, total: int, done: bool = False,
     lines.append(f'<b>Не доставлено:</b> <code>{failed}</code>')
 
     if total and not done:
-        lines.append(f'<b>Осталось:</b> <code>{max(0, total - done_count)}</code> '
-                     f'из <code>{total}</code>')
+        left = max(0, total - done_count)
+        lines.append(f'<b>Осталось:</b> <code>{left}</code> из <code>{total}</code>')
+        lines.append(f'<b>Примерно ещё:</b> {eta(left, delay)}')
     elif not done:
         lines.append(f'<b>Обработано:</b> <code>{done_count}</code>')
 
+    if pause_until:
+        lines.append(f'\nTelegram просит подождать до <b>{pause_until}</b>. '
+                     'Это не сбой: на большой рассылке он притормаживает '
+                     'отправку. Продолжится само.')
     if error:
         lines.append(f'\n<code>{error}</code>')
         lines.append('Можно продолжить с этого места кнопкой ниже.')
@@ -250,6 +270,14 @@ def progress_text(sent: int, failed: int, total: int, done: bool = False,
 def _resume_kb(job_id: str) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(_btn(f'{e("renew")} Продолжить рассылку', 'bcres', job_id))
+    return kb.as_markup()
+
+
+def _running_kb(job_id: str) -> types.InlineKeyboardMarkup:
+    """Кнопка остановки. На 190 тысячах писем рассылка идёт часами, и без
+    неё единственный способ её прекратить — перезапуск процесса."""
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn(f'{e("cross")} Остановить', 'bcstop', job_id))
     return kb.as_markup()
 
 
@@ -280,16 +308,25 @@ async def _run(c, bot, job_id: str) -> None:
 
     delay = await c.settings.int('campaign.broadcast_delay_ms') / 1000
     step = await c.settings.int('campaign.broadcast_progress_step') or 0
-    # Заблокировавший бота помечается прямо во время отправки: следующая
-    # рассылка на него уже не потратит ни попытки, ни строчки в отчёте.
-    sender = Sender(on_blocked=c.users.mark_blocked)
-
     recipients = job.get('recipients') or []
     total = len(recipients)
     position = int(job.get('position', 0) or 0)
     sent = int(job.get('sent', 0) or 0)
     failed = int(job.get('failed', 0) or 0)
     text = job.get('text') or ''
+
+    async def on_flood(seconds: int) -> None:
+        """Пауза Telegram — показать её сразу, не дожидаясь конца шага.
+
+        Иначе счётчик замирает на середине, и полчаса ожидания выглядят
+        как зависшая рассылка. Именно так это и выглядело.
+        """
+        until = (now() + timedelta(seconds=seconds)).strftime('%H:%M:%S')
+        await _show(bot, job, progress_text(sent, failed, total,
+                                            pause_until=until, delay=delay),
+                    _running_kb(job_id))
+
+    sender = Sender(on_blocked=c.users.mark_blocked, on_flood=on_flood)
 
     try:
         while position < total:
@@ -308,14 +345,31 @@ async def _run(c, bot, job_id: str) -> None:
             # отсюда, повторно уйдёт не больше шага сообщений.
             if step and (sent + failed) % step == 0:
                 await _save(c, job_id, position=position, sent=sent, failed=failed)
-                await _show(bot, job, progress_text(sent, failed, total))
+                await _show(bot, job, progress_text(sent, failed, total, delay=delay),
+                            _running_kb(job_id))
+
+                # Остановку читаем из базы, а не из памяти: кнопку нажимают
+                # в другом процессе-обработчике, и общего состояния у них нет.
+                fresh = await c.db[names.BROADCASTS].find_one(
+                    {'_id': job_id}, {'status': 1})
+                if (fresh or {}).get('status') == 'stopping':
+                    await _save(c, job_id, position=position, sent=sent,
+                                failed=failed, status='interrupted',
+                                error='остановлена вручную', finished_at=now())
+                    await _show(bot, job, progress_text(
+                        sent, failed, total, error='остановлена вручную',
+                        delay=delay), _resume_kb(job_id))
+                    log.info('рассылка %s остановлена на %s из %s',
+                             job_id, position, total)
+                    return
 
             if delay:
                 await asyncio.sleep(delay)
     except Exception as exc:
         await _save(c, job_id, position=position, sent=sent, failed=failed,
                     status='failed', error=repr(exc), finished_at=now())
-        await _show(bot, job, progress_text(sent, failed, total, error=repr(exc)),
+        await _show(bot, job, progress_text(sent, failed, total, error=repr(exc),
+                                            delay=delay),
                     _resume_kb(job_id))
         if c.notifier:
             await c.notifier.send('campaigns',
@@ -327,7 +381,18 @@ async def _run(c, bot, job_id: str) -> None:
                 status='done', finished_at=now())
     log.info('рассылка %s завершена: отправлено %s, не доставлено %s',
              job_id, sent, failed)
-    await _show(bot, job, progress_text(sent, failed, total, done=True))
+    await _show(bot, job, progress_text(sent, failed, total, done=True, delay=delay))
+
+
+async def stop(call: types.CallbackQuery, callback_data: Adm, c, settings) -> None:
+    """Пометить рассылку к остановке. Сама она остановится на ближайшем шаге."""
+    result = await c.db[names.BROADCASTS].update_one(
+        {'_id': callback_data.a, 'status': 'running'},
+        {'$set': {'status': 'stopping'}})
+    if not getattr(result, 'modified_count', 0):
+        await call.answer('Эта рассылка уже не идёт', show_alert=True)
+        return
+    await call.answer('Останавливаю, подождите несколько секунд')
 
 
 async def resume(call: types.CallbackQuery, callback_data: Adm, c, settings) -> None:
@@ -415,6 +480,7 @@ def register(router: Router) -> None:
     router.callback_query.register(ask_text, Adm.filter(F.act == 'bcseg'))
     router.callback_query.register(start_sending, Adm.filter(F.act == 'bcgo'))
     router.callback_query.register(resume, Adm.filter(F.act == 'bcres'))
+    router.callback_query.register(stop, Adm.filter(F.act == 'bcstop'))
     router.callback_query.register(blocked_menu, Adm.filter(F.act == 'blocked'))
     router.callback_query.register(unblock_all, Adm.filter(F.act == 'bcunbl'))
     router.message.register(preview, Broadcast.text)

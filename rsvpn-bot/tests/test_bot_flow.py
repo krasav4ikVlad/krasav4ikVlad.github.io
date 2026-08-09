@@ -1499,3 +1499,112 @@ async def test_blocked_are_counted_for_the_admin(env):
 
     assert await c.users.blocked_count() == 2
     assert await c.users.blocked_count({'growth.segment': 'active_paid'}) == 0
+
+
+# ── флуд-пауза Telegram ─────────────────────────────────────────────────────
+#
+# На 190 000 писем Telegram начинает отвечать 429 и просить подождать. Пауза
+# бывает в полчаса, и со стороны это неотличимо от зависшей рассылки: счётчик
+# замер, лог молчит, кнопок нет.
+
+async def test_a_flood_pause_is_shown_not_hidden(env):
+    from aiogram.exceptions import TelegramRetryAfter
+
+    dp, bot, session, c = env
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    await c.settings.set('campaign.broadcast_progress_step', 100)
+    for user_id in range(900, 903):
+        await c.users.create({'user_data': {'user_id': user_id},
+                              'growth': {'segment': 'expired_3d'}})
+
+    original = bot.session.make_request
+    hit = {'n': 0}
+
+    async def flood_once(bot_, method, timeout=None):
+        if type(method).__name__ == 'SendMessage' and method.chat_id == 901:
+            hit['n'] += 1
+            if hit['n'] == 1:
+                raise TelegramRetryAfter(method=method, message='flood',
+                                         retry_after=0)
+        return await original(bot_, method, timeout)
+
+    bot.session.make_request = flood_once
+    session.calls.clear()
+    await run_broadcast(c, bot, {'growth.segment': 'expired_3d'}, 'Привет!')
+
+    edits = [t for name, t in session.calls if name == 'EditMessageText']
+    assert any('Пауза по требованию Telegram' in t for t in edits), edits
+
+
+async def test_a_flood_pause_does_not_count_as_undelivered(env):
+    """Раньше три подряд флуд-паузы записывали живого человека в «не
+    доставлено»: пауза тратила попытку, хотя отказа не было."""
+    from aiogram.exceptions import TelegramRetryAfter
+
+    dp, bot, session, c = env
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    await c.users.create({'user_data': {'user_id': 910},
+                          'growth': {'segment': 'expired_3d'}})
+
+    original = bot.session.make_request
+    tries = {'n': 0}
+
+    async def flood_thrice(bot_, method, timeout=None):
+        if type(method).__name__ == 'SendMessage':
+            tries['n'] += 1
+            if tries['n'] <= 3:
+                raise TelegramRetryAfter(method=method, message='flood',
+                                         retry_after=0)
+        return await original(bot_, method, timeout)
+
+    bot.session.make_request = flood_thrice
+    job = await run_broadcast(c, bot, {'growth.segment': 'expired_3d'}, 'Привет!')
+
+    assert job['sent'] == 1 and job['failed'] == 0
+
+
+async def test_a_running_broadcast_can_be_stopped(env):
+    """190 тысяч писем идут часами. Без кнопки единственный способ
+    прекратить — перезапустить процесс."""
+    from app.admin.broadcast import _recipients, _run
+
+    dp, bot, session, c = env
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    await c.settings.set('campaign.broadcast_progress_step', 5)
+    for user_id in range(920, 950):
+        await c.users.create({'user_data': {'user_id': user_id},
+                              'growth': {'segment': 'expired_3d'}})
+
+    recipients = await _recipients(c, {'growth.segment': 'expired_3d'})
+    await c.db['broadcasts'].insert_one({
+        '_id': 'job-stop', 'text': 'Привет!', 'recipients': recipients,
+        'position': 0, 'sent': 0, 'failed': 0, 'status': 'running',
+        'chat_id': CHAT.id, 'message_id': 9})
+
+    original = c.db['broadcasts'].find_one
+
+    async def stop_after_first_step(query, projection=None):
+        doc = await original(query, projection)
+        # имитируем нажатие «Остановить» сразу после первой отметки
+        if projection == {'status': 1}:
+            return {'status': 'stopping'}
+        return doc
+
+    c.db['broadcasts'].find_one = stop_after_first_step
+    await _run(c, bot, 'job-stop')
+    c.db['broadcasts'].find_one = original
+
+    job = await c.db['broadcasts'].find_one({'_id': 'job-stop'})
+    assert job['status'] == 'interrupted'
+    assert job['position'] == 5, 'остановились на ближайшем шаге, а не в конце'
+
+    delivered = [t for name, t in session.calls if t == 'Привет!']
+    assert len(delivered) == 5, 'после остановки писать не должны'
+
+
+def test_eta_is_human_readable():
+    from app.admin.broadcast import eta
+
+    assert eta(100, 0.04) == '4 сек'
+    assert eta(10_000, 0.04) == '6 мин'
+    assert eta(190_000, 0.04) == '2.1 ч'
