@@ -185,6 +185,38 @@ class RemnawaveClient:
             return {}
         return await self._request('GET', f'/api/users/{uuid}') or {}
 
+    async def squad_nodes(self, squad_uuid: str) -> list[dict]:
+        """Ноды, доступные внутреннему скваду. Личный сервер — это одна нода."""
+        if not squad_uuid:
+            return []
+        data = await self._request(
+            'GET', f'/api/internal-squads/{squad_uuid}/accessible-nodes')
+        if isinstance(data, list):
+            return data
+        # ответ бывает разложен на активные и неактивные
+        nodes: list[dict] = []
+        for value in (data or {}).values():
+            if isinstance(value, list):
+                nodes.extend(item for item in value if isinstance(item, dict))
+        return nodes
+
+    async def node_users_usage(self, node_uuid: str) -> list[dict]:
+        """Расход каждого пользователя на одной ноде.
+
+        Это и есть «кто ест мой сервер»: userTraffic в карточке пользователя
+        считает весь его трафик по всем нодам, включая общие.
+        """
+        if not node_uuid:
+            return []
+        data = await self._request(
+            'GET', f'/api/bandwidth-stats/nodes/{node_uuid}/users')
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        for value in (data or {}).values():
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return []
+
     async def devices(self, uuid: str) -> list[dict]:
         if not uuid:
             return []

@@ -459,7 +459,10 @@ async def stats(call: types.CallbackQuery, callback_data: Server, c, user: dict,
     lines = []
     for row in rows:
         mark = e('user') if row['owner'] else e('friends')
-        online = fmt(row['online_at']) if row['online_at'] else 'не заходил'
+        # «не заходил» — утверждение, а панель этой версии времени
+        # подключения не отдаёт вовсе. Врать в обе стороны одинаково плохо.
+        online = (fmt(row['online_at']) if row['online_at'] else
+                  'не заходил' if row.get('online_known') else 'нет данных')
         detail = (f'{e("warning")} {row["error"]}' if row.get('error') else
                   f'трафик: <code>{ps.traffic(row["traffic"])}</code>, '
                   f'последний вход: {online}')
@@ -482,6 +485,11 @@ async def stats(call: types.CallbackQuery, callback_data: Server, c, user: dict,
     # он есть. Нули и молчание должны различаться.
     if any(row.get('error') for row in rows):
         lines.append(f'\n{e("warning")} Цифры неполные — см. пометки выше.')
+    elif any(row.get('source') == 'user' for row in rows):
+        # Общий трафик человека больше расхода этого сервера: в нём и
+        # обычные серверы RS VPN. Молча выдавать одно за другое нельзя.
+        lines.append(f'\n{e("note")} Панель не дала разбивку по этому серверу — '
+                     f'показан весь трафик участников, включая другие серверы.')
 
     kb = InlineKeyboardBuilder()
     kb.row(_btn(f'{e("refresh")} Обновить', 'stats', server['_id']))

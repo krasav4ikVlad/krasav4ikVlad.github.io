@@ -735,3 +735,125 @@ async def test_kicked_member_is_told_why_the_vpn_stopped(service):
 
     who, text = bot.sent[-1]
     assert who == 2 and 'закрыл вам доступ' in text
+
+
+# ── userTraffic ─────────────────────────────────────────────────────────────
+#
+# Так называет израсходованный трафик Remnawave 2.x. Ни одного из имён,
+# которые перебирались раньше, в её ответе нет вовсе — отсюда и нули.
+
+def test_traffic_is_read_from_user_traffic():
+    from app.services.private_servers import _traffic_of
+
+    assert _traffic_of({'userTraffic': 5 * 1024 ** 2}) == 5 * 1024 ** 2
+
+
+def test_traffic_is_summed_from_any_shape():
+    """userTraffic в разных сборках — число, объект с итогом или список нод."""
+    from app.services.private_servers import _traffic_of
+
+    assert _traffic_of({'userTraffic': {'total': 700}}) == 700
+    assert _traffic_of({'userTraffic': [{'total': 100}, {'total': 50}]}) == 150
+    assert _traffic_of({'userTraffic': {'node-a': 10, 'node-b': 20}}) == 30
+    assert _traffic_of({'userTraffic': '4096'}) == 4096
+
+
+def test_a_real_zero_is_not_a_missing_field():
+    from app.services.private_servers import _traffic_of
+
+    assert _traffic_of({'userTraffic': 0}) == 0
+    assert _traffic_of({'status': 'ACTIVE'}) is None
+
+
+async def test_stats_on_a_real_panel_answer(service):
+    """Ответ той же формы, что пришёл с боевой панели."""
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def real(uuid):
+        return {'uuid': uuid, 'id': 2549, 'username': '802421217',
+                'status': 'ACTIVE', 'trafficLimitBytes': 0,
+                'trafficLimitStrategy': 'NO_RESET', 'hwidDeviceLimit': 17,
+                'userTraffic': 4.91 * 1024 ** 2, 'lastTrafficResetAt': None}
+
+    vpn.get_subscription = real
+    rows = await srv.stats(server)
+
+    assert not rows[0]['error']
+    assert ps.traffic(rows[0]['traffic']) == '4.91 МБ'
+
+
+async def test_missing_online_field_is_not_reported_as_never_connected(service):
+    """Панель этой версии времени подключения не отдаёт — врать нельзя."""
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def no_online(uuid):
+        return {'uuid': uuid, 'userTraffic': 100, 'status': 'ACTIVE'}
+
+    vpn.get_subscription = no_online
+    rows = await srv.stats(server)
+
+    assert rows[0]['online_known'] is False
+
+
+# ── расход именно этого сервера ─────────────────────────────────────────────
+#
+# userTraffic в карточке — весь трафик человека по всем нодам, включая общие
+# серверы RS VPN. Списывать его на личный сервер значит завышать расход и
+# врать про квоту площадки.
+
+async def test_traffic_is_taken_from_the_server_node(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def nodes(squad):
+        assert squad == SQUAD
+        return [{'uuid': 'node-1'}]
+
+    async def usage(node_uuid):
+        return [{'userUuid': 'u-1', 'total': 4 * 1024 ** 2}]
+
+    async def card(uuid):
+        return {'uuid': uuid, 'userTraffic': 900 * 1024 ** 3}   # весь трафик
+
+    vpn.squad_nodes, vpn.node_users_usage = nodes, usage
+    vpn.get_subscription = card
+    rows = await srv.stats(server)
+
+    assert rows[0]['source'] == 'node'
+    assert ps.traffic(rows[0]['traffic']) == '4 МБ'
+
+
+async def test_falls_back_to_the_user_card_when_the_node_is_silent(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def no_nodes(squad):
+        raise RuntimeError('нет такой ручки')
+
+    async def card(uuid):
+        return {'uuid': uuid, 'userTraffic': 7 * 1024 ** 2}
+
+    vpn.squad_nodes = no_nodes
+    vpn.get_subscription = card
+    rows = await srv.stats(server)
+
+    assert rows[0]['source'] == 'user'
+    assert ps.traffic(rows[0]['traffic']) == '7 МБ'
+
+
+async def test_node_usage_matches_by_username_too(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def nodes(squad):
+        return [{'uuid': 'node-1'}]
+
+    async def usage(node_uuid):
+        return [{'username': '1', 'total': 2048}]
+
+    vpn.squad_nodes, vpn.node_users_usage = nodes, usage
+    rows = await srv.stats(server)
+
+    assert rows[0]['traffic'] == 2048
