@@ -1095,3 +1095,57 @@ async def test_a_silent_panel_still_falls_back(service):
     rows = await srv.stats(server)
 
     assert rows[0]['source'] == 'user' and rows[0]['traffic'] == 4096
+
+
+# ── участник без своей подписки ─────────────────────────────────────────────
+#
+# Смысл тарифа в том, что друзьям не нужна своя подписка. Но и уносить её с
+# собой при выходе они не должны.
+
+async def test_member_without_a_subscription_gets_one_for_the_paid_period(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+    await users.create({'user_data': {'user_id': 2}, 'info': {'balance': 0},
+                        'vpn': {'uuid': '', 'shortUuid': ''}})
+
+    invite = await srv.invite(server['_id'], 1)
+    assert (await srv.join(invite.reason, 2)).ok
+
+    member = await users.get(2)
+    assert member['vpn']['uuid'], 'подписку в панели не завели'
+    assert vpn.state['u-2']['expireAt'] > now()
+    # только сервер друга и ничего больше
+    assert vpn.state['u-2']['squads'] == [SQUAD]
+
+
+async def test_such_member_loses_access_on_leaving(service):
+    """Иначе гость на день уносит рабочую подписку до конца месяца владельца."""
+    srv, vpn, users = service
+    server = await live_server(service)
+    await users.create({'user_data': {'user_id': 2}, 'info': {'balance': 0},
+                        'vpn': {'uuid': '', 'shortUuid': ''}})
+    invite = await srv.invite(server['_id'], 1)
+    await srv.join(invite.reason, 2)
+
+    await srv.leave(server['_id'], 2)
+
+    assert vpn.state['u-2']['squads'] == []
+    assert vpn.state['u-2']['expireAt'] <= now(), 'подписка осталась действующей'
+
+
+async def test_member_with_his_own_subscription_keeps_it(service):
+    """А у того, кто платит сам, ничего отбирать нельзя."""
+    srv, vpn, users = service
+    server = await live_server(service)
+    mine = now() + timedelta(days=100)
+    await users.create({'user_data': {'user_id': 2}, 'info': {'balance': 0},
+                        'vpn': {'uuid': 'u-2', 'shortUuid': 's-2', 'expireAt': mine,
+                                'activeInternalSquads': ['общий']}})
+    invite = await srv.invite(server['_id'], 1)
+    await srv.join(invite.reason, 2)
+
+    await srv.leave(server['_id'], 2)
+
+    assert vpn.state['u-2']['squads'] == ['общий']
+    doc = await users.get(2)
+    assert parse_dt(doc['vpn']['expireAt']) == mine

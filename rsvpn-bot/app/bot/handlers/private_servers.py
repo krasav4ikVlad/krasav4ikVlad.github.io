@@ -127,7 +127,9 @@ async def choose_location(call: types.CallbackQuery, callback_data: Server, c,
         kb.row(_btn(f'{location.title} — {location.traffic_title}', 'loc',
                     _pick(plan.code, location.code)))
     for location in ps.UNLIMITED:
-        kb.row(_btn(f'{e("green")} {location.title} — безлимит', 'loc',
+        # Без значка: в остальном боте он означает «выбрано», и здесь
+        # читался как уже сделанный выбор. Отличие и так в подписи.
+        kb.row(_btn(f'{location.title} — безлимит', 'loc',
                     _pick(plan.code, location.code)))
     kb.row(_btn(f'{e("back")} К тарифам', 'shop'))
 
@@ -135,7 +137,7 @@ async def choose_location(call: types.CallbackQuery, callback_data: Server, c,
             + f'<b>Тариф:</b> <code>{plan.title}</code>, мест {plan.slots}\n\n'
             + '<blockquote>Площадки с пометкой «1 ТБ» ограничены по трафику на '
               'весь сервер в месяц — на несколько человек этого хватает с '
-              'запасом. Отмеченные зелёным работают без ограничения по '
+              'запасом. Отмеченные «безлимит» работают без ограничения по '
               'трафику.\n\nБлиже к вам — быстрее отклик: для России это '
               'европейские точки.</blockquote>')
 
@@ -233,7 +235,7 @@ async def order(call: types.CallbackQuery, callback_data: Server, c, user: dict,
 
 # ── экран сервера ───────────────────────────────────────────────────────────
 async def server_screen(event, c, user: dict, settings, server: dict,
-                        note: str = '') -> None:
+                        note: str = '', extra=None) -> None:
     owner = server.get('owner_id') == event.from_user.id
     plan = ps.plan_of(server)
     paid_until = server.get('paid_until')
@@ -272,18 +274,25 @@ async def server_screen(event, c, user: dict, settings, server: dict,
         else:
             kb.row(_btn(f'{e("cross")} Выйти с сервера', 'leave', server['_id']))
 
-    hint = note or ('Сервер готовится. Как только он будет поднят, придёт сообщение.'
-                    if server.get('status') == ps.REQUESTED else
-                    'Продление выключено: сервер доработает оплаченный месяц и '
-                    'закроется. Передумаете — включите обратно.'
-                    if owner and not server.get('autorenew', True) else
-                    'Приглашайте друзей — каждый получит доступ к этому серверу '
-                    'и только к нему.' if owner else
-                    'Вы пользуетесь сервером друга. Оплачивает его владелец.')
+    hint = ('Сервер готовится. Как только он будет поднят, придёт сообщение.'
+            if server.get('status') == ps.REQUESTED else
+            'Продление выключено: сервер доработает оплаченный месяц и '
+            'закроется. Передумаете — включите обратно.'
+            if owner and not server.get('autorenew', True) else
+            'Приглашайте друзей — каждый получит доступ к этому серверу '
+            'и только к нему.' if owner else
+            'Вы пользуетесь сервером друга. Оплачивает его владелец.')
 
+    # Заметка — обычным блоком, а не цитатой: внутри цитаты Telegram не даёт
+    # скопировать <code> нажатием, а ссылку-приглашение показывают ровно
+    # ради этого.
     text = (profile_caption(user, f'{e("servers")} Свой сервер')
-            + '\n'.join(lines) + f'\n\n<blockquote>{hint}</blockquote>')
+            + '\n'.join(lines)
+            + (f'\n\n{note}' if note else '')
+            + f'\n\n<blockquote>{hint}</blockquote>')
 
+    if extra is not None:
+        kb.row(extra)
     await footer(kb, settings, back='profile')
     await render(event, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
     if isinstance(event, types.CallbackQuery):
@@ -313,14 +322,17 @@ async def invite(call: types.CallbackQuery, callback_data: Server, c, user: dict
 
     # Тем же экраном, а не новым сообщением: иначе на каждое нажатие чат
     # прирастает карточкой, а закреплённый экран уезжает вверх.
+    share = types.InlineKeyboardButton(
+        text=f'{e("link")} Отправить другу',
+        url=f'https://t.me/share/url?url={invite_link}&text='
+            f'Заходи на мой сервер RS VPN')
     await server_screen(
-        call, c, user, settings, server,
-        note=(f'{e("link")} <b>Ссылка-приглашение</b>\n'
+        call, c, user, settings, server, extra=share,
+        note=(f'{e("link")} <b>Ссылка-приглашение</b> — нажмите, чтобы скопировать:\n'
               f'<code>{invite_link}</code>\n\n'
               f'Одноразовая: сработает у одного человека. Свободных мест '
-              f'после него — {max(0, ps.free_slots(server) - 1)}.\n\n'
-              f'Друг сможет её принять, только если подтвердит это сам. '
-              f'Добавить человека без его ведома нельзя.'))
+              f'после него — {max(0, ps.free_slots(server) - 1)}. '
+              f'Принять её друг должен сам — добавить без его ведома нельзя.'))
 
 
 async def accept_screen(message: types.Message, code: str, c, user: dict, settings) -> None:

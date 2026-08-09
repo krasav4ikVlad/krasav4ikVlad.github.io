@@ -603,13 +603,19 @@ class PrivateServerService:
         vpn = (user or {}).get('vpn') or {}
         paid_until = parse_dt(server.get('paid_until')) or now()
 
-        if not vpn.get('uuid'):
+        fresh_subscription = not vpn.get('uuid')
+        if fresh_subscription:
             created = await self.vpn.create_subscription(
                 user_id, days=max(1, (paid_until - now()).days))
             await self.users.set_vpn(user_id, {
                 'uuid': created['uuid'], 'shortUuid': created['shortUuid'],
                 'expireAt': created['expireAt'], 'createdAt': created['createdAt'],
                 'period': vpn.get('period') or 1,
+                # Подписки у человека не было вовсе. Запоминаем это моментом
+                # «сейчас»: при выходе срок вернётся сюда, то есть истечёт.
+                # Иначе гость, зашедший на день, уносит с собой рабочую
+                # подписку до конца оплаченного владельцем месяца.
+                'private_prev_expire': now(),
             })
             user = await self.users.get(user_id)
             vpn = (user or {}).get('vpn') or {}
@@ -625,7 +631,7 @@ class PrivateServerService:
         # Свой срок запоминаем один раз: повторный вход не должен затирать
         # его уже продлённым значением, иначе выход подарит человеку месяц.
         if expires and expires < paid_until:
-            if not vpn.get('private_prev_expire'):
+            if not vpn.get('private_prev_expire') and not fresh_subscription:
                 fields['private_prev_expire'] = expires
             fields['expireAt'] = paid_until
 
