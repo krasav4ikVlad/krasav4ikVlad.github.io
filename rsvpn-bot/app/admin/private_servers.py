@@ -28,6 +28,11 @@ class Provision(StatesGroup):
     squad = State()
 
 
+def looks_like_uuid(value: str) -> bool:
+    """Панель молча проглотит мусор, и сервер будет «выдан», но пустой."""
+    return len(value) == UUID_LENGTH and value.count('-') == 4
+
+
 def _btn(text: str, action: str, server_id: str) -> types.InlineKeyboardButton:
     return types.InlineKeyboardButton(
         text=text, callback_data=Adm(action=action, server_id=server_id).pack())
@@ -75,27 +80,69 @@ async def give(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
 
     await state.set_state(Provision.squad)
     await state.update_data(server_id=server['_id'])
+
+    # В группе обычный текст до бота не доходит: у ботов включён privacy mode,
+    # и Telegram отдаёт им только команды, реплаи и упоминания. Поэтому в
+    # чате-группе просим командой, а «пришлите сообщением» оставляем личке —
+    # иначе кнопка выглядит сломанной, хотя дело в настройке Telegram.
+    in_group = getattr(call.message.chat, 'type', 'private') != 'private'
+    how = (f'Пришлите командой:\n<code>/squad {server["_id"]} UUID</code>'
+           if in_group else 'Пришлите UUID сообщением.')
+
     await call.message.answer(
-        f'{e("edit")} Пришлите <b>UUID внутреннего сквада</b> для сервера '
-        f'<code>{server["_id"]}</code>.\n\n'
+        f'{e("edit")} <b>UUID внутреннего сквада</b> для сервера '
+        f'<code>{server["_id"]}</code>.\n\n{how}\n\n'
         f'<blockquote>Это тот сквад, в котором стоит только новая нода. '
         f'Участники сервера получат его и ничего больше.</blockquote>')
     await call.answer()
 
 
 async def take_squad(message: types.Message, state: FSMContext, c, settings) -> None:
+    """UUID сообщением — работает в личке, где privacy mode не мешает."""
     squad = (message.text or '').strip()
-    if len(squad) != UUID_LENGTH or squad.count('-') != 4:
-        # Панель молча проигнорирует мусор, и сервер будет «выдан», но пустой
+    if not looks_like_uuid(squad):
         await message.answer('Это не похоже на UUID. Пришлите ещё раз или /cancel.')
         return
 
     data = await state.get_data()
     await state.clear()
+    await provision(message, c, data.get('server_id', ''), squad)
 
+
+async def squad_command(message: types.Message, command, state: FSMContext,
+                        c, settings) -> None:
+    """`/squad [id сервера] UUID` — форма, которая доходит и в группе.
+
+    Id сервера необязателен: если кнопку только что нажали, он уже лежит в
+    состоянии. Явная форма нужна, когда состояние потерялось (перезапуск
+    бота) или заявок в работе несколько.
+    """
+    parts = (command.args or '').split()
+    server_id, squad = '', ''
+    if len(parts) >= 2:
+        server_id, squad = parts[0], parts[1]
+    elif len(parts) == 1:
+        squad = parts[0]
+        server_id = (await state.get_data()).get('server_id', '')
+
+    if not looks_like_uuid(squad):
+        await message.answer(
+            f'{e("cross")} Нужен UUID сквада.\n'
+            f'<code>/squad srv_xxxxxxxx 00000000-0000-0000-0000-000000000000</code>')
+        return
+    if not server_id:
+        await message.answer(f'{e("cross")} Не понял, какой сервер. Укажите его id: '
+                             f'<code>/squad srv_xxxxxxxx UUID</code>')
+        return
+
+    await state.clear()
+    await provision(message, c, server_id, squad)
+
+
+async def provision(message: types.Message, c, server_id: str, squad: str) -> None:
     # Локацию не спрашиваем: её выбрал покупатель на витрине, и переспросить
     # значит дать возможность молча выдать не то, за что заплатили.
-    result = await c.private.activate(data.get('server_id', ''), squad)
+    result = await c.private.activate(server_id, squad)
     if not result.ok:
         await message.answer(f'{e("cross")} Не вышло: {result.reason}')
         return
@@ -172,6 +219,7 @@ def register(router: Router) -> None:
     from aiogram.filters import Command
 
     router.message.register(listing, Command('servers'))
+    router.message.register(squad_command, Command('squad'))
     router.callback_query.register(give, Adm.filter(F.action == 'give'))
     router.callback_query.register(reject, Adm.filter(F.action == 'reject'))
     router.message.register(take_squad, Provision.squad)

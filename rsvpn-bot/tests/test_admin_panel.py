@@ -811,3 +811,90 @@ class FakePanel:
     async def create_subscription(self, user_id, days):
         return {'uuid': f'u-{user_id}', 'shortUuid': f's-{user_id}',
                 'expireAt': None, 'createdAt': None}
+
+
+# ── выдача сервера в группе ─────────────────────────────────────────────────
+#
+# У ботов включён privacy mode: в группах Telegram отдаёт им только команды,
+# реплаи и упоминания. Обычный текст с UUID до бота не доходил вовсе, и
+# кнопка «Выдать сервер» выглядела сломанной.
+
+GROUP = Chat(id=-1002433849803, type='supergroup')
+
+
+def group_message(text: str) -> Update:
+    return Update(update_id=7, message=Message(
+        message_id=12, date=datetime.now(), chat=GROUP, text=text,
+        from_user=ADMIN, message_thread_id=1561465))
+
+
+async def _pending_server(container, bot):
+    container.attach_bot(bot)
+    container.private.vpn = FakePanel()
+    await container.users.create({'user_data': {'user_id': ADMIN.id},
+                                  'info': {'balance': 3000},
+                                  'vpn': {'uuid': 'u-1', 'shortUuid': 's-1'}})
+    result = await container.private.request(ADMIN.id, 'mini', location='ams')
+    return result.server['_id']
+
+
+async def test_squad_can_be_sent_by_command_from_a_group(admin_env):
+    dp, bot, session, container = admin_env
+    server_id = await _pending_server(container, bot)
+
+    await dp.feed_update(bot, group_message(
+        f'/squad {server_id} aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'))
+
+    server = await container.private.servers.get(server_id)
+    assert server['status'] == 'active'
+    assert server['squad_uuid'] == 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+
+
+async def test_squad_command_remembers_the_server_from_the_button(admin_env):
+    from app.bot.callbacks import ServerAdmin
+
+    dp, bot, session, container = admin_env
+    server_id = await _pending_server(container, bot)
+
+    await dp.feed_update(bot, callback(
+        ServerAdmin(action='give', server_id=server_id).pack()))
+    await dp.feed_update(bot, message(
+        '/squad aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'))
+
+    assert (await container.private.servers.get(server_id))['status'] == 'active'
+
+
+async def test_squad_command_refuses_garbage(admin_env):
+    dp, bot, session, container = admin_env
+    server_id = await _pending_server(container, bot)
+
+    await dp.feed_update(bot, group_message(f'/squad {server_id} не-uuid'))
+
+    assert (await container.private.servers.get(server_id))['status'] == 'requested'
+    assert 'UUID' in session.last_text
+
+
+async def test_squad_command_without_a_server_says_so(admin_env):
+    dp, bot, session, container = admin_env
+    await _pending_server(container, bot)
+
+    await dp.feed_update(bot, group_message(
+        '/squad aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'))
+
+    assert 'какой сервер' in session.last_text
+
+
+async def test_prompt_in_a_group_asks_for_the_command(admin_env):
+    """В личке — «пришлите сообщением», в группе так работать не будет."""
+    from app.bot.callbacks import ServerAdmin
+
+    dp, bot, session, container = admin_env
+    server_id = await _pending_server(container, bot)
+
+    await dp.feed_update(bot, Update(update_id=8, callback_query=CallbackQuery(
+        id='1', from_user=ADMIN, chat_instance='1',
+        data=ServerAdmin(action='give', server_id=server_id).pack(),
+        message=Message(message_id=13, date=datetime.now(), chat=GROUP,
+                        text='карточка', from_user=ADMIN))))
+
+    assert '/squad' in session.last_text
