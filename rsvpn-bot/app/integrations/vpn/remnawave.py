@@ -59,6 +59,10 @@ class RemnawaveClient:
         # Нужен, когда тестовый бот работает на копии боевых данных: подписки
         # в панели настоящие, и продление «понарошку» изменило бы их всерьёз.
         self._dry_run = dry_run
+        # Ручка расхода по скваду есть не во всех версиях панели: на 404
+        # запоминаем это и больше не ходим — иначе каждый показ статистики
+        # начинается с заведомо неудачного запроса.
+        self._squad_usage_supported: bool | None = None
         if dry_run:
             log.warning('панель в режиме только чтения: изменения не отправляются')
 
@@ -206,7 +210,7 @@ class RemnawaveClient:
         Даты — именно даты (YYYY-MM-DD), так объявлено в спеке панели:
         `format: date`. С полным ISO-временем ручка отвечает отказом.
         """
-        if not squad_uuid:
+        if not squad_uuid or self._squad_usage_supported is False:
             return {}
 
         usage: dict[int, int] = {}
@@ -218,9 +222,17 @@ class RemnawaveClient:
             if cursor is not None:
                 params['cursor'] = cursor
 
-            data = await self._request(
-                'GET', f'/api/bandwidth-stats/internal-squads/{squad_uuid}/usage',
-                params=params)
+            try:
+                data = await self._request(
+                    'GET', f'/api/bandwidth-stats/internal-squads/{squad_uuid}/usage',
+                    params=params)
+            except VpnPanelError as exc:
+                if 'HTTP 404' in str(exc):
+                    log.info('панель без ручки расхода по скваду — считаем по нодам')
+                    self._squad_usage_supported = False
+                    return {}
+                raise
+            self._squad_usage_supported = True
 
             for row in (data or {}).get('users') or []:
                 if isinstance(row, dict) and row.get('id') is not None:
@@ -231,6 +243,42 @@ class RemnawaveClient:
             cursor = (data or {}).get('nextCursor')
             if cursor is None:
                 break
+        return usage
+
+    async def squad_nodes(self, squad_uuid: str) -> list[dict]:
+        """Ноды, доступные внутреннему скваду. Личный сервер — это одна нода."""
+        if not squad_uuid:
+            return []
+        data = await self._request(
+            'GET', f'/api/internal-squads/{squad_uuid}/accessible-nodes')
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        nodes: list[dict] = []
+        for value in (data or {}).values():
+            if isinstance(value, list):
+                nodes.extend(item for item in value if isinstance(item, dict))
+        return nodes
+
+    async def node_users_usage(self, node_uuid: str, start: datetime, end: datetime,
+                               top: int = 200) -> dict[str, int]:
+        """Расход по нодам для панелей без ручки сквада: {username: байты}.
+
+        Ответ — topUsers с полями color/username/total, поэтому совпадение
+        идёт по username; у нас это telegram id строкой.
+        """
+        if not node_uuid:
+            return {}
+        data = await self._request(
+            'GET', f'/api/bandwidth-stats/nodes/{node_uuid}/users',
+            params={'start': start.strftime('%Y-%m-%d'),
+                    'end': end.strftime('%Y-%m-%d'),
+                    'topUsersLimit': top})
+
+        usage: dict[str, int] = {}
+        for row in (data or {}).get('topUsers') or []:
+            name = str((row or {}).get('username') or '')
+            if name:
+                usage[name] = usage.get(name, 0) + int((row or {}).get('total') or 0)
         return usage
 
     async def devices(self, uuid: str) -> list[dict]:

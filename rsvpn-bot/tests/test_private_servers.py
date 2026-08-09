@@ -52,6 +52,12 @@ class FakeVpn:
     async def squad_usage(self, squad, start, end, **kw) -> dict:
         return {}
 
+    async def squad_nodes(self, squad) -> list:
+        return []
+
+    async def node_users_usage(self, node_uuid, start, end, **kw) -> dict:
+        return {}
+
 
 @pytest.fixture
 async def service(db):
@@ -824,7 +830,7 @@ async def test_traffic_is_taken_from_the_server_squad(service):
     vpn.squad_usage, vpn.get_subscription = usage, card
     rows = await srv.stats(server)
 
-    assert rows[0]['source'] == 'squad'
+    assert rows[0]['source'] == 'server'
     assert ps.traffic(rows[0]['traffic']) == '4 МБ', 'взяли общий трафик вместо серверного'
 
 
@@ -844,7 +850,7 @@ async def test_falls_back_to_the_user_card_when_the_squad_is_silent(service):
 
     assert rows[0]['source'] == 'user'
     assert ps.traffic(rows[0]['traffic']) == '7 МБ'
-    assert 'нет такой ручки' in rows[0]['usage_note']
+    assert rows[0]['usage_note']
 
 
 async def test_last_connection_is_read_from_inside_user_traffic(service):
@@ -898,13 +904,13 @@ async def test_fallback_reason_is_recorded_for_diagnostics(service):
     srv, vpn, users = service
     server = await live_server(service)
 
-    async def broken(squad, since, until, **kw):
-        raise RuntimeError('HTTP 400 bad range')
+    async def broken(squad):
+        raise RuntimeError('HTTP 500 всё плохо')
 
-    vpn.squad_usage = broken
+    vpn.squad_nodes = broken
     rows = await srv.stats(server)
 
-    assert 'HTTP 400' in rows[0]['usage_note']
+    assert 'HTTP 500' in rows[0]['usage_note']
 
 
 async def test_usage_period_starts_no_earlier_than_the_server_itself(service):
@@ -921,3 +927,72 @@ async def test_usage_period_starts_no_earlier_than_the_server_itself(service):
     await srv.stats(await srv.servers.get(server['_id']))
 
     assert window['since'] >= parse_dt(server['activated_at'])
+
+
+async def test_older_panel_is_counted_by_nodes(service):
+    """Ручки расхода по скваду в старых версиях нет — считаем по нодам."""
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def no_squad_endpoint(squad, since, until, **kw):
+        return {}                      # клиент проглотил 404 и вернул пусто
+
+    async def nodes(squad):
+        return [{'uuid': '94c3792c-5915-41d0-929e-00b949a28635'}]
+
+    async def by_node(node_uuid, since, until, **kw):
+        return {'1': 6 * 1024 ** 2}    # username = telegram id строкой
+
+    async def card(uuid):
+        return {'uuid': uuid, 'id': 2549, 'username': '1',
+                'userTraffic': {'usedTrafficBytes': 2 * 1024 ** 4}}
+
+    vpn.squad_usage, vpn.squad_nodes = no_squad_endpoint, nodes
+    vpn.node_users_usage, vpn.get_subscription = by_node, card
+    rows = await srv.stats(server)
+
+    assert rows[0]['source'] == 'server'
+    assert ps.traffic(rows[0]['traffic']) == '6 МБ', 'снова взяли общий трафик'
+
+
+async def test_missing_squad_endpoint_is_asked_only_once():
+    """404 на каждый показ статистики — лишний запрос на пустом месте."""
+    from app.integrations.vpn.remnawave import RemnawaveClient
+
+    calls = []
+
+    class Http:
+        async def request(self, method, url, headers=None, params=None, **kw):
+            calls.append(url)
+
+            class Reply:
+                status_code = 404
+                text = '{"message":"Cannot GET"}'
+
+                @staticmethod
+                def json():
+                    return {}
+
+            return Reply()
+
+    client = RemnawaveClient('https://panel', 'token', Http())
+    assert await client.squad_usage(SQUAD, now(), now()) == {}
+    assert await client.squad_usage(SQUAD, now(), now()) == {}
+
+    assert len(calls) == 1, calls
+
+
+async def test_usage_window_is_not_a_single_day(service):
+    """«Сегодня — сегодня» на свежем сервере даёт пустой диапазон."""
+    srv, vpn, users = service
+    server = await live_server(service)
+    window = {}
+
+    async def usage(squad, since, until, **kw):
+        window['since'], window['until'] = since, until
+        return {}
+
+    vpn.squad_usage = usage
+    await srv.stats(await srv.servers.get(server['_id']))
+
+    assert window['until'].date() > window['since'].date()

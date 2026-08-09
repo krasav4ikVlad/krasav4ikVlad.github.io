@@ -311,30 +311,62 @@ class PrivateServerService:
         return Result(True, server=server)
 
     # ── статистика ──────────────────────────────────────────────────────────
-    async def _squad_usage(self, server: dict) -> tuple[dict, str]:
-        """Расход участников именно на этом сервере: {id в панели: байты}.
+    async def _server_usage(self, server: dict) -> tuple[dict, str]:
+        """Расход участников именно на этом сервере.
 
-        Сервер — это внутренний сквад, и у панели есть ровно такая ручка.
-        Общий userTraffic из карточки сюда не годится: он считает весь трафик
-        человека, включая обычные серверы RS VPN, и завышает расход сервера.
+        Ключи — и числовой id из панели, и username: сопоставить можно любым,
+        а какой придёт, зависит от того, какой ручкой считали.
+
+        Панели новее отдают расход прямо по скваду. У тех, что старше, такой
+        ручки нет (404), и тогда считаем по нодам сквада — это те же цифры,
+        просто в два запроса.
         """
         squad = server.get('squad_uuid')
         if not squad:
             return {}, 'у сервера не задан сквад'
 
-        # Период — оплаченный месяц, но не раньше запуска: до него расхода
-        # этого сервера не существовало.
-        until = now()
-        since = until - timedelta(days=ps.CHARGE_PERIOD_DAYS)
+        # Период — с запуска сервера, но не глубже оплаченного месяца.
+        # Конец завтрашним днём: границы у панели по датам, и «сегодня —
+        # сегодня» на свежем сервере даёт пустой диапазон.
+        until = now() + timedelta(days=1)
+        since = now() - timedelta(days=ps.CHARGE_PERIOD_DAYS)
         started = parse_dt(server.get('activated_at'))
         if started and started > since:
             since = started
 
         try:
-            return await self.vpn.squad_usage(squad, since, until), ''
+            by_squad = await self.vpn.squad_usage(squad, since, until)
         except Exception as exc:
             log.warning('расход сквада %s не получен: %s', squad, exc)
-            return {}, f'расход сквада: {exc}'
+            by_squad = {}
+        if by_squad:
+            return by_squad, ''
+
+        try:
+            nodes = await self.vpn.squad_nodes(squad)
+        except Exception as exc:
+            log.warning('ноды сквада %s не получены: %s', squad, exc)
+            return {}, f'ноды сквада: {exc}'
+        if not nodes:
+            return {}, 'в скваде нет нод'
+
+        usage: dict = {}
+        note = ''
+        for node in nodes:
+            node_uuid = node.get('uuid') or node.get('nodeUuid')
+            if not node_uuid:
+                continue
+            try:
+                for name, total in (await self.vpn.node_users_usage(
+                        node_uuid, since, until)).items():
+                    usage[name] = usage.get(name, 0) + total
+            except Exception as exc:
+                note = f'расход ноды: {exc}'
+                log.warning('расход ноды %s не получен: %s', node_uuid, exc)
+
+        if not usage and not note:
+            note = 'панель вернула пустой расход по нодам'
+        return usage, note
 
     async def stats(self, server: dict) -> list[dict]:
         """Трафик и последнее подключение по каждому участнику.
@@ -343,7 +375,7 @@ class PrivateServerService:
         пятнадцать, а отдельного пакетного метода в API нет.
         """
         rows = []
-        by_squad, usage_note = await self._squad_usage(server)
+        by_server, usage_note = await self._server_usage(server)
         people = [server.get('owner_id')] + [m.get('user_id')
                                              for m in (server.get('members') or [])]
         for user_id in [p for p in people if p]:
@@ -373,9 +405,16 @@ class PrivateServerService:
             # его не дала — общий трафик из карточки. Он больше настоящего,
             # и экран об этом честно предупреждает.
             panel_id = panel.get('id')
-            scoped = by_squad.get(int(panel_id)) if isinstance(panel_id, (int, float)) else None
+            # Совпасть может по любому из двух: id даёт ручка сквада,
+            # username — ручка ноды.
+            scoped = None
+            for key in (int(panel_id) if isinstance(panel_id, (int, float)) else None,
+                        str(panel.get('username') or ''), str(user_id)):
+                if key not in (None, '') and key in by_server:
+                    scoped = by_server[key]
+                    break
             traffic = scoped if scoped is not None else _traffic_of(panel)
-            row['source'] = 'squad' if scoped is not None else 'user'
+            row['source'] = 'server' if scoped is not None else 'user'
             row['panel_id'] = panel_id
             if scoped is None and usage_note:
                 # Почему не вышло посчитать по ноде — видно в /srvdiag, а не
