@@ -772,17 +772,17 @@ async def test_admin_gives_the_server_by_squad_uuid(admin_env):
     await container.users.create({'user_data': {'user_id': ADMIN.id},
                                   'info': {'balance': 3000},
                                   'vpn': {'uuid': 'u-1', 'shortUuid': 's-1'}})
-    request = await container.private.request(ADMIN.id, 'mini')
+    request = await container.private.request(ADMIN.id, 'mini', location='ams')
 
     await dp.feed_update(bot, callback(
         ServerAdmin(action='give', server_id=request.server['_id']).pack()))
     await dp.feed_update(bot, message('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'))
-    await dp.feed_update(bot, message('Нидерланды'))
 
     server = await container.private.servers.get(request.server['_id'])
     assert server['status'] == 'active'
     assert server['squad_uuid'] == 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    assert server['location'] == 'Нидерланды'
+    # локацию выбрал покупатель, админ её не переспрашивает
+    assert server['location'] == 'ams'
 
 
 async def test_admin_is_not_allowed_to_paste_garbage_instead_of_a_uuid(admin_env):
@@ -793,7 +793,7 @@ async def test_admin_is_not_allowed_to_paste_garbage_instead_of_a_uuid(admin_env
     container.attach_bot(bot)
     await container.users.create({'user_data': {'user_id': ADMIN.id},
                                   'info': {'balance': 3000}})
-    request = await container.private.request(ADMIN.id, 'mini')
+    request = await container.private.request(ADMIN.id, 'mini', location='ams')
 
     await dp.feed_update(bot, callback(
         ServerAdmin(action='give', server_id=request.server['_id']).pack()))

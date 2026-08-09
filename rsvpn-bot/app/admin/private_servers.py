@@ -26,7 +26,6 @@ UUID_LENGTH = 36
 
 class Provision(StatesGroup):
     squad = State()
-    location = State()
 
 
 def _btn(text: str, action: str, server_id: str) -> types.InlineKeyboardButton:
@@ -45,6 +44,7 @@ async def request_card(c, server: dict) -> str:
     owner = await c.users.get(server['owner_id'], {'user_data': 1, 'info.balance': 1})
     username = c.users.pick(owner or {}, 'user_data.username')
     plan = ps.plan_of(server)
+    location = ps.location_of(server)
 
     return (f'{e("servers")} <b>Заявка на личный сервер</b>\n\n'
             f'{e("user")} '
@@ -52,10 +52,14 @@ async def request_card(c, server: dict) -> str:
             + f'(<code>{server["owner_id"]}</code>)\n'
             f'{e("document")} Тариф: <b>{plan.title if plan else server.get("plan")}</b>, '
             f'мест {server.get("slots")}\n'
+            f'{e("globe")} Локация: <b>{ps.location_title(server)}</b>, '
+            f'трафик {location.traffic_title if location else "—"}\n'
+            f'{e("tools")} Протокол: <b>{ps.profile_title(server)}</b>\n'
             f'{e("money")} Оплачено: <b>{server.get("price")}₽</b> в месяц\n'
             f'{e("id")} Сервер: <code>{server["_id"]}</code>\n'
             f'{e("calendar")} Создана: {fmt(server.get("created_at"))}\n\n'
-            f'<blockquote>Поднимите VPS, заведите внутренний сквад в панели и '
+            f'<blockquote>Поднимите VPS в указанной локации с указанным '
+            f'протоколом, заведите под него внутренний сквад в панели и '
             f'нажмите «Выдать сервер» — бот попросит UUID сквада.</blockquote>')
 
 
@@ -86,19 +90,12 @@ async def take_squad(message: types.Message, state: FSMContext, c, settings) -> 
         await message.answer('Это не похоже на UUID. Пришлите ещё раз или /cancel.')
         return
 
-    await state.update_data(squad=squad)
-    await state.set_state(Provision.location)
-    await message.answer('Локация одной строкой — например «Нидерланды». '
-                         'Или «-», если не нужна.')
-
-
-async def take_location(message: types.Message, state: FSMContext, c, settings) -> None:
     data = await state.get_data()
     await state.clear()
 
-    location = (message.text or '').strip()
-    result = await c.private.activate(data.get('server_id', ''), data.get('squad', ''),
-                                      '' if location == '-' else location)
+    # Локацию не спрашиваем: её выбрал покупатель на витрине, и переспросить
+    # значит дать возможность молча выдать не то, за что заплатили.
+    result = await c.private.activate(data.get('server_id', ''), squad)
     if not result.ok:
         await message.answer(f'{e("cross")} Не вышло: {result.reason}')
         return
@@ -111,9 +108,10 @@ async def take_location(message: types.Message, state: FSMContext, c, settings) 
         await message.bot.send_message(
             server['owner_id'],
             f'{e("servers")} <b>Ваш сервер готов</b>\n\n'
-            f'«{server.get("title")}» уже работает'
-            + (f', локация: {server["location"]}' if server.get('location') else '')
-            + f'.\nМест: {server.get("slots")}, оплачен до '
+            f'«{server.get("title")}» уже работает.\n'
+            f'Локация: {ps.location_title(server)}, '
+            f'протокол: {ps.profile_title(server)}.\n'
+            + f'Мест: {server.get("slots")}, оплачен до '
               f'{fmt(server.get("paid_until"))}.\n\n'
               f'Откройте профиль → «Свой сервер», чтобы позвать друзей.')
     except Exception as exc:
@@ -162,6 +160,7 @@ async def listing(message: types.Message, c, settings) -> None:
             f'<code>{server["_id"]}</code> — {server.get("title")}, '
             f'владелец <code>{server.get("owner_id")}</code>, '
             f'{ps.occupied(server)}/{server.get("slots")} мест, '
+            f'{ps.location_title(server)}/{ps.profile_title(server)}, '
             f'{server.get("price")}₽'
             + (f', до {fmt(server.get("paid_until"))}' if server.get('paid_until') else ''))
 
@@ -176,4 +175,3 @@ def register(router: Router) -> None:
     router.callback_query.register(give, Adm.filter(F.action == 'give'))
     router.callback_query.register(reject, Adm.filter(F.action == 'reject'))
     router.message.register(take_squad, Provision.squad)
-    router.message.register(take_location, Provision.location)

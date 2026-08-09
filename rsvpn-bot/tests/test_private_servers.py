@@ -64,11 +64,11 @@ async def owner_with_money(users, user_id=1, balance=3000):
                                 'activeInternalSquads': ['общий']}})
 
 
-async def live_server(service_tuple, owner=1, plan='company'):
+async def live_server(service_tuple, owner=1, plan='company', location='ams'):
     service, vpn, users = service_tuple
     await owner_with_money(users, owner)
-    result = await service.request(owner, plan)
-    await service.activate(result.server['_id'], SQUAD, 'Нидерланды')
+    result = await service.request(owner, plan, location=location, profile='grpc')
+    await service.activate(result.server['_id'], SQUAD)
     return await service.servers.get(result.server['_id'])
 
 
@@ -77,7 +77,7 @@ async def test_buying_charges_and_creates_a_request(service, db):
     srv, _, users = service
     await owner_with_money(users)
 
-    result = await srv.request(1, 'company')
+    result = await srv.request(1, 'company', location='ams')
 
     assert result.ok and result.amount == 1500
     assert result.server['status'] == ps.REQUESTED
@@ -88,7 +88,7 @@ async def test_no_money_no_request(service, db):
     srv, _, users = service
     await owner_with_money(users, balance=100)
 
-    result = await srv.request(1, 'company')
+    result = await srv.request(1, 'company', location='ams')
 
     assert not result.ok and result.reason == 'no_funds'
     assert await db['private_servers'].count_documents({}) == 0
@@ -97,9 +97,9 @@ async def test_no_money_no_request(service, db):
 async def test_second_server_is_refused(service):
     srv, _, users = service
     await owner_with_money(users)
-    await srv.request(1, 'mini')
+    await srv.request(1, 'mini', location='ams')
 
-    result = await srv.request(1, 'mini')
+    result = await srv.request(1, 'mini', location='ams')
 
     assert not result.ok and result.reason == 'already_has'
     assert (await users.get(1))['info']['balance'] == 3000 - 990, 'деньги списаны дважды'
@@ -110,7 +110,7 @@ async def test_price_comes_from_settings(service):
     await srv.settings.set('private.price_mini', 1200)
     await owner_with_money(users)
 
-    result = await srv.request(1, 'mini')
+    result = await srv.request(1, 'mini', location='ams')
 
     assert result.amount == 1200
 
@@ -118,7 +118,7 @@ async def test_price_comes_from_settings(service):
 async def test_rejected_request_returns_the_money(service):
     srv, _, users = service
     await owner_with_money(users)
-    result = await srv.request(1, 'company')
+    result = await srv.request(1, 'company', location='ams')
 
     await srv.reject(result.server['_id'])
 
@@ -468,3 +468,84 @@ async def test_a_stranger_cannot_switch_off_someone_elses_renewal(service):
 
     assert not result.ok and result.reason == 'not_owner'
     assert (await srv.servers.get(server['_id']))['autorenew'] is True
+
+
+# ── локация и протокол ──────────────────────────────────────────────────────
+#
+# От них зависит скорость и лимит трафика, поэтому выбирает их покупатель,
+# а не админ при выдаче: переиграть молча — значит продать не то.
+
+async def test_choice_is_saved_with_the_request(service):
+    srv, _, users = service
+    await owner_with_money(users)
+
+    result = await srv.request(1, 'mini', location='tyo', profile='hysteria2')
+
+    assert result.server['location'] == 'tyo'
+    assert result.server['profile'] == 'hysteria2'
+    assert result.server['traffic_gb'] == 0, 'Токио безлимитный'
+
+
+async def test_limited_location_keeps_its_quota(service):
+    srv, _, users = service
+    await owner_with_money(users)
+
+    result = await srv.request(1, 'mini', location='hkg', profile='reality')
+
+    assert result.server['traffic_gb'] == 1024
+
+
+async def test_location_is_required(service):
+    srv, _, users = service
+    await owner_with_money(users)
+
+    result = await srv.request(1, 'mini', location='марс')
+
+    assert not result.ok and result.reason == 'unknown_location'
+    assert (await users.get(1))['info']['balance'] == 3000, 'списали за несуществующее'
+
+
+async def test_unknown_profile_falls_back_to_the_recommended_one(service):
+    """Протокол — не то, из-за чего стоит ронять покупку."""
+    srv, _, users = service
+    await owner_with_money(users)
+
+    result = await srv.request(1, 'mini', location='ams', profile='чтототам')
+
+    assert result.ok and result.server['profile'] == ps.DEFAULT_PROFILE
+
+
+async def test_activation_does_not_overwrite_the_chosen_location(service):
+    srv, _, users = service
+    await owner_with_money(users)
+    result = await srv.request(1, 'mini', location='mil', profile='grpc')
+
+    await srv.activate(result.server['_id'], SQUAD)
+
+    server = await srv.servers.get(result.server['_id'])
+    assert server['location'] == 'mil' and server['profile'] == 'grpc'
+
+
+def test_every_location_and_profile_has_a_short_unique_code():
+    """Код едет в callback_data вместе с тарифом и протоколом: 64 байта на всё."""
+    codes = [loc.code for loc in ps.LOCATIONS]
+    assert len(codes) == len(set(codes)), codes
+    assert all(len(code) <= 5 for code in codes), codes
+
+    profiles = [p.code for p in ps.PROFILES]
+    assert len(profiles) == len(set(profiles))
+    longest = max(len(f'srv:prof:{p}:{c}:{pr}')
+                  for p in ps.BY_CODE for c in codes for pr in profiles)
+    assert longest <= 64, longest
+
+
+def test_frankfurt_exists_in_both_flavours():
+    """Одна площадка с лимитом, другая без — это разные серверы, не опечатка."""
+    frankfurts = [loc for loc in ps.LOCATIONS if loc.title == 'Франкфурт']
+    assert len(frankfurts) == 2
+    assert {loc.limited for loc in frankfurts} == {True, False}
+
+
+def test_traffic_titles_read_like_a_human_wrote_them():
+    assert ps.BY_LOCATION['ams'].traffic_title == '1 ТБ'
+    assert ps.BY_LOCATION['nl'].traffic_title == 'безлимит'

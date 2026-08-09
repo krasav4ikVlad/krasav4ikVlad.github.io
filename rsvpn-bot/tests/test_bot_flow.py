@@ -1850,3 +1850,105 @@ async def test_confirmation_for_the_bot_balance_says_where_the_money_goes(env):
     await dp.feed_update(bot, callback(Payout(action='confirm').pack()))
 
     assert 'обычный баланс' in session.last_text
+
+
+# ── личный сервер: покупка по шагам ─────────────────────────────────────────
+#
+# Экраны собирают callback_data из тарифа, локации и протокола. Двоеточие в
+# значении роняет pack() ещё до отправки, и увидеть это можно только пройдя
+# по кнопкам — что эти тесты и делают.
+
+async def _open_servers(dp, bot, c):
+    from app.bot.callbacks import Menu
+
+    await dp.feed_update(bot, message('/start'))
+    await c.settings.set('private.visibility', 'all')
+    await dp.feed_update(bot, callback(Menu(screen='private').pack()))
+
+
+async def test_shop_offers_locations_after_the_plan(env):
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Server(action='buy', value='mini').pack()))
+
+    assert 'Где поднять сервер' in session.last_text
+    labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
+    assert any('Амстердам' in label and '1 ТБ' in label for label in labels), labels
+    assert any('Токио' in label and 'безлимит' in label for label in labels), labels
+
+
+async def test_location_leads_to_the_protocol_choice(env):
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Server(action='loc', value='mini-ams').pack()))
+
+    assert 'Протокол' in session.last_text
+    labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
+    assert any('TCP Reality' in label for label in labels), labels
+    assert any('Hysteria2' in label for label in labels), labels
+
+
+async def test_confirmation_shows_everything_that_was_chosen(env):
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(
+        Server(action='prof', value='mini-hkg-grpc').pack()))
+
+    text = session.last_text
+    assert 'Гонконг' in text and '1 ТБ' in text and 'gRPC' in text
+    assert '990₽' in text
+
+
+async def test_full_purchase_saves_the_choice(env):
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+    await c.users.credit(5, 3000, 'тест')
+
+    await dp.feed_update(bot, callback(Server(action='buy', value='team').pack()))
+    await dp.feed_update(bot, callback(Server(action='loc', value='team-tyo').pack()))
+    await dp.feed_update(bot, callback(
+        Server(action='prof', value='team-tyo-hysteria2').pack()))
+    await dp.feed_update(bot, callback(
+        Server(action='order', value='team-tyo-hysteria2').pack()))
+
+    server = await c.private.servers.of_owner(5)
+    assert server['plan'] == 'team'
+    assert server['location'] == 'tyo' and server['profile'] == 'hysteria2'
+    assert server['traffic_gb'] == 0
+
+
+async def test_members_screen_can_actually_be_rendered(env):
+    """Кнопка «Убрать» собирала callback_data с двоеточием и падала на pack()."""
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+    await c.users.credit(5, 3000, 'тест')
+    c.private.vpn = c.vpn
+    result = await c.private.request(5, 'mini', location='ams', profile='reality')
+    await c.private.activate(result.server['_id'], 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+    await c.users.create({'user_data': {'user_id': 77, 'first_name': 'Друг'},
+                          'info': {'balance': 0}, 'vpn': {'uuid': 'u-77'}})
+    invite = await c.private.invite(result.server['_id'], 5)
+    await c.private.join(invite.reason, 77)
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(
+        Server(action='members', value=result.server['_id']).pack()))
+
+    labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
+    assert any('Убрать Друг' in label for label in labels), labels

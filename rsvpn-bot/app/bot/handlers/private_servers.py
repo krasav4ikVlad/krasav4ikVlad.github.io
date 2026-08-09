@@ -27,6 +27,8 @@ ERRORS = {
     'already_has': 'У вас уже есть сервер.',
     'no_funds': 'На балансе не хватает {amount}₽.',
     'unknown_plan': 'Такого тарифа нет.',
+    'unknown_location': 'Такой локации нет.',
+    'unknown_profile': 'Такого профиля нет.',
     'not_owner': 'Это не ваш сервер.',
     'not_active': 'Сервер ещё не запущен.',
     'no_slots': 'Свободных мест нет.',
@@ -96,20 +98,100 @@ async def entry(call: types.CallbackQuery, c, user: dict, settings) -> None:
     await shop(call, c, user, settings)
 
 
-# ── покупка ─────────────────────────────────────────────────────────────────
-async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user: dict,
-                      settings) -> None:
+# ── покупка: тариф → локация → профиль → подтверждение ──────────────────────
+#
+# Три шага, а не один экран с двумя списками: локаций одиннадцать, профилей
+# три, и всё вместе не помещается ни в клавиатуру, ни в голову. Выбранное
+# едет в callback_data — состояние в FSM здесь только мешало бы, потому что
+# «назад» посреди покупки должен возвращать к предыдущему шагу, а не терять всё.
+
+# Разделитель — дефис, а не двоеточие: двоеточие в aiogram отделяет поля
+# callback_data, и pack() на нём падает. Коды тарифов, локаций и протоколов
+# дефисов не содержат, id серверов — тоже.
+PICK = '-'
+
+
+def _pick(*parts: str) -> str:
+    return PICK.join(parts)
+
+
+async def choose_location(call: types.CallbackQuery, callback_data: Server, c,
+                          user: dict, settings) -> None:
     plan = ps.BY_CODE.get(callback_data.value)
     if not plan:
         await call.answer(ERRORS['unknown_plan'], show_alert=True)
         return
 
+    kb = InlineKeyboardBuilder()
+    for location in ps.LIMITED:
+        kb.row(_btn(f'{location.title} — {location.traffic_title}', 'loc',
+                    _pick(plan.code, location.code)))
+    for location in ps.UNLIMITED:
+        kb.row(_btn(f'{e("green")} {location.title} — безлимит', 'loc',
+                    _pick(plan.code, location.code)))
+    kb.row(_btn(f'{e("back")} К тарифам', 'shop'))
+
+    text = (profile_caption(user, f'{e("globe")} Где поднять сервер')
+            + f'<b>Тариф:</b> <code>{plan.title}</code>, мест {plan.slots}\n\n'
+            + '<blockquote>Площадки с пометкой «1 ТБ» ограничены по трафику на '
+              'весь сервер в месяц — на несколько человек этого хватает с '
+              'запасом. Отмеченные зелёным работают без ограничения по '
+              'трафику.\n\nБлиже к вам — быстрее отклик: для России это '
+              'европейские точки.</blockquote>')
+
+    await footer(kb, settings, back=None)
+    await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
+    await call.answer()
+
+
+async def choose_profile(call: types.CallbackQuery, callback_data: Server, c,
+                         user: dict, settings) -> None:
+    plan_code, _, location_code = callback_data.value.partition(PICK)
+    plan, location = ps.BY_CODE.get(plan_code), ps.BY_LOCATION.get(location_code)
+    if not plan or not location:
+        await call.answer(ERRORS['unknown_location'], show_alert=True)
+        return
+
+    kb = InlineKeyboardBuilder()
+    lines = []
+    for profile in ps.PROFILES:
+        mark = f'{e("ok")} ' if profile.code == ps.DEFAULT_PROFILE else ''
+        lines.append(f'<b>{profile.title}</b> — {profile.hint}')
+        kb.row(_btn(f'{mark}{profile.title}', 'prof',
+                    _pick(plan.code, location.code, profile.code)))
+    kb.row(_btn(f'{e("back")} К локациям', 'buy', plan.code))
+
+    text = (profile_caption(user, f'{e("tools")} Протокол сервера')
+            + '\n'.join(lines) + '\n\n'
+            + '<blockquote>От протокола зависит скорость и то, как сервер '
+              'переживает блокировки. Не знаете, что выбрать, — берите '
+              f'{ps.BY_PROFILE[ps.DEFAULT_PROFILE].title}, он отмечен галочкой. '
+              'Поменять потом можно через поддержку.</blockquote>')
+
+    await footer(kb, settings, back=None)
+    await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
+    await call.answer()
+
+
+async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+                      settings) -> None:
+    parts = callback_data.value.split(PICK)
+    plan = ps.BY_CODE.get(parts[0] if parts else '')
+    location = ps.BY_LOCATION.get(parts[1] if len(parts) > 1 else '')
+    profile = ps.BY_PROFILE.get(parts[2] if len(parts) > 2 else '')
+    if not plan or not location or not profile:
+        await call.answer(ERRORS['unknown_plan'], show_alert=True)
+        return
+
     price = await c.private.price(plan)
     kb = InlineKeyboardBuilder()
-    kb.row(_btn(f'{e("ok")} Оплатить {price}₽', 'order', plan.code))
-    kb.row(_btn(f'{e("back")} Нет, вернуться', 'shop'))
+    kb.row(_btn(f'{e("ok")} Оплатить {price}₽', 'order', callback_data.value))
+    kb.row(_btn(f'{e("back")} Назад', 'loc', _pick(plan.code, location.code)))
 
     text = (profile_caption(user, f'{e("servers")} {plan.title}')
+            + f'<b>{e("globe")} Локация:</b> <code>{location.title}</code>\n'
+            + f'<b>{e("traffic")} Трафик:</b> <code>{location.traffic_title}</code>\n'
+            + f'<b>{e("tools")} Протокол:</b> <code>{profile.title}</code>\n'
             + f'<b>{e("devices")} Мест:</b> <code>{plan.slots}</code> '
               f'(вы и ещё {plan.guests})\n'
             + f'<b>{e("money")} Списание:</b> <code>{price}₽</code> сейчас '
@@ -127,7 +209,11 @@ async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user:
 
 async def order(call: types.CallbackQuery, callback_data: Server, c, user: dict,
                 settings) -> None:
-    result = await c.private.request(call.from_user.id, callback_data.value)
+    parts = callback_data.value.split(PICK)
+    result = await c.private.request(
+        call.from_user.id, parts[0],
+        location=parts[1] if len(parts) > 1 else '',
+        profile=parts[2] if len(parts) > 2 else ps.DEFAULT_PROFILE)
     if not result.ok:
         await call.answer(ERRORS.get(result.reason, 'Не получилось').format(
             amount=result.amount), show_alert=True)
@@ -153,8 +239,13 @@ async def server_screen(event, c, user: dict, settings, server: dict,
 
     lines = [f'<b>{e("note")} Название:</b> <code>{server.get("title")}</code>',
              f'<b>{e("stats")} Статус:</b> {ps.STATUS_TITLES.get(server.get("status"), "—")}']
-    if server.get('location'):
-        lines.append(f'<b>{e("globe")} Локация:</b> <code>{server["location"]}</code>')
+    location = ps.location_of(server)
+    if location:
+        lines.append(f'<b>{e("globe")} Локация:</b> <code>{location.title}</code>')
+        lines.append(f'<b>{e("traffic")} Трафик:</b> <code>{location.traffic_title}</code>')
+    if ps.profile_of(server):
+        lines.append(f'<b>{e("tools")} Протокол:</b> '
+                     f'<code>{ps.profile_title(server)}</code>')
     lines.append(f'<b>{e("devices")} Мест:</b> '
                  f'<code>{ps.occupied(server)} из {server.get("slots")}</code>')
     if paid_until:
@@ -297,7 +388,7 @@ async def members(call: types.CallbackQuery, callback_data: Server, c, user: dic
         name = c.users.pick(member or {}, 'user_data.first_name') or entry_['user_id']
         lines.append(f'• {name} — с {fmt(entry_.get("joined_at"))}')
         kb.row(_btn(f'{e("minus")} Убрать {name}', 'kick',
-                    f'{server["_id"]}:{entry_["user_id"]}'))
+                    _pick(server['_id'], str(entry_['user_id']))))
 
     kb.row(_btn(f'{e("back")} К серверу', 'open', server['_id']))
     text = (profile_caption(user, f'{e("friends")} Участники')
@@ -312,7 +403,7 @@ async def members(call: types.CallbackQuery, callback_data: Server, c, user: dic
 
 async def kick(call: types.CallbackQuery, callback_data: Server, c, user: dict,
                settings) -> None:
-    server_id, _, raw = callback_data.value.partition(':')
+    server_id, _, raw = callback_data.value.partition(PICK)
     result = await c.private.kick(server_id, call.from_user.id, int(raw or 0))
     if not result.ok:
         await call.answer(ERRORS.get(result.reason, 'Не получилось'), show_alert=True)
@@ -371,6 +462,15 @@ async def stats(call: types.CallbackQuery, callback_data: Server, c, user: dict,
                      f'   трафик: <code>{ps.gb(row["traffic"])} ГБ</code>, '
                      f'последний вход: {online}')
 
+    location = ps.location_of(server)
+    total = ps.gb(sum(row['traffic'] for row in rows))
+    if location and location.limited:
+        lines.append(f'\n<b>{e("traffic")} Всего:</b> '
+                     f'<code>{total} из {location.traffic_gb} ГБ</code>')
+    else:
+        lines.append(f'\n<b>{e("traffic")} Всего:</b> <code>{total} ГБ</code> '
+                     f'(без ограничения)')
+
     kb = InlineKeyboardBuilder()
     kb.row(_btn(f'{e("refresh")} Обновить', 'stats', server['_id']))
     kb.row(_btn(f'{e("back")} К серверу', 'open', server['_id']))
@@ -404,7 +504,9 @@ def create_router() -> Router:
 
     router.callback_query.register(entry, Menu.filter(F.screen == 'private'))
     router.callback_query.register(shop, Server.filter(F.action == 'shop'))
-    router.callback_query.register(buy_confirm, Server.filter(F.action == 'buy'))
+    router.callback_query.register(choose_location, Server.filter(F.action == 'buy'))
+    router.callback_query.register(choose_profile, Server.filter(F.action == 'loc'))
+    router.callback_query.register(buy_confirm, Server.filter(F.action == 'prof'))
     router.callback_query.register(order, Server.filter(F.action == 'order'))
     router.callback_query.register(open_server, Server.filter(F.action == 'open'))
     router.callback_query.register(invite, Server.filter(F.action == 'invite'))

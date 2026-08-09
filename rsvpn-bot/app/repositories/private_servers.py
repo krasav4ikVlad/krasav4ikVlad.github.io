@@ -66,13 +66,18 @@ class PrivateServersRepository(Repository):
                                    ).to_list(length=500)
 
     # ── запись ──────────────────────────────────────────────────────────────
-    async def create(self, owner_id: int, plan: ps.ServerPlan, title: str) -> dict:
+    async def create(self, owner_id: int, plan: ps.ServerPlan, title: str,
+                     location: str = '', profile: str = '', traffic_gb: int = 0) -> dict:
         document = {
             '_id': f'srv_{secrets.token_hex(4)}',
             'owner_id': owner_id,
             'plan': plan.code, 'slots': plan.slots, 'price': plan.price,
             'title': title, 'status': ps.REQUESTED,
-            'squad_uuid': '', 'location': '',
+            'squad_uuid': '',
+            # локацию и протокол выбирает покупатель, а не админ при выдаче:
+            # от них зависит цена площадки и скорость, и переиграть их молча
+            # значит продать не то, за что заплатили
+            'location': location, 'profile': profile, 'traffic_gb': traffic_gb,
             'members': [], 'invites': [],
             'autorenew': True, 'charge_warned_at': None,
             'created_at': now(), 'activated_at': None,

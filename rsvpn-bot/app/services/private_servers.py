@@ -53,13 +53,20 @@ class PrivateServerService:
         return [(plan, await self.price(plan)) for plan in ps.PLANS]
 
     # ── покупка ─────────────────────────────────────────────────────────────
-    async def request(self, user_id: int, plan_code: str, title: str = '') -> Result:
+    async def request(self, user_id: int, plan_code: str, location: str = '',
+                      profile: str = '', title: str = '') -> Result:
         if not await self.settings.flag('private.enabled'):
             return Result(False, 'disabled')
 
         plan = ps.BY_CODE.get(plan_code)
         if not plan:
             return Result(False, 'unknown_plan')
+
+        place = ps.BY_LOCATION.get(location)
+        if not place:
+            return Result(False, 'unknown_location')
+        if profile not in ps.BY_PROFILE:
+            profile = ps.DEFAULT_PROFILE
 
         if await self.servers.of_owner(user_id):
             return Result(False, 'already_has')
@@ -70,7 +77,9 @@ class PrivateServerService:
             return Result(False, 'no_funds', amount=amount)
 
         try:
-            server = await self.servers.create(user_id, plan, title or plan.title)
+            server = await self.servers.create(user_id, plan, title or place.title,
+                                               location=place.code, profile=profile,
+                                               traffic_gb=place.traffic_gb)
         except Exception:
             await self.users.credit(user_id, amount, 'Возврат: заявка на сервер не создана')
             raise
@@ -78,11 +87,11 @@ class PrivateServerService:
         # Цену фиксируем на момент покупки: подняли прайс — у тех, кто уже
         # платит, ничего не меняется, пока они не пересоздадут сервер.
         await self.servers.set(server['_id'], price=amount)
-        log.info('заявка на личный сервер %s: %s, тариф %s, %s₽',
-                 server['_id'], user_id, plan.code, amount)
+        log.info('заявка на личный сервер %s: %s, тариф %s, %s, %s, %s₽',
+                 server['_id'], user_id, plan.code, place.code, profile, amount)
         return Result(True, server=dict(server, price=amount), amount=amount)
 
-    async def activate(self, server_id: str, squad_uuid: str, location: str = '') -> Result:
+    async def activate(self, server_id: str, squad_uuid: str) -> Result:
         """Админ поднял VPS и привязал сквад — сервер начинает работать."""
         server = await self.servers.get(server_id)
         if not server:
@@ -92,7 +101,7 @@ class PrivateServerService:
 
         paid_until = now() + timedelta(days=ps.CHARGE_PERIOD_DAYS)
         await self.servers.set(server_id, status=ps.ACTIVE, squad_uuid=squad_uuid,
-                               location=location, activated_at=now(),
+                               activated_at=now(),
                                paid_until=paid_until, next_charge_at=paid_until)
 
         server = await self.servers.get(server_id)
