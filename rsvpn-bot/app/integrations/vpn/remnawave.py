@@ -31,13 +31,44 @@ log = logging.getLogger(__name__)
 
 
 def _rows(data) -> list[dict]:
-    """Список записей из ответа любой формы: сам список или список внутри."""
+    """Список записей из ответа любой формы: сам список или список внутри.
+
+    Внутри может лежать несколько списков (categories, sparklineData,
+    topUsers) — берём тот, где словари, а не строки и числа.
+    """
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     for value in (data or {}).values():
         if isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
+            rows = [item for item in value if isinstance(item, dict)]
+            if rows:
+                return rows
     return []
+
+
+# Чем в записи расхода назван пользователь и чем — объём. Набор разный у
+# разных версий панели, поэтому раскладываем запись по всем именам сразу:
+# совпасть потом можно любым.
+IDENTITY_KEYS = ('username', 'userUuid', 'uuid', 'id', 'userId')
+AMOUNT_KEYS = ('total', 'totalBytes', 'usedBytes', 'usedTrafficBytes', 'bytes')
+
+
+def usage_by_identifier(data) -> dict:
+    """Ответ ручки расхода → {любой идентификатор пользователя: байты}."""
+    usage: dict = {}
+    for row in _rows(data):
+        amount = next((row[key] for key in AMOUNT_KEYS
+                       if isinstance(row.get(key), (int, float))), None)
+        if amount is None:
+            continue
+        for key in IDENTITY_KEYS:
+            value = row.get(key)
+            if value in (None, ''):
+                continue
+            usage[str(value)] = usage.get(str(value), 0) + int(amount)
+            if isinstance(value, (int, float)):
+                usage[int(value)] = usage.get(int(value), 0) + int(amount)
+    return usage
 
 
 def subscription_token(user_id: int, bypass: bool = False) -> str:
@@ -268,18 +299,17 @@ class RemnawaveClient:
         """
         if not node_uuid:
             return {}
-        data = await self._request(
+        data = await self.node_users_raw(node_uuid, start, end, top)
+        return usage_by_identifier(data)
+
+    async def node_users_raw(self, node_uuid: str, start: datetime, end: datetime,
+                             top: int = 200):
+        """Сырой ответ ручки расхода по ноде — им же пользуется диагностика."""
+        return await self._request(
             'GET', f'/api/bandwidth-stats/nodes/{node_uuid}/users',
             params={'start': start.strftime('%Y-%m-%d'),
                     'end': end.strftime('%Y-%m-%d'),
                     'topUsersLimit': top})
-
-        usage: dict[str, int] = {}
-        for row in (data or {}).get('topUsers') or []:
-            name = str((row or {}).get('username') or '')
-            if name:
-                usage[name] = usage.get(name, 0) + int((row or {}).get('total') or 0)
-        return usage
 
     async def devices(self, uuid: str) -> list[dict]:
         if not uuid:

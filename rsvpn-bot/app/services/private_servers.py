@@ -352,10 +352,12 @@ class PrivateServerService:
 
         usage: dict = {}
         note = ''
+        seen = 0
         for node in nodes:
             node_uuid = node.get('uuid') or node.get('nodeUuid')
             if not node_uuid:
                 continue
+            seen += 1
             try:
                 for name, total in (await self.vpn.node_users_usage(
                         node_uuid, since, until)).items():
@@ -365,8 +367,46 @@ class PrivateServerService:
                 log.warning('расход ноды %s не получен: %s', node_uuid, exc)
 
         if not usage and not note:
-            note = 'панель вернула пустой расход по нодам'
+            note = (f'ноды сквада ({len(nodes)}) без опознаваемого uuid'
+                    if not seen else
+                    f'расход по {seen} нодам пуст за период')
         return usage, note
+
+    async def usage_probe(self, server: dict) -> list[str]:
+        """Что панель отвечает на ручки расхода. Только для диагностики.
+
+        Пересказ ответа своими словами уже трижды оказывался неточным,
+        поэтому здесь ответ показывается как есть.
+        """
+        squad = server.get('squad_uuid')
+        if not squad:
+            return ['сквад не задан']
+
+        until = now() + timedelta(days=1)
+        since = now() - timedelta(days=ps.CHARGE_PERIOD_DAYS)
+        started = parse_dt(server.get('activated_at'))
+        if started and started > since:
+            since = started
+
+        out = [f'период: {since:%Y-%m-%d} … {until:%Y-%m-%d}']
+        try:
+            nodes = await self.vpn.squad_nodes(squad)
+            out.append(f'нод в скваде: {len(nodes)}')
+            out.append(f'ноды: {str(nodes)[:400]}')
+        except Exception as exc:
+            out.append(f'accessible-nodes: {exc}')
+            return out
+
+        for node in nodes[:3]:
+            node_uuid = node.get('uuid') or node.get('nodeUuid')
+            if not node_uuid:
+                continue
+            try:
+                raw = await self.vpn.node_users_raw(node_uuid, since, until)
+                out.append(f'расход {node_uuid}: {str(raw)[:500]}')
+            except Exception as exc:
+                out.append(f'расход {node_uuid}: {exc}')
+        return out
 
     async def stats(self, server: dict) -> list[dict]:
         """Трафик и последнее подключение по каждому участнику.

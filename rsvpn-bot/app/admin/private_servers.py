@@ -288,6 +288,11 @@ async def diagnose(message: types.Message, command, c, settings) -> None:
             + (f'  ответ панели: <code>{row["raw"]}</code>'
                if row.get('raw') else ''))
 
+    lines.append('')
+    lines.append(f'{e("traffic")} <b>Ручки расхода</b>')
+    for line in await c.private.usage_probe(server):
+        lines.append(f'<code>{line}</code>')
+
     await message.answer('\n'.join(lines))
 
 

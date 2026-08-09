@@ -58,6 +58,9 @@ class FakeVpn:
     async def node_users_usage(self, node_uuid, start, end, **kw) -> dict:
         return {}
 
+    async def node_users_raw(self, node_uuid, start, end, top=200):
+        return {}
+
 
 @pytest.fixture
 async def service(db):
@@ -996,3 +999,59 @@ async def test_usage_window_is_not_a_single_day(service):
     await srv.stats(await srv.servers.get(server['_id']))
 
     assert window['until'].date() > window['since'].date()
+
+
+async def test_node_usage_is_read_from_any_row_shape():
+    """Форма ответа у версий панели разная — совпасть можно любым ключом."""
+    from app.integrations.vpn.remnawave import usage_by_identifier
+
+    # v3.2.2: categories/sparklineData/topUsers рядом, нужен только topUsers
+    assert usage_by_identifier(
+        {'categories': ['2026-08-10'], 'sparklineData': [1, 2],
+         'topUsers': [{'color': '#fff', 'username': '802421217', 'total': 5}]}
+    ) == {'802421217': 5}
+
+    # плоский список записей
+    assert usage_by_identifier([{'userUuid': 'x', 'totalBytes': 7}]) == {'x': 7}
+
+    # числовой id раскладывается и строкой, и числом
+    assert usage_by_identifier({'users': [{'id': 2549, 'total': 9}]}) == {'2549': 9, 2549: 9}
+
+
+async def test_empty_node_usage_names_which_case_it_is(service):
+    """«Пусто» бывает от отсутствия нод и от пустого периода — это разное."""
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def nodes_without_uuid(squad):
+        return [{'name': 'нода без uuid'}]
+
+    vpn.squad_nodes = nodes_without_uuid
+    rows = await srv.stats(server)
+    assert 'без опознаваемого uuid' in rows[0]['usage_note']
+
+    async def good_nodes(squad):
+        return [{'uuid': 'node-1'}]
+
+    vpn.squad_nodes = good_nodes
+    rows = await srv.stats(await srv.servers.get(server['_id']))
+    assert 'расход по 1 нодам пуст' in rows[0]['usage_note']
+
+
+async def test_usage_probe_shows_what_the_panel_actually_returned(service):
+    """Пересказ ответа своими словами трижды оказывался неточным."""
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def nodes(squad):
+        return [{'uuid': 'node-1', 'name': 'Свой сервер'}]
+
+    async def raw(node_uuid, since, until, top=200):
+        return {'topUsers': [], 'categories': []}
+
+    vpn.squad_nodes, vpn.node_users_raw = nodes, raw
+    probe = await srv.usage_probe(server)
+
+    assert any('нод в скваде: 1' in line for line in probe)
+    assert any('topUsers' in line for line in probe)
+    assert any('период:' in line for line in probe)
