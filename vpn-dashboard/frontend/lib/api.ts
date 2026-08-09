@@ -120,6 +120,7 @@ export const api = {
     experimentsAb: (experiment: string) =>
       `/api/experiments/ab${qs(undefined, { experiment })}`,
     opportunities: () => "/api/experiments/opportunities",
+    regEconomics: () => "/api/experiments/registration-economics",
   },
 
   alertsTest: () => request<{ sent: boolean }>("/api/alerts/test", { method: "POST" }),

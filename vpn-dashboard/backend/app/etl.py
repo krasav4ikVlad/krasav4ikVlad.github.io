@@ -286,16 +286,29 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
     if days_to_expire is None and isinstance(growth, dict):
         days_to_expire = parse_amount(growth.get("days_to_expire"))
 
+    joined_at = parse_dt(_pick(doc, "joined_at", "created_at",
+                               "growth.joined_at", "user_data.date_joined",
+                               "info.joined_at", "user_data.joined_at",
+                               "info.reg_date", "reg_date", "info.created_at"))
+
+    def _rev_within(days: int) -> Optional[float]:
+        """NET top-up revenue in the first N days after registration."""
+        if joined_at is None:
+            return None
+        horizon = joined_at + timedelta(days=days)
+        return round(sum(t.amount - t.bonus for t in dated_topups
+                         if t.dt <= horizon), 2)
+
     user_row = {
         "_id": user_id,
         "username": username,
         "username_lower": username.lower() if username else None,
-        "joined_at": parse_dt(_pick(doc, "joined_at", "created_at",
-                                    "growth.joined_at",
-                                    "user_data.date_joined",
-                                    "info.joined_at", "user_data.joined_at",
-                                    "info.reg_date", "reg_date",
-                                    "info.created_at")),
+        "joined_at": joined_at,
+        # NET top-up revenue in the first 7/30/90 days after registration —
+        # the basis for "value of one registration" economics
+        "rev_d7": _rev_within(7),
+        "rev_d30": _rev_within(30),
+        "rev_d90": _rev_within(90),
         "segment": growth.get("segment"),
         "segment_history": segment_history,
         # experiment groups maintained by the bot

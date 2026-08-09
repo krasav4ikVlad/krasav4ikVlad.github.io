@@ -12,7 +12,9 @@ import { fmtMoney, fmtNum, fmtPct } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { TimeSeries } from "@/components/charts/timeseries";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 
@@ -181,10 +183,136 @@ function OpportunitiesSection() {
   );
 }
 
+function RegEconomicsSection() {
+  const { data, isLoading } = useSWR<T.RegEconomics>(
+    api.urls.regEconomics(),
+    fetcher,
+    { keepPreviousData: true },
+  );
+  const [targetRub, setTargetRub] = useState("50000");
+
+  const value30 = data?.horizons.d30.value_per_reg ?? 0;
+  const target = Number(targetRub) || 0;
+  // R регистраций/день → 30R в месяц → 30R × value30 ₽/мес
+  const regsForTarget = value30 > 0 ? target / (30 * value30) : null;
+  const regsOffset = data?.regs_per_day_to_offset_churn ?? null;
+  const trendData = (data?.trend ?? []).map((t) => ({
+    bucket: t.cohort,
+    value: t.value_per_reg_30d,
+  }));
+
+  const horizonCards: { key: "d7" | "d30" | "d90"; label: string }[] = [
+    { key: "d7", label: "за первые 7 дней" },
+    { key: "d30", label: "за первые 30 дней" },
+    { key: "d90", label: "за первые 90 дней" },
+  ];
+
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>Экономика регистраций</CardTitle>
+          <p className="mt-0.5 text-xs text-muted">
+            Сколько чистыми приносит одна регистрация (только юзеры, у которых
+            окно уже закрылось) и сколько регистраций в день нужно под цель
+          </p>
+        </div>
+      </CardHeader>
+      {isLoading && !data ? (
+        <TableSkeleton rows={4} />
+      ) : !data ? null : (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            {horizonCards.map(({ key, label }) => {
+              const h = data.horizons[key];
+              return (
+                <div
+                  key={key}
+                  className="rounded-card border border-hairline bg-surface-2/40 p-3"
+                >
+                  <div className="text-xs text-muted">{label}</div>
+                  <div className="text-xl font-semibold text-ink">
+                    {fmtMoney(h.value_per_reg, true)}
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">
+                    платят {fmtPct(h.paying_share_pct)} · платящий приносит{" "}
+                    {fmtMoney(h.value_per_paying)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div>
+              <div className="mb-1 text-xs text-muted">
+                Ценность регистрации (30 дней) по когортам — последняя точка
+                ещё «дозревает»
+              </div>
+              <TimeSeries
+                data={trendData as unknown as Record<string, unknown>[]}
+                series={[{ key: "value", name: "₽ с регистрации", kind: "area" }]}
+                height={200}
+                xFormatter={(b) => b}
+                valueFormatter={(v) => fmtMoney(v)}
+              />
+            </div>
+            <div className="space-y-3 self-center">
+              <div>
+                <label className="text-xs text-muted">
+                  Хочу дополнительно, ₽/мес
+                </label>
+                <Input
+                  value={targetRub}
+                  onChange={(e) =>
+                    setTargetRub(e.target.value.replace(/[^\d]/g, ""))
+                  }
+                  inputMode="numeric"
+                  className="mt-1 max-w-[200px]"
+                />
+              </div>
+              <div className="text-sm text-ink-2">
+                {regsForTarget !== null ? (
+                  <>
+                    Нужно{" "}
+                    <span className="text-lg font-semibold text-ink">
+                      ≈ {fmtNum(Math.ceil(regsForTarget))} рег/день
+                    </span>{" "}
+                    <span className="text-muted">
+                      (одна регистрация ≈ {fmtMoney(value30)} в первый месяц)
+                    </span>
+                  </>
+                ) : (
+                  "Недостаточно данных для оценки"
+                )}
+              </div>
+              <div className="space-y-1 text-xs text-muted">
+                <p>
+                  Сейчас: {fmtNum(data.regs_per_day_14d)} рег/день ≈{" "}
+                  {fmtMoney(data.current_monthly_value)}/мес
+                </p>
+                <p>
+                  Отток за 30 дней: {fmtNum(data.churned_30d)} юзеров ≈{" "}
+                  {fmtMoney(data.churn_lost_monthly_rub)}/мес — чтобы просто
+                  стоять на месте, нужно{" "}
+                  <span className="font-medium text-ink-2">
+                    {regsOffset !== null ? `≈ ${regsOffset} рег/день` : "—"}
+                  </span>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function ExperimentsPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-semibold text-ink">Эксперименты</h1>
+      <RegEconomicsSection />
       <OpportunitiesSection />
       <AbSection />
     </div>

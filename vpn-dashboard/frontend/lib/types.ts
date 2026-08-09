@@ -420,6 +420,30 @@ export interface OpportunitiesResponse {
   computed_at: string | null;
 }
 
+// ---- registration economics ----
+export interface RegHorizon {
+  users: number;
+  value_per_reg: number;
+  paying_share_pct: number;
+  value_per_paying: number;
+}
+export interface RegEconomics {
+  horizons: { d7: RegHorizon; d30: RegHorizon; d90: RegHorizon };
+  trend: {
+    cohort: string;
+    users: number;
+    value_per_reg_30d: number;
+    paying_share_pct: number;
+    complete: boolean;
+  }[];
+  regs_per_day_14d: number;
+  current_monthly_value: number;
+  churned_30d: number;
+  churn_lost_monthly_rub: number;
+  regs_per_day_to_offset_churn: number | null;
+  monthly_sub_cost: number;
+}
+
 // ---- alerts ----
 export interface AlertRow {
   key: string;

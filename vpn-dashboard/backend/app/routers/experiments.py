@@ -258,3 +258,122 @@ async def _opportunities() -> dict[str, Any]:
 @router.get("/opportunities")
 async def opportunities() -> dict[str, Any]:
     return await _opportunities()
+
+
+# ---------------------------------------------------------------------------
+# GET /experiments/registration-economics — сколько приносит одна регистрация
+# ---------------------------------------------------------------------------
+
+@cached(ttl=300, prefix="experiments:reg-economics")
+async def _registration_economics() -> dict[str, Any]:
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    uf = db[USERS_FLAT]
+
+    # value per registration over completed horizons only: a user counts for
+    # rev_dN when their first N days are already behind them
+    horizons: dict[str, dict[str, Any]] = {}
+    for days, field in ((7, "rev_d7"), (30, "rev_d30"), (90, "rev_d90")):
+        cutoff = now - timedelta(days=days)
+        rows = await uf.aggregate([
+            {"$match": {"joined_at": {"$type": "date", "$lt": cutoff},
+                        field: {"$ne": None}}},
+            {"$group": {
+                "_id": None,
+                "users": {"$sum": 1},
+                "revenue": {"$sum": f"${field}"},
+                "paying": {"$sum": {"$cond": [{"$gt": [f"${field}", 0]},
+                                              1, 0]}},
+            }},
+        ]).to_list(length=1)
+        row = rows[0] if rows else {}
+        users = int(row.get("users") or 0)
+        revenue = float(row.get("revenue") or 0)
+        paying = int(row.get("paying") or 0)
+        horizons[f"d{days}"] = {
+            "users": users,
+            "value_per_reg": r2(revenue / users) if users else 0.0,
+            "paying_share_pct": r2(paying / users * 100) if users else 0.0,
+            "value_per_paying": r2(revenue / paying) if paying else 0.0,
+        }
+
+    # cohort trend: monthly cohorts, avg first-30d revenue
+    trend_rows = await uf.aggregate([
+        {"$match": {"joined_at": {"$type": "date",
+                                  "$gte": now - timedelta(days=270)},
+                    "rev_d30": {"$ne": None}}},
+        {"$group": {
+            "_id": {"$dateTrunc": {"date": "$joined_at", "unit": "month"}},
+            "users": {"$sum": 1},
+            "revenue30": {"$sum": "$rev_d30"},
+            "paying": {"$sum": {"$cond": [{"$gt": ["$rev_d30", 0]}, 1, 0]}},
+        }},
+        {"$sort": {"_id": 1}},
+    ]).to_list(length=None)
+    complete_before = now - timedelta(days=30)
+    trend = []
+    for row in trend_rows:
+        month = as_utc(row.get("_id"))
+        if month is None:
+            continue
+        users = int(row.get("users") or 0)
+        trend.append({
+            "cohort": month.strftime("%Y-%m"),
+            "users": users,
+            "value_per_reg_30d": r2(float(row.get("revenue30") or 0) / users)
+                if users else 0.0,
+            "paying_share_pct": r2(int(row.get("paying") or 0) / users * 100)
+                if users else 0.0,
+            # the last month's 30d windows are still open — value keeps growing
+            "complete": month < complete_before - timedelta(days=31),
+        })
+
+    # current registration rate
+    regs_14d = await uf.count_documents(
+        {"joined_at": {"$type": "date", "$gte": now - timedelta(days=14)}})
+    regs_per_day = round(regs_14d / 14, 1)
+
+    # churn to offset: users who slid into expired-like segments in 30 days
+    monthly_cost = await _monthly_sub_cost(db, 199.0)
+    since = now - timedelta(days=30)
+    churned = 0
+    cursor = uf.find(
+        {"segment_history": {"$elemMatch": {"dt": {"$gte": since}}}},
+        {"segment_history": 1}).batch_size(500)
+    import re as _re
+    expired_re = _re.compile("expired|churn", _re.IGNORECASE)
+    async for doc in cursor:
+        history = doc.get("segment_history") or []
+        for idx, entry in enumerate(history):
+            if not isinstance(entry, dict):
+                continue
+            dt = as_utc(entry.get("dt"))
+            segment = str(entry.get("segment") or "")
+            prev = str(history[idx - 1].get("segment") or "") if idx else ""
+            if (dt and dt >= since and expired_re.search(segment)
+                    and not expired_re.search(prev)):
+                churned += 1
+                break  # count a user once
+
+    value30 = horizons["d30"]["value_per_reg"]
+    churn_lost_monthly = r2(churned * monthly_cost)
+    # steady state: R regs/day → 30R regs a month → 30R × value30 per month
+    regs_to_offset_churn = (round(churn_lost_monthly / (30 * value30), 1)
+                            if value30 > 0 else None)
+
+    return {
+        "horizons": horizons,
+        "trend": trend,
+        "regs_per_day_14d": regs_per_day,
+        "current_monthly_value": r2(regs_per_day * 30 * value30),
+        "churned_30d": churned,
+        "churn_lost_monthly_rub": churn_lost_monthly,
+        "regs_per_day_to_offset_churn": regs_to_offset_churn,
+        "monthly_sub_cost": r2(monthly_cost),
+    }
+
+
+@router.get("/registration-economics")
+async def registration_economics() -> dict[str, Any]:
+    """Ценность одной регистрации и сколько регистраций в день нужно."""
+    return await _registration_economics()
