@@ -114,9 +114,11 @@ async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user:
               f'(вы и ещё {plan.guests})\n'
             + f'<b>{e("money")} Списание:</b> <code>{price}₽</code> сейчас '
               'и столько же каждый месяц\n\n'
-            + '<blockquote>Сервер поднимается вручную и обычно готов в течение '
-              'нескольких часов. Пока он готовится, деньги уже списаны — если '
-              'запустить не выйдет, вернём полностью.</blockquote>')
+            + '<blockquote>Оплата помесячная: списываем сейчас за первый месяц '
+              'и дальше столько же каждые 30 дней. Отказаться от следующего '
+              'списания можно в любой момент — сервер доработает оплаченное.\n\n'
+              'Поднимается он вручную и обычно готов в течение нескольких часов. '
+              'Если запустить не выйдет, вернём деньги полностью.</blockquote>')
 
     await footer(kb, settings, back=None)
     await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
@@ -158,7 +160,11 @@ async def server_screen(event, c, user: dict, settings, server: dict,
     if paid_until:
         lines.append(f'<b>{e("calendar")} Оплачен до:</b> <code>{fmt(paid_until)}</code>')
     if owner:
-        lines.append(f'<b>{e("money")} Списание:</b> <code>{server.get("price")}₽</code> в месяц')
+        renews = server.get('autorenew', True)
+        lines.append(f'<b>{e("money")} Списание:</b> <code>{server.get("price")}₽</code> '
+                     + ('в месяц, следующее '
+                        f'{fmt(server.get("next_charge_at"))}' if renews else
+                        'в месяц — <b>продление выключено</b>'))
 
     kb = InlineKeyboardBuilder()
     if server.get('status') == ps.ACTIVE:
@@ -169,11 +175,16 @@ async def server_screen(event, c, user: dict, settings, server: dict,
             kb.row(_btn(f'{e("stats")} Статистика', 'stats', server['_id']))
             if server.get('members'):
                 kb.row(_btn(f'{e("friends")} Участники', 'members', server['_id']))
+            kb.row(_btn(f'{e("renew")} Включить продление' if not server.get('autorenew', True)
+                        else f'{e("cross")} Не продлевать', 'renew', server['_id']))
         else:
             kb.row(_btn(f'{e("cross")} Выйти с сервера', 'leave', server['_id']))
 
     hint = note or ('Сервер готовится. Как только он будет поднят, придёт сообщение.'
                     if server.get('status') == ps.REQUESTED else
+                    'Продление выключено: сервер доработает оплаченный месяц и '
+                    'закроется. Передумаете — включите обратно.'
+                    if owner and not server.get('autorenew', True) else
                     'Приглашайте друзей — каждый получит доступ к этому серверу '
                     'и только к нему.' if owner else
                     'Вы пользуетесь сервером друга. Оплачивает его владелец.')
@@ -321,6 +332,27 @@ async def leave(call: types.CallbackQuery, callback_data: Server, c, user: dict,
                note='Вы больше не на сервере друга.')
 
 
+async def toggle_renew(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+                       settings) -> None:
+    """Отказ от следующего списания. Оплаченный месяц остаётся за человеком."""
+    server = await c.private.servers.get(callback_data.value)
+    if not server:
+        await call.answer(ERRORS['not_owner'], show_alert=True)
+        return
+
+    result = await c.private.set_autorenew(server['_id'], call.from_user.id,
+                                           not server.get('autorenew', True))
+    if not result.ok:
+        await call.answer(ERRORS.get(result.reason, 'Не получилось'), show_alert=True)
+        return
+
+    on = result.server.get('autorenew', True)
+    await call.answer('Продление включено' if on else
+                      f'Больше не спишем. Сервер работает до '
+                      f'{fmt(result.server.get("paid_until"))}', show_alert=True)
+    await server_screen(call, c, user, settings, result.server)
+
+
 async def stats(call: types.CallbackQuery, callback_data: Server, c, user: dict,
                 settings) -> None:
     server = await c.private.servers.get(callback_data.value)
@@ -381,6 +413,7 @@ def create_router() -> Router:
     router.callback_query.register(members, Server.filter(F.action == 'members'))
     router.callback_query.register(kick, Server.filter(F.action == 'kick'))
     router.callback_query.register(leave, Server.filter(F.action == 'leave'))
+    router.callback_query.register(toggle_renew, Server.filter(F.action == 'renew'))
     router.callback_query.register(stats, Server.filter(F.action == 'stats'))
     router.callback_query.register(link, Server.filter(F.action == 'link'))
     return router

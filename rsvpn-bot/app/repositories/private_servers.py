@@ -48,6 +48,17 @@ class PrivateServersRepository(Repository):
                                     'next_charge_at': {'$lte': moment or now()}}
                                    ).to_list(length=500)
 
+    async def soon_due(self, border) -> list[dict]:
+        """Кому пора сказать, что через несколько дней спишется месяц.
+
+        Отметка charge_warned_at сбрасывается после каждого списания, поэтому
+        одно предупреждение на цикл, а не одно на всю жизнь сервера.
+        """
+        return await self.col.find({'status': ps.ACTIVE, 'autorenew': True,
+                                    'charge_warned_at': None,
+                                    'next_charge_at': {'$lte': border}}
+                                   ).to_list(length=500)
+
     async def overdue(self, border) -> list[dict]:
         """Приостановленные дольше отсрочки — их пора закрывать."""
         return await self.col.find({'status': ps.SUSPENDED,
@@ -63,6 +74,7 @@ class PrivateServersRepository(Repository):
             'title': title, 'status': ps.REQUESTED,
             'squad_uuid': '', 'location': '',
             'members': [], 'invites': [],
+            'autorenew': True, 'charge_warned_at': None,
             'created_at': now(), 'activated_at': None,
             'paid_until': None, 'next_charge_at': None,
         }

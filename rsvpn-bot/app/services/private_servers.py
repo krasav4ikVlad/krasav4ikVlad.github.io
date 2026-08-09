@@ -19,6 +19,7 @@ import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
+from app.content.emoji import e
 from app.core.time import now, parse_dt
 from app.domain import private_servers as ps
 
@@ -209,14 +210,60 @@ class PrivateServerService:
         return rows
 
     # ── продление ───────────────────────────────────────────────────────────
+    async def set_autorenew(self, server_id: str, owner_id: int, on: bool) -> Result:
+        """Владелец решает, списывать ли следующий месяц.
+
+        Выключенное продление ничего не отключает сразу: сервер доработает
+        оплаченный месяц и закроется в дату, до которой оплачен. Иначе
+        «отказаться от следующего списания» означало бы подарить нам остаток
+        уже оплаченного периода.
+        """
+        server = await self.servers.get(server_id)
+        if not server or server.get('owner_id') != owner_id:
+            return Result(False, 'not_owner')
+
+        await self.servers.set(server_id, autorenew=bool(on))
+        return Result(True, server=await self.servers.get(server_id))
+
+    async def warn_upcoming(self) -> int:
+        """Предупредить владельцев о ближайшем списании. Возвращает сколько."""
+        border = now() + timedelta(days=ps.WARN_DAYS)
+        sent = 0
+        for server in await self.servers.soon_due(border):
+            owner = await self.users.get(server['owner_id'], {'info.balance': 1})
+            balance = int(self.users.pick(owner or {}, 'info.balance', 0) or 0)
+            price = int(server.get('price') or 0)
+
+            await self.servers.set(server['_id'], charge_warned_at=now())
+            await self._tell(
+                server['owner_id'],
+                f'{e("calendar")} Через {ps.WARN_DAYS} дня спишется '
+                f'<b>{price}₽</b> за сервер «{server.get("title")}».\n'
+                f'На балансе сейчас <b>{balance}₽</b>.'
+                + ('' if balance >= price else
+                   '\n\nЕсли не пополнить, сервер приостановится.')
+                + '\n\nНе нужен на следующий месяц — выключите продление '
+                  'в профиле, сервер доработает оплаченное и закроется.')
+            sent += 1
+        return sent
+
     async def charge_due(self) -> dict:
         """Ежемесячное списание с владельцев. Возвращает сводку для /diag."""
-        report = {'checked': 0, 'charged': 0, 'amount': 0, 'suspended': 0, 'closed': 0}
+        report = {'checked': 0, 'charged': 0, 'amount': 0, 'suspended': 0,
+                  'closed': 0, 'warned': 0}
+        report['warned'] = await self.warn_upcoming()
 
         for server in await self.servers.due():
             report['checked'] += 1
             price = int(server.get('price') or 0)
             owner_id = server['owner_id']
+
+            # Продление выключено самим владельцем — не списываем и закрываем:
+            # оплаченный месяц он уже отработал.
+            if not server.get('autorenew', True):
+                await self.close(server, reason='владелец отказался от продления')
+                report['closed'] += 1
+                continue
 
             if await self.users.charge(owner_id, price,
                                        f'Продление сервера «{server.get("title")}»',
@@ -224,7 +271,8 @@ class PrivateServerService:
                 paid_until = (parse_dt(server.get('paid_until')) or now()) + timedelta(
                     days=ps.CHARGE_PERIOD_DAYS)
                 await self.servers.set(server['_id'], paid_until=paid_until,
-                                       next_charge_at=paid_until)
+                                       next_charge_at=paid_until,
+                                       charge_warned_at=None)
                 await self._extend_everyone(await self.servers.get(server['_id']))
                 report['charged'] += 1
                 report['amount'] += price
@@ -257,15 +305,17 @@ class PrivateServerService:
             await self.notifier.send('payments',
                                      f'Сервер {server["_id"]} приостановлен (нет средств)')
 
-    async def close(self, server: dict) -> None:
-        await self.servers.set(server['_id'], status=ps.CANCELLED, cancelled_at=now())
+    async def close(self, server: dict, reason: str = 'оплата не поступила') -> None:
+        await self.servers.set(server['_id'], status=ps.CANCELLED, cancelled_at=now(),
+                               cancel_reason=reason)
         for user_id in self._everyone(server):
             await self._revoke(server, user_id)
         await self._tell(server['owner_id'],
-                         f'Сервер «{server.get("title")}» закрыт: оплата так и не поступила.')
+                         f'Сервер «{server.get("title")}» закрыт: {reason}.')
         if self.notifier:
             await self.notifier.send(
-                'payments', f'Сервер {server["_id"]} закрыт — можно гасить VPS')
+                'payments',
+                f'Сервер {server["_id"]} закрыт ({reason}) — можно гасить VPS')
 
     # ── работа с панелью ────────────────────────────────────────────────────
     @staticmethod

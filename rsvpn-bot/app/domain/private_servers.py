@@ -62,6 +62,11 @@ GRACE_DAYS = 3
 
 CHARGE_PERIOD_DAYS = 30
 
+# За сколько дней предупреждать о ежемесячном списании. Полторы тысячи с
+# баланса без предупреждения — это «бот украл деньги» в поддержке, даже
+# когда всё по договорённости.
+WARN_DAYS = 3
+
 
 def plan_of(server: dict | None) -> ServerPlan | None:
     return BY_CODE.get((server or {}).get('plan', ''))

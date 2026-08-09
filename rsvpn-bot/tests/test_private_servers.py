@@ -360,3 +360,111 @@ def test_free_slots_counts_the_owner():
     server = {'plan': 'mini', 'slots': 5, 'members': [{'user_id': 2}, {'user_id': 3}]}
     assert ps.occupied(server) == 3
     assert ps.free_slots(server) == 2
+
+
+# ── ежемесячная цена ────────────────────────────────────────────────────────
+#
+# Первый месяц оплачивается при заказе, дальше столько же каждые 30 дней.
+# Списание без предупреждения и без возможности отказаться — это «бот украл
+# полторы тысячи» в поддержке, даже когда всё по договорённости.
+
+async def test_first_month_is_paid_at_order_and_the_next_one_in_a_month(service):
+    srv, _, users = service
+    server = await live_server(service)
+
+    assert (await users.get(1))['info']['balance'] == 3000 - 1500
+    assert server['paid_until'] > now() + timedelta(days=29)
+    assert server['next_charge_at'] == server['paid_until']
+
+
+async def test_owner_is_warned_before_the_monthly_charge(service):
+    srv, _, users = service
+    sent = []
+
+    async def remember(user_id, text):
+        sent.append((user_id, text))
+
+    srv._tell = remember
+    server = await live_server(service)
+    await srv.servers.set(server['_id'],
+                          next_charge_at=now() + timedelta(days=ps.WARN_DAYS - 1))
+
+    report = await srv.charge_due()
+
+    assert report['warned'] == 1
+    assert '1500₽' in sent[0][1]
+
+
+async def test_the_warning_is_sent_once_per_cycle(service):
+    srv, _, users = service
+    async def silent(user_id, text):
+        return None
+
+    srv._tell = silent
+    server = await live_server(service)
+    await srv.servers.set(server['_id'],
+                          next_charge_at=now() + timedelta(days=ps.WARN_DAYS - 1))
+
+    assert (await srv.charge_due())['warned'] == 1
+    assert (await srv.charge_due())['warned'] == 0, 'предупредили дважды за один цикл'
+
+
+async def test_a_new_cycle_warns_again(service):
+    srv, _, users = service
+    async def silent(user_id, text):
+        return None
+
+    srv._tell = silent
+    server = await live_server(service)
+    await srv.servers.set(server['_id'], charge_warned_at=now(),
+                          next_charge_at=now() - timedelta(minutes=1))
+
+    await srv.charge_due()      # списали месяц — отметка сбрасывается
+    fresh = await srv.servers.get(server['_id'])
+    assert fresh['charge_warned_at'] is None
+
+
+async def test_owner_can_refuse_the_next_charge(service):
+    """Оплаченный месяц остаётся за человеком, следующий не списывается."""
+    srv, _, users = service
+    server = await live_server(service)
+
+    result = await srv.set_autorenew(server['_id'], 1, False)
+
+    assert result.ok and result.server['autorenew'] is False
+    assert (await users.get(1))['info']['balance'] == 1500, 'деньги не возвращаются'
+
+
+async def test_refused_server_closes_instead_of_charging(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+    await srv.set_autorenew(server['_id'], 1, False)
+    await srv.servers.set(server['_id'], next_charge_at=now() - timedelta(minutes=1))
+
+    report = await srv.charge_due()
+
+    assert report['closed'] == 1 and report['charged'] == 0
+    assert (await users.get(1))['info']['balance'] == 1500, 'списали, хотя отказались'
+    assert SQUAD not in vpn.state['u-1']['squads']
+
+
+async def test_refusal_can_be_taken_back(service):
+    srv, _, users = service
+    server = await live_server(service)
+    await srv.set_autorenew(server['_id'], 1, False)
+
+    await srv.set_autorenew(server['_id'], 1, True)
+    await srv.servers.set(server['_id'], next_charge_at=now() - timedelta(minutes=1))
+    report = await srv.charge_due()
+
+    assert report['charged'] == 1
+
+
+async def test_a_stranger_cannot_switch_off_someone_elses_renewal(service):
+    srv, _, _ = service
+    server = await live_server(service)
+
+    result = await srv.set_autorenew(server['_id'], 999, False)
+
+    assert not result.ok and result.reason == 'not_owner'
+    assert (await srv.servers.get(server['_id']))['autorenew'] is True
