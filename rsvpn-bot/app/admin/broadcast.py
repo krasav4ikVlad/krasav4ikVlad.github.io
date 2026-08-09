@@ -45,7 +45,27 @@ class Broadcast(StatesGroup):
 
 
 # запущенные рассылки: см. комментарий в start_sending
-_running: set[asyncio.Task] = set()
+_running: dict[str, asyncio.Task] = {}
+
+# Сколько писем уходит одной пачкой. Последовательная отправка упиралась не
+# в паузу, а в round-trip до Telegram: 150–300 мс на письмо, то есть 4–6
+# писем в секунду вместо расчётных 25. На 190 тысячах это разница между
+# двумя часами и половиной суток — и всё это время рассылка выглядит
+# зависшей, потому что счётчик обновляется раз в сотню писем.
+CHUNK = 25
+
+# Сколько ждать ответа Telegram на одно письмо. Без потолка зависший запрос
+# останавливает рассылку навсегда: задача жива, счётчик не двигается, в логе
+# пусто. Именно так «рассылка оборвалась» и выглядит со стороны.
+SEND_TIMEOUT_SEC = 60
+
+# Через сколько секунд молчания считаем идущую рассылку мёртвой и
+# перезапускаем её сами.
+STALE_SEC = 180
+
+# Предохранитель от вечного цикла: если рассылка падает сразу после старта,
+# сторож поднимет её ограниченное число раз и остановится.
+MAX_RESTARTS = 200
 
 
 def _btn(text: str, act: str, a: str = '', b: str = '') -> types.InlineKeyboardButton:
@@ -180,7 +200,8 @@ async def start_sending(call: types.CallbackQuery, state: FSMContext, c, setting
         'audience': audience, 'text': text, 'recipients': recipients,
         'position': 0, 'sent': 0, 'failed': 0, 'status': 'running',
         'chat_id': call.message.chat.id, 'message_id': call.message.message_id,
-        'admin_id': call.from_user.id, 'started_at': now(),
+        'admin_id': call.from_user.id, 'started_at': now(), 'updated_at': now(),
+        'restarts': 0,
     }
     await c.db[names.BROADCASTS].insert_one(job)
     log.info('рассылка %s: получателей %s', job['_id'], len(recipients))
@@ -203,10 +224,19 @@ async def _recipients(c, query: dict) -> list[int]:
 
 def _spawn(c, bot, job_id: str) -> None:
     """Запуск фоном. Ссылку держим сами — задачу без владельца сборщик
-    мусора может убить прямо посреди рассылки."""
+    мусора может убить прямо посреди рассылки.
+
+    Повторный запуск той же рассылки не создаёт вторую задачу: сторож
+    (`resume_stalled`) вызывает нас вслепую, и без этой проверки одна
+    рассылка ушла бы получателям дважды.
+    """
+    alive = _running.get(job_id)
+    if alive and not alive.done():
+        return
+
     task = asyncio.create_task(_run(c, bot, job_id))
-    _running.add(task)
-    task.add_done_callback(_running.discard)
+    _running[job_id] = task
+    task.add_done_callback(lambda t: _running.pop(job_id, None))
     task.add_done_callback(lambda t: _log_failure(job_id, t))
 
 
@@ -233,7 +263,8 @@ def eta(left: int, delay: float) -> str:
 
 
 def progress_text(sent: int, failed: int, total: int, done: bool = False,
-                  error: str = '', pause_until: str = '', delay: float = 0.04) -> str:
+                  error: str = '', pause_until: str = '', delay: float = 0.04,
+                  stamp: bool = True) -> str:
     """Счётчики рассылки. Один текст на ход, на конец и на обрыв — чтобы
     цифры на экране не меняли формат в момент завершения."""
     done_count = sent + failed
@@ -264,6 +295,11 @@ def progress_text(sent: int, failed: int, total: int, done: bool = False,
     if error:
         lines.append(f'\n<code>{error}</code>')
         lines.append('Можно продолжить с этого места кнопкой ниже.')
+
+    # Время последнего обновления. Без него «зависла» и «идёт медленно»
+    # выглядят одинаково, и понять это можно только сидя и глядя в экран.
+    if stamp and not done:
+        lines.append(f'\n<i>обновлено в {now().strftime("%H:%M:%S")}</i>')
     return '\n'.join(lines)
 
 
@@ -314,6 +350,7 @@ async def _run(c, bot, job_id: str) -> None:
     sent = int(job.get('sent', 0) or 0)
     failed = int(job.get('failed', 0) or 0)
     text = job.get('text') or ''
+    await _save(c, job_id, status='running', updated_at=now())
 
     async def on_flood(seconds: int) -> None:
         """Пауза Telegram — показать её сразу, не дожидаясь конца шага.
@@ -328,43 +365,62 @@ async def _run(c, bot, job_id: str) -> None:
 
     sender = Sender(on_blocked=c.users.mark_blocked, on_flood=on_flood)
 
+    async def send_one(user_id: int) -> bool:
+        """Одно письмо, но с потолком по времени.
+
+        Зависший HTTP-запрос без таймаута останавливает рассылку навсегда:
+        задача жива, исключения нет, счётчик стоит. Снаружи это неотличимо
+        от обрыва — и именно так рассылка «пропадала».
+        """
+        try:
+            return await asyncio.wait_for(sender.send(bot, user_id, text),
+                                          timeout=SEND_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            log.warning('таймаут отправки %s', user_id)
+            return False
+
+    last_shown = position
     try:
         while position < total:
-            user_id = recipients[position]
-            position += 1
+            # Пачкой, а не по одному: round-trip до Telegram (150–300 мс)
+            # перекрывается, и скорость определяется паузой, а не сетью.
+            chunk = recipients[position:position + CHUNK]
+            results = await asyncio.gather(*(send_one(uid) for uid in chunk))
+            position += len(chunk)
+            sent += sum(1 for ok in results if ok)
+            failed += sum(1 for ok in results if not ok)
 
-            if await sender.send(bot, user_id, text):
-                sent += 1
-            else:
-                failed += 1
+            # Позиция и пульс — после каждой пачки, независимо от того,
+            # показываем мы счётчик или нет. По updated_at сторож понимает,
+            # что задача жива; по position продолжает с места обрыва.
+            await _save(c, job_id, position=position, sent=sent,
+                        failed=failed, updated_at=now())
+
+            # Остановку читаем из базы, а не из памяти: кнопку нажимают
+            # в другом процессе-обработчике, и общего состояния у них нет.
+            fresh = await c.db[names.BROADCASTS].find_one({'_id': job_id}, {'status': 1})
+            if (fresh or {}).get('status') == 'stopping':
+                # 'stopped' — терминальный статус: сторож поднимает
+                # оборвавшиеся рассылки сам, и остановленную руками
+                # он поднимать не должен.
+                await _save(c, job_id, status='stopped',
+                            error='остановлена вручную', finished_at=now())
+                await _show(bot, job, progress_text(
+                    sent, failed, total, error='остановлена вручную',
+                    delay=delay), _resume_kb(job_id))
+                log.info('рассылка %s остановлена на %s из %s', job_id, position, total)
+                return
 
             # Правка сообщения — тоже запрос к Telegram, и у него свой лимит
             # (около одного в секунду на чат). Шаг в сотню при паузе 40 мс
             # даёт обновление раз в четыре секунды — далеко от лимита.
-            # Здесь же сохраняется позиция: после обрыва рассылка продолжится
-            # отсюда, повторно уйдёт не больше шага сообщений.
-            if step and (sent + failed) % step == 0:
-                await _save(c, job_id, position=position, sent=sent, failed=failed)
+            if step and position - last_shown >= step:
+                last_shown = position
                 await _show(bot, job, progress_text(sent, failed, total, delay=delay),
                             _running_kb(job_id))
 
-                # Остановку читаем из базы, а не из памяти: кнопку нажимают
-                # в другом процессе-обработчике, и общего состояния у них нет.
-                fresh = await c.db[names.BROADCASTS].find_one(
-                    {'_id': job_id}, {'status': 1})
-                if (fresh or {}).get('status') == 'stopping':
-                    await _save(c, job_id, position=position, sent=sent,
-                                failed=failed, status='interrupted',
-                                error='остановлена вручную', finished_at=now())
-                    await _show(bot, job, progress_text(
-                        sent, failed, total, error='остановлена вручную',
-                        delay=delay), _resume_kb(job_id))
-                    log.info('рассылка %s остановлена на %s из %s',
-                             job_id, position, total)
-                    return
-
             if delay:
-                await asyncio.sleep(delay)
+                await asyncio.sleep(delay * len(chunk))
     except Exception as exc:
         await _save(c, job_id, position=position, sent=sent, failed=failed,
                     status='failed', error=repr(exc), finished_at=now())
@@ -424,19 +480,80 @@ async def mark_interrupted(c) -> list[dict]:
 
     Задача живёт в памяти, поэтому перезапуск бота (в том числе обычный
     деплой) обрывает её без следов. Отметку ставим при старте: иначе такая
-    рассылка навсегда осталась бы «идущей».
+    рассылка навсегда осталась бы «идущей». Дальше её поднимет сторож.
     """
     try:
-        jobs = await c.db[names.BROADCASTS].find({'status': 'running'}).to_list(length=None)
+        jobs = await c.db[names.BROADCASTS].find(
+            {'status': {'$in': ['running', 'stopping']}}).to_list(length=None)
     except Exception as exc:
         log.warning('прерванные рассылки не проверены: %s', exc)
         return []
 
+    revived = []
     for job in jobs:
+        # «Остановить» нажали перед самым перезапуском — воля админа важнее
+        # автоматики, такую рассылку сторож поднимать не должен.
+        if job.get('status') == 'stopping':
+            await _save(c, job['_id'], status='stopped', error='остановлена вручную')
+            continue
         await _save(c, job['_id'], status='interrupted', error='процесс перезапущен')
         log.warning('рассылка %s оборвана перезапуском на %s из %s',
                     job['_id'], job.get('position', 0), len(job.get('recipients') or []))
-    return jobs
+        revived.append(job)
+    return revived
+
+
+# ── сторож ──────────────────────────────────────────────────────────────────
+#
+# Рассылка на 190 тысяч писем идёт часами, и за это время с ней случается
+# всё: деплой, перезапуск по памяти, разрыв соединения с Telegram, сбой
+# Mongo. Кнопка «Продолжить» это лечит, но только если кто-то смотрит на
+# экран — а рассылку запускают и уходят.
+#
+# Поэтому продолжение не должно быть ручным действием. Раз в минуту сторож
+# смотрит, нет ли рассылки, которая обязана идти, но молчит, и поднимает её
+# сам — с сохранённой позиции. Руками остановленную (status='stopped') и
+# завершённую не трогает.
+
+async def resume_stalled(c, bot) -> int:
+    """Поднять рассылки, которые должны идти, но не идут. Возвращает сколько."""
+    border = now() - timedelta(seconds=STALE_SEC)
+    try:
+        jobs = await c.db[names.BROADCASTS].find(
+            {'$or': [
+                {'status': {'$in': ['interrupted', 'failed']}},
+                # «идёт», но пульса не было дольше STALE_SEC: задача либо
+                # умерла, либо висит на запросе, который никогда не вернётся
+                {'status': 'running', 'updated_at': {'$lt': border}},
+            ]},
+            {'recipients': 0},   # список получателей тут не нужен, он тяжёлый
+        ).to_list(length=None)
+    except Exception as exc:
+        log.warning('сторож рассылок не отработал: %s', exc)
+        return 0
+
+    revived = 0
+    for job in jobs:
+        job_id = job['_id']
+        alive = _running.get(job_id)
+        if alive and not alive.done():
+            continue                       # эта живёт в текущем процессе
+        if int(job.get('restarts', 0) or 0) >= MAX_RESTARTS:
+            log.error('рассылка %s перезапускалась %s раз — больше не поднимаю',
+                      job_id, job.get('restarts'))
+            await _save(c, job_id, status='stopped',
+                        error='слишком много перезапусков')
+            continue
+
+        await c.db[names.BROADCASTS].update_one(
+            {'_id': job_id}, {'$inc': {'restarts': 1},
+                              '$set': {'status': 'running', 'updated_at': now()}})
+        log.warning('сторож поднимает рассылку %s с позиции %s (было: %s)',
+                    job_id, job.get('position', 0), job.get('status'))
+        _spawn(c, bot, job_id)
+        revived += 1
+
+    return revived
 
 
 # ── список заблокировавших ──────────────────────────────────────────────────

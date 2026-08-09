@@ -23,6 +23,15 @@ async def run_campaigns(container, bot, engine) -> None:
         await container.notifier.campaign_report(report)
 
 
+async def watch_broadcasts(container, bot) -> None:
+    """Поднять рассылки, которые оборвались и сами не продолжатся."""
+    from app.admin.broadcast import resume_stalled
+
+    revived = await resume_stalled(container, bot)
+    if revived:
+        log.warning('сторож поднял рассылок: %s', revived)
+
+
 async def charge_subscriptions(container) -> None:
     """Автопродление и плата за доп. устройства.
 

@@ -32,6 +32,12 @@ def create_scheduler(container, bot) -> AsyncIOScheduler:
     scheduler.add_job(jobs.update_segments, 'interval', minutes=60,
                       args=[container], id='update_segments',
                       next_run_time=now() + timedelta(minutes=5))
+    # Раз в минуту: рассылка на 190 тысяч писем идёт часами и переживает
+    # не всё. Продолжать её руками — значит следить за экраном; сторож
+    # делает это сам.
+    scheduler.add_job(jobs.watch_broadcasts, 'interval', minutes=1,
+                      args=[container, bot], id='watch_broadcasts',
+                      next_run_time=now() + timedelta(minutes=1))
     scheduler.add_job(jobs.run_campaigns, 'interval', minutes=60,
                       args=[container, bot, engine], id='campaigns',
                       next_run_time=now() + timedelta(minutes=10))

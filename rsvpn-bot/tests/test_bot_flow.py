@@ -1,6 +1,7 @@
 """Пользовательские сценарии через настоящий Dispatcher aiogram."""
 
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
 
 import pytest
 from aiogram import Bot, Dispatcher
@@ -11,6 +12,7 @@ from app.bot.callbacks import Menu, Plan
 from app.bot.middlewares.deps import DependenciesMiddleware
 from app.bot.middlewares.errors import ErrorsMiddleware
 from app.bot.middlewares.user import UserMiddleware
+from app.core.time import now
 
 CHAT = Chat(id=5, type='private')
 TG_USER = User(id=5, is_bot=False, first_name='Иван', username='ivan')
@@ -1334,7 +1336,7 @@ async def test_a_crash_is_visible_and_resumable(env):
     dp, bot, session, c = env
     await c.settings.set('campaign.broadcast_delay_ms', 0)
     await c.settings.set('campaign.broadcast_progress_step', 5)
-    for user_id in range(300, 320):
+    for user_id in range(300, 360):
         await c.users.create({'user_data': {'user_id': user_id},
                               'growth': {'segment': 'expired_3d'}})
 
@@ -1365,7 +1367,7 @@ async def test_a_crash_is_visible_and_resumable(env):
     job = await c.db['broadcasts'].find_one({'_id': 'job-1'})
     # обработчик ошибки дописывает настоящую позицию, а не последнюю удачную
     assert job['status'] == 'failed'
-    assert job['position'] == 10, 'позиция не сохранена — продолжить неоткуда'
+    assert job['position'] == 25, 'позиция не сохранена — продолжить неоткуда'
 
     edits = [t for name, t in session.calls if name == 'EditMessageText']
     assert 'прервана' in edits[-1]
@@ -1600,11 +1602,13 @@ async def test_a_running_broadcast_can_be_stopped(env):
     c.db['broadcasts'].find_one = original
 
     job = await c.db['broadcasts'].find_one({'_id': 'job-stop'})
-    assert job['status'] == 'interrupted'
-    assert job['position'] == 5, 'остановились на ближайшем шаге, а не в конце'
+    # 'stopped', а не 'interrupted': оборвавшуюся рассылку сторож поднимает
+    # сам, остановленную руками поднимать нельзя
+    assert job['status'] == 'stopped'
+    assert job['position'] == 25, 'остановились на первой же пачке, а не в конце'
 
     delivered = [t for name, t in session.calls if t == 'Привет!']
-    assert len(delivered) == 5, 'после остановки писать не должны'
+    assert len(delivered) == 25, 'после остановки писать не должны'
 
 
 def test_eta_is_human_readable():
@@ -1613,3 +1617,99 @@ def test_eta_is_human_readable():
     assert eta(100, 0.04) == '4 сек'
     assert eta(10_000, 0.04) == '6 мин'
     assert eta(190_000, 0.04) == '2.1 ч'
+
+
+# ── сторож рассылок ─────────────────────────────────────────────────────────
+#
+# Рассылка на 190 тысяч идёт часами и переживает не всё: деплой, перезапуск
+# по памяти, разрыв соединения. Кнопка «Продолжить» лечит это только если
+# кто-то смотрит на экран — а рассылку запускают и уходят.
+
+async def _job(c, job_id: str, *, status: str, position: int = 0,
+               updated_ago: int = 0, restarts: int = 0, users: int = 60):
+    from app.admin.broadcast import _recipients
+
+    for user_id in range(700, 700 + users):
+        await c.users.create({'user_data': {'user_id': user_id},
+                              'growth': {'segment': 'churned_60d'}})
+    recipients = await _recipients(c, {'growth.segment': 'churned_60d'})
+    await c.db['broadcasts'].insert_one({
+        '_id': job_id, 'text': 'Привет!', 'recipients': recipients,
+        'position': position, 'sent': position, 'failed': 0, 'status': status,
+        'restarts': restarts, 'updated_at': now() - timedelta(seconds=updated_ago),
+        'chat_id': CHAT.id, 'message_id': 9})
+    return recipients
+
+
+async def test_watchdog_revives_a_broadcast_killed_by_a_restart(env):
+    """Деплой посреди рассылки — самый частый способ её потерять."""
+    from app.admin.broadcast import resume_stalled
+
+    dp, bot, session, c = env
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    await _job(c, 'job-dead', status='interrupted', position=25)
+
+    session.calls.clear()
+    assert await resume_stalled(c, bot) == 1
+    await asyncio.sleep(0)
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+    job = await c.db['broadcasts'].find_one({'_id': 'job-dead'})
+    assert job['status'] == 'done'
+    assert job['position'] == 60, 'дошли до конца, а не встали снова'
+    delivered = [t for name, t in session.calls if t == 'Привет!']
+    assert len(delivered) == 35, 'дослали остаток, а не всю базу заново'
+
+
+async def test_watchdog_revives_a_broadcast_that_went_silent(env):
+    """Задача жива, но не двигается — снаружи это тот же обрыв."""
+    from app.admin.broadcast import resume_stalled
+
+    dp, bot, session, c = env
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    await _job(c, 'job-stuck', status='running', position=0, updated_ago=600)
+
+    assert await resume_stalled(c, bot) == 1
+
+
+async def test_watchdog_leaves_a_living_broadcast_alone(env):
+    """Пульс свежий — трогать нельзя, иначе письма уйдут дважды."""
+    from app.admin.broadcast import resume_stalled
+
+    dp, bot, session, c = env
+    await _job(c, 'job-alive', status='running', position=10, updated_ago=5)
+
+    assert await resume_stalled(c, bot) == 0
+
+
+async def test_watchdog_does_not_revive_what_was_stopped_by_hand(env):
+    from app.admin.broadcast import resume_stalled
+
+    dp, bot, session, c = env
+    await _job(c, 'job-stopped', status='stopped', position=10)
+
+    assert await resume_stalled(c, bot) == 0
+
+
+async def test_watchdog_gives_up_on_a_hopeless_broadcast(env):
+    """Иначе падающая рассылка крутилась бы в цикле вечно."""
+    from app.admin.broadcast import MAX_RESTARTS, resume_stalled
+
+    dp, bot, session, c = env
+    await _job(c, 'job-doomed', status='failed', restarts=MAX_RESTARTS)
+
+    assert await resume_stalled(c, bot) == 0
+    job = await c.db['broadcasts'].find_one({'_id': 'job-doomed'})
+    assert job['status'] == 'stopped'
+
+
+async def test_restart_marks_a_running_broadcast_for_the_watchdog(env):
+    from app.admin.broadcast import mark_interrupted
+
+    dp, bot, session, c = env
+    await _job(c, 'job-restart', status='running', position=10)
+
+    assert len(await mark_interrupted(c)) == 1
+    job = await c.db['broadcasts'].find_one({'_id': 'job-restart'})
+    assert job['status'] == 'interrupted'
