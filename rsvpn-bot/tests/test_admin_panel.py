@@ -898,3 +898,50 @@ async def test_prompt_in_a_group_asks_for_the_command(admin_env):
                         text='карточка', from_user=ADMIN))))
 
     assert '/squad' in session.last_text
+
+
+# ── справочник команд ───────────────────────────────────────────────────────
+
+async def test_command_reference_lists_every_registered_command(admin_env):
+    """Команда без строки в справочнике для админа не существует."""
+    import re
+    from pathlib import Path
+
+    from app.admin.commands import text
+
+    reference = text()
+    registered = set()
+    for path in Path('app').rglob('*.py'):
+        registered |= set(re.findall(r"Command\('([a-z_]+)'\)", path.read_text()))
+
+    # /commands и /help — сам справочник, его в себе перечислять незачем
+    missing = {name for name in registered - {'commands', 'help'}
+               if f'/{name}' not in reference}
+    assert not missing, f'нет в справочнике: {sorted(missing)}'
+
+
+async def test_command_reference_opens_from_the_panel(admin_env):
+    dp, bot, session, container = admin_env
+
+    await dp.feed_update(bot, callback(Adm(act='cmds').pack()))
+
+    assert 'Команды бота' in session.last_text
+    assert '/srvdiag' in session.last_text
+
+
+async def test_command_reference_has_a_command_of_its_own(admin_env):
+    dp, bot, session, container = admin_env
+
+    await dp.feed_update(bot, message('/commands'))
+
+    assert '/deluser' in session.last_text
+
+
+async def test_every_entry_explains_what_it_does(admin_env):
+    """Список без объяснений — это тот же /help, за которым всё равно идти в код."""
+    from app.admin.commands import SECTIONS
+
+    for section in SECTIONS:
+        for cmd in section.items:
+            assert cmd.usage.startswith('/'), cmd
+            assert len(cmd.what) > 15, cmd

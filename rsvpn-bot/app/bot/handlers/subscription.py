@@ -82,7 +82,115 @@ async def set_period(call: types.CallbackQuery, callback_data: Plan, c, user: di
                              f'Текущая дата окончания не меняется.')
 
 
-async def buy_plan(call: types.CallbackQuery, callback_data: Plan, c, settings):
+# ── сколько устройств при первой покупке ────────────────────────────────────
+#
+# Спрашиваем только у того, у кого подписки ещё нет: человек, который уже
+# пользуется, лимит меняет в менеджере устройств, и лишний экран между ним и
+# продлением — помеха. Сами устройства покупаются обычным путём
+# (DeviceBillingService.add), поэтому в базе появляются те же пакеты
+# vpn.extraDevices, что и всегда, — ничего особенного про «купил при заказе»
+# в документе нет.
+
+DEVICE_CHOICES = 12          # сколько вариантов показывать: free_limit … +12
+DEVICE_STEP = 'dev'          # выбор количества
+DEVICE_BUY = 'devgo'         # подтверждение
+
+
+def _device_pick(code: str, count: int) -> str:
+    return f'{code}-{count}'
+
+
+def _device_parse(value: str, default: int) -> tuple[str, int]:
+    code, _, raw = value.rpartition('-')
+    return (code, int(raw)) if code and raw.isdigit() else (value, default)
+
+
+async def choose_devices(call: types.CallbackQuery, callback_data: Plan, c, user: dict,
+                         settings) -> None:
+    """Экран выбора количества устройств перед первой покупкой."""
+    free_limit = await settings.int('price.devices_free_limit')
+    code, chosen = _device_parse(callback_data.code, free_limit)
+
+    plan = await c.plans.get(code)
+    if not plan or not plan.get('enabled', True):
+        await call.answer('Этот тариф сейчас недоступен', show_alert=True)
+        return
+
+    chosen = max(free_limit, min(chosen, free_limit + DEVICE_CHOICES))
+    device_price = await settings.int('price.device_extra')
+    plan_price = await c.discounts.price(user, plan)
+    extra = max(0, chosen - free_limit)
+    total = plan_price + extra * device_price
+
+    kb = InlineKeyboardBuilder()
+    buttons = [types.InlineKeyboardButton(
+        text=f'{e("ok")} {count}' if count == chosen else str(count),
+        callback_data=Plan(action=DEVICE_STEP, code=_device_pick(code, count)).pack())
+        for count in range(free_limit, free_limit + DEVICE_CHOICES)]
+    for row in range(0, len(buttons), 3):
+        kb.row(*buttons[row:row + 3])
+
+    kb.row(types.InlineKeyboardButton(
+        text=f'{e("ok")} Подтвердить',
+        callback_data=Plan(action=DEVICE_BUY, code=_device_pick(code, chosen)).pack()))
+    await footer(kb, settings, back='subscription')
+
+    text = (profile_caption(user, f'{e("devices")} Количество устройств')
+            + f'<b>{e("calendar")} Тариф:</b> <code>{plan["title"]}</code> — '
+              f'{price_tag(int(plan["price"]), plan_price)}\n'
+            + f'<b>{e("devices")} Устройств:</b> <code>{chosen}</code>'
+            + (f' (сверх {free_limit} бесплатных — {extra} по {device_price}₽)'
+               if extra else ' — все бесплатные')
+            + f'\n\n<b>{e("money")} Итого: {total}₽</b>\n\n'
+            + '<blockquote>Столько устройств можно будет подключить '
+              'одновременно. Изменить количество можно в любой момент в '
+              'менеджере устройств — доплата берётся только за те, что '
+              'сверх бесплатных.</blockquote>')
+
+    await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('devices')))
+    await call.answer()
+
+
+async def buy_with_devices(call: types.CallbackQuery, callback_data: Plan, c, user: dict,
+                           settings) -> None:
+    free_limit = await settings.int('price.devices_free_limit')
+    code, chosen = _device_parse(callback_data.code, free_limit)
+    extra = max(0, chosen - free_limit)
+
+    try:
+        result = await c.billing.buy(call.from_user.id, code)
+    except NotEnoughBalance as exc:
+        await not_enough(call, c, settings, exc)
+        return
+
+    # Устройства — отдельной покупкой и уже после подписки: до неё в панели
+    # нет пользователя, которому поднимать лимит. Не хватило денег на них —
+    # подписка всё равно куплена, о доплате говорим прямо.
+    note = ''
+    if extra and c.devices:
+        try:
+            await c.devices.add(call.from_user.id, extra)
+        except NotEnoughBalance as exc:
+            note = (f'Подписка активирована, но на {extra} доп. устройств не '
+                    f'хватило {exc.need - exc.have}₽. Пополните баланс и '
+                    f'добавьте их в менеджере устройств.')
+        except Exception:
+            note = ('Подписка активирована, а лимит устройств поднять не вышло. '
+                    'Попробуйте в менеджере устройств чуть позже.')
+
+    await call.answer(note or f'Подписка «{result["plan"]["title"]}» активирована {e("ok")}',
+                      show_alert=bool(note))
+    await show_subscription(call, c, await c.users.get(call.from_user.id), settings)
+
+
+async def buy_plan(call: types.CallbackQuery, callback_data: Plan, c, user: dict, settings):
+    # Подписки нет — сначала спрашиваем про устройства. Есть — покупка идёт
+    # как раньше: лимит человек уже выбрал и меняет его в своём разделе.
+    has_subscription = bool(c.users.pick(user, 'vpn.shortUuid'))
+    if not has_subscription and await settings.flag('features.devices_enabled'):
+        await choose_devices(call, callback_data, c, user, settings)
+        return
+
     try:
         result = await c.billing.buy(call.from_user.id, callback_data.code)
     except NotEnoughBalance as exc:
@@ -163,6 +271,8 @@ def create_router() -> Router:
     router.callback_query.register(change_period, Menu.filter(F.screen == 'period'), Feature('features.change_period_enabled'))
     router.callback_query.register(set_period, Plan.filter(F.action == 'change'), Feature('features.change_period_enabled'))
     router.callback_query.register(buy_plan, Plan.filter(F.action == 'buy'), Feature('features.buy_enabled'))
+    router.callback_query.register(choose_devices, Plan.filter(F.action == DEVICE_STEP), Feature('features.buy_enabled'))
+    router.callback_query.register(buy_with_devices, Plan.filter(F.action == DEVICE_BUY), Feature('features.buy_enabled'))
     router.callback_query.register(extend, Menu.filter(F.screen == 'extend'), Feature('features.extend_enabled'))
     router.callback_query.register(show_subscription, Menu.filter(F.screen == 'my_subscription'))
     return router

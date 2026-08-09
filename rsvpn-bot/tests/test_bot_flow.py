@@ -236,7 +236,7 @@ async def test_buying_plan_charges_and_creates_subscription(env):
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 200, 'тест')
 
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
 
     user = await c.users.get(5)
     assert user['vpn']['shortUuid'] == 's-new'
@@ -247,7 +247,7 @@ async def test_buying_without_money_shows_shortfall(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
 
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
 
     assert 'не хватает 150' in session.last_text.lower()
     assert (await c.users.get(5))['vpn']['shortUuid'] == ''
@@ -259,7 +259,7 @@ async def test_disabled_feature_blocks_the_handler(env):
     await c.settings.set('features.buy_enabled', False)
     await c.users.credit(5, 500, 'тест')
 
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
 
     assert (await c.users.get(5))['vpn']['shortUuid'] == ''
 
@@ -328,7 +328,7 @@ async def test_subscription_screen_shows_the_price_per_period(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 200, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
 
     session.calls.clear()
     await dp.feed_update(bot, callback(Menu(screen='my_subscription').pack()))
@@ -340,7 +340,7 @@ async def test_bypass_link_is_sent_for_the_chosen_app(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 200, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
 
     await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
     assert (await c.users.get(5))['vpn']['bypass_shortUuid'] == 's-bypass'
@@ -358,7 +358,7 @@ async def test_bypass_link_is_encrypted_once_and_reused(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 200, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
     await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
 
     for _ in range(3):
@@ -372,7 +372,7 @@ async def test_bypass_incy_without_encoder_does_not_break_the_screen(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 200, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
     await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
 
     await dp.feed_update(bot, callback(Menu(screen='bypass_app', arg='incy').pack()))
@@ -385,7 +385,7 @@ async def test_bypass_traffic_is_charged_by_package_price(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
     await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
 
     balance_before = (await c.users.get(5))['info']['balance']
@@ -400,7 +400,7 @@ async def test_bypass_unknown_package_is_not_charged(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
     await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
 
     balance_before = (await c.users.get(5))['info']['balance']
@@ -635,7 +635,7 @@ async def test_changing_period_does_not_charge_anything(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1day').pack()))
+    await first_purchase(dp, bot, '1day')
 
     balance_before = (await c.users.get(5))['info']['balance']
     expire_before = (await c.users.get(5))['vpn']['expireAt']
@@ -652,7 +652,7 @@ async def test_period_can_be_changed_without_money_on_the_balance(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1day').pack()))
+    await first_purchase(dp, bot, '1day')
     await c.users.col.update_one({'user_data.user_id': 5}, {'$set': {'info.balance': 0}})
 
     await dp.feed_update(bot, callback(Plan(action='change', code='3month').pack()))
@@ -668,7 +668,7 @@ async def test_unbind_survives_leaving_the_screen(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
 
     unbound = []
 
@@ -821,7 +821,7 @@ async def test_extend_patches_the_subscription_instead_of_creating_a_new_one(env
 
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
     created.clear()
 
     await dp.feed_update(bot, callback(Menu(screen='extend').pack()))
@@ -843,7 +843,7 @@ async def test_extend_moves_both_the_subscription_and_bypass(env):
 
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
     await dp.feed_update(bot, callback(Menu(screen='bypass_create').pack()))
     patched.clear()
 
@@ -861,7 +861,7 @@ async def test_extend_adds_the_period_to_the_current_date(env):
 
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
     before = (await c.users.get(5))['vpn']['expireAt']
 
     await dp.feed_update(bot, callback(Menu(screen='extend').pack()))
@@ -878,7 +878,7 @@ async def test_extend_without_money_does_not_touch_the_subscription(env):
 
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
     await c.users.col.update_one({'user_data.user_id': 5}, {'$set': {'info.balance': 10}})
     patched.clear()
 
@@ -895,7 +895,7 @@ async def test_unbind_all_asks_before_doing_it(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
 
     removed = []
     c.vpn.devices = lambda uuid: __import__('asyncio').sleep(
@@ -917,7 +917,7 @@ async def test_extend_without_money_offers_a_top_up(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
     await c.users.col.update_one({'user_data.user_id': 5}, {'$set': {'info.balance': 10}})
 
     session.calls.clear()
@@ -979,7 +979,7 @@ async def test_ban_does_not_touch_the_subscription_or_money(env):
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.credit(5, 500, 'тест')
-    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await first_purchase(dp, bot, '1month')
 
     await c.moderation.ban(5, admin_id=1)
 
@@ -1164,6 +1164,19 @@ async def test_plain_ban_does_not_call_the_panel(env):
 
     assert statuses == []
     assert '/hardban 900' in session.last_text      # подсказка, как ужесточить
+
+
+async def first_purchase(dp, bot, code: str, devices: int = 2):
+    """Купить подписку с нуля: тариф, затем подтверждение числа устройств.
+
+    Первая покупка спрашивает количество устройств отдельным шагом, поэтому
+    один клик по тарифу её больше не завершает.
+    """
+    from app.bot.callbacks import Plan
+
+    await dp.feed_update(bot, callback(Plan(action='buy', code=code).pack()))
+    await dp.feed_update(bot, callback(
+        Plan(action='devgo', code=f'{code}-{devices}').pack()))
 
 
 def last_markup(session):
@@ -2053,3 +2066,104 @@ async def test_connect_hint_appears_on_the_same_screen(env):
     assert not [n for n, _ in session.calls if n in ('SendMessage', 'SendPhoto')], \
         session.calls
     assert 'уже в вашей подписке' in session.last_text
+
+
+# ── выбор устройств при первой покупке ──────────────────────────────────────
+#
+# Спрашиваем только у того, у кого подписки ещё нет. Сами устройства
+# покупаются обычным путём, поэтому в базе те же пакеты vpn.extraDevices.
+
+async def test_first_purchase_asks_how_many_devices(env):
+    from app.bot.callbacks import Plan
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 1000, 'тест')
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+
+    assert 'Количество устройств' in session.last_text
+    assert 'Итого: 150₽' in session.last_text
+    user = await c.users.get(5)
+    assert not user['vpn']['shortUuid'], 'подписка куплена, не спросив'
+
+
+async def test_device_choice_updates_the_total(env):
+    from app.bot.callbacks import Plan
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 1000, 'тест')
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Plan(action='dev', code='1month-5').pack()))
+
+    # 150₽ тариф + 3 устройства сверх двух бесплатных по 75₽
+    assert 'Итого: 375₽' in session.last_text
+    assert 'Устройств:</b> <code>5</code>' in session.last_text
+
+
+async def test_confirmed_devices_go_to_the_database_as_usual(env):
+    from app.bot.callbacks import Plan
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 1000, 'тест')
+
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+    await dp.feed_update(bot, callback(Plan(action='devgo', code='1month-5').pack()))
+
+    user = await c.users.get(5)
+    assert user['vpn']['shortUuid'], 'подписка не куплена'
+    assert user['vpn']['hwidDeviceLimit'] == 5
+    packages = user['vpn']['extraDevices']
+    assert len(packages) == 1 and packages[0]['amount'] == 3
+    assert packages[0]['nextChargeAt'], 'пакет без даты списания не продлится'
+    assert user['info']['balance'] == 1000 - 150 - 3 * 75
+
+
+async def test_free_limit_buys_no_packages(env):
+    from app.bot.callbacks import Plan
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 1000, 'тест')
+
+    await dp.feed_update(bot, callback(Plan(action='devgo', code='1month-2').pack()))
+
+    user = await c.users.get(5)
+    assert user['vpn']['hwidDeviceLimit'] == 2
+    assert not user['vpn'].get('extraDevices')
+    assert user['info']['balance'] == 1000 - 150
+
+
+async def test_extension_does_not_ask_about_devices(env):
+    """У кого подписка есть — лимит меняется в своём разделе."""
+    from app.bot.callbacks import Plan
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 2000, 'тест')
+    await first_purchase(dp, bot, '1month')
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Plan(action='buy', code='1month').pack()))
+
+    assert 'Количество устройств' not in session.last_text
+
+
+async def test_subscription_survives_when_devices_cannot_be_paid(env):
+    """Подписка уже куплена — терять её из-за доплаты нельзя."""
+    from app.bot.callbacks import Plan
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.credit(5, 160, 'тест')      # на тариф хватит, на устройства нет
+
+    await dp.feed_update(bot, callback(Plan(action='devgo', code='1month-13').pack()))
+
+    user = await c.users.get(5)
+    assert user['vpn']['shortUuid'], 'подписка не куплена'
+    assert user['vpn'].get('hwidDeviceLimit', 2) == 2
+    assert 'не хватило' in session.last_text or 'не хватило' in str(session.calls)
