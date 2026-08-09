@@ -423,38 +423,29 @@ def extract_activity_dts(doc: dict) -> list[datetime]:
     return out
 
 
-async def sweep_payments(db: AsyncIOMotorDatabase, etl_at: datetime,
-                         full: bool = False) -> int:
-    """Mirror ``payments_webhook`` into ``payments_flat`` (idempotent).
+async def _sweep_payment_collection(db: AsyncIOMotorDatabase, src_db: Any,
+                                    name: str, etl_at: datetime, full: bool,
+                                    before: Optional[datetime]) -> int:
+    """Mirror one payment collection into ``payments_flat``.
 
-    Incremental by default: only documents newer than the last mirrored
-    ``dt`` (minus a safety lag) are re-read; ``full=True`` sweeps everything.
-    Returns the number of upserted rows; 0 when the collection is absent.
+    ``before`` bounds the sweep to documents created strictly earlier
+    (used to take only pre-cutover history from legacy webhook logs).
+    Incremental progress is tracked per source collection via the ``src``
+    field on mirrored rows.
     """
-    settings = get_settings()
-    if settings.payments_db and getattr(db, "client", None) is not None:
-        src_db = db.client[settings.payments_db]
-    else:
-        src_db = db
-    # "payments" is the source of truth per the bot's schema; webhook-log
-    # names are kept for older deployments
-    candidates = (["payments", settings.payments_collection,
-                   "payments_webhooks"]
-                  if settings.payments_collection == "payments_webhook"
-                  else [settings.payments_collection])
-    existing = set(await src_db.list_collection_names())
-    name = next((n for n in candidates if n and n in existing), None)
-    if name is None:
-        return 0
-
-    query: dict = {}
+    conds: list[dict] = []
     if not full:
         newest = await db[PAYMENTS_FLAT].find_one(
-            {"dt": {"$type": "date"}}, sort=[("dt", -1)], projection={"dt": 1})
+            {"src": name, "dt": {"$type": "date"}},
+            sort=[("dt", -1)], projection={"dt": 1})
         if newest and newest.get("dt"):
             lag = newest["dt"] - timedelta(hours=6)
-            query = {"$or": [{"created_at": {"$gte": lag}},
-                             {"created_at": {"$exists": False}}]}
+            conds.append({"$or": [{"created_at": {"$gte": lag}},
+                                  {"created_at": {"$exists": False}}]})
+    if before is not None:
+        conds.append({"$or": [{"created_at": {"$lt": before}},
+                              {"created_at": {"$exists": False}}]})
+    query: dict = {"$and": conds} if conds else {}
 
     ops: list = []
     count = 0
@@ -464,6 +455,7 @@ async def sweep_payments(db: AsyncIOMotorDatabase, etl_at: datetime,
             continue
         row = payment.model_dump()
         row["_id"] = row.pop("txid")
+        row["src"] = name
         row["etl_at"] = etl_at
         ops.append(ReplaceOne({"_id": row["_id"]}, row, upsert=True))
         count += 1
@@ -472,6 +464,51 @@ async def sweep_payments(db: AsyncIOMotorDatabase, etl_at: datetime,
             ops = []
     if ops:
         await db[PAYMENTS_FLAT].bulk_write(ops, ordered=False)
+    return count
+
+
+async def sweep_payments(db: AsyncIOMotorDatabase, etl_at: datetime,
+                         full: bool = False) -> int:
+    """Mirror payment collections into ``payments_flat`` (idempotent).
+
+    The bot switched schemas mid-flight: the legacy webhook log
+    (``payments_webhook[s]``) holds history up to the cutover, the new
+    ``payments`` collection is the source of truth afterwards. BOTH are
+    swept: the legacy log fills everything before the first ``payments``
+    document, the new collection covers the rest — old data keeps counting,
+    nothing is double-counted, and identical txids collapse into one row
+    (the authoritative sweep runs last).
+    """
+    settings = get_settings()
+    if settings.payments_db and getattr(db, "client", None) is not None:
+        src_db = db.client[settings.payments_db]
+    else:
+        src_db = db
+    candidates = (["payments", settings.payments_collection,
+                   "payments_webhooks"]
+                  if settings.payments_collection == "payments_webhook"
+                  else [settings.payments_collection, "payments"])
+    existing = set(await src_db.list_collection_names())
+    present = [n for n in dict.fromkeys(candidates) if n and n in existing]
+    if not present:
+        return 0
+
+    primary = "payments" if "payments" in present else present[0]
+    legacy = [n for n in present if n != primary]
+
+    cutover: Optional[datetime] = None
+    if legacy:
+        first = await src_db[primary].find_one(
+            {"created_at": {"$type": "date"}},
+            sort=[("created_at", 1)], projection={"created_at": 1})
+        cutover = first.get("created_at") if first else None
+
+    count = 0
+    for name in legacy:  # legacy first so the authoritative rows win on txid
+        count += await _sweep_payment_collection(db, src_db, name, etl_at,
+                                                 full, before=cutover)
+    count += await _sweep_payment_collection(db, src_db, primary, etl_at,
+                                             full, before=None)
     return count
 
 

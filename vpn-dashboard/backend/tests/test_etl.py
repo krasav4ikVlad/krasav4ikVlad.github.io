@@ -327,6 +327,38 @@ class TestRunEtl:
         after = await db[TX_FLAT].count_documents({"user_id": doc["_id"]})
         assert after == before - 3
 
+    async def test_payments_merge_old_and_new_collections(self):
+        """Legacy webhook log fills pre-cutover history, new `payments` is
+        authoritative after — both eras counted, no double counting."""
+        from app.etl import sweep_payments
+        db = await self._db()
+        cutover = datetime(2026, 8, 8, tzinfo=UTC)
+        # legacy log: one old payment + one after the cutover (duplicated
+        # in the new collection under the same txid)
+        await db["payments_webhooks"].insert_many([
+            {"txid": "old1", "user_id": 1, "amount": 100,
+             "provider": "cardlink", "status": "paid",
+             "created_at": cutover - timedelta(days=10)},
+            {"txid": "dup1", "user_id": 2, "amount": 150,
+             "provider": "tribute", "status": "paid",
+             "created_at": cutover + timedelta(days=1)},
+        ])
+        # new source of truth since the cutover
+        await db["payments"].insert_many([
+            {"txid": "dup1", "user_id": 2, "amount": 150,
+             "provider": "tribute", "status": "paid",
+             "created_at": cutover + timedelta(days=1)},
+            {"txid": "new1", "user_id": 3, "amount": 200,
+             "provider": "cardlink", "status": "failed",
+             "created_at": cutover + timedelta(days=2)},
+        ])
+        await sweep_payments(db, datetime.now(UTC), full=True)
+        rows = {r["_id"]: r async for r in db["payments_flat"].find({})}
+        assert set(rows) == {"old1", "dup1", "new1"}   # обе эпохи, без дублей
+        assert rows["old1"]["src"] == "payments_webhooks"
+        assert rows["dup1"]["src"] == "payments"       # новая коллекция главнее
+        assert rows["new1"]["status"] == "failed"
+
     async def test_broken_document_does_not_kill_run(self):
         db = await self._db()
         await db["users"].insert_one({"_id": 1, "info": {"transactions": "trash"}})
