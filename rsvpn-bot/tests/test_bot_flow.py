@@ -536,11 +536,16 @@ async def test_topup_screen_shows_the_bonus_that_is_actually_credited(env):
 
 
 async def test_topup_screen_promises_nothing_without_the_bonus(env):
-    """Обещать бонус тому, кому его не начислят, — хуже, чем не обещать."""
+    """Обещать бонус тому, кому его не начислят, — хуже, чем не обещать.
+
+    Надбавка новичка живёт ровно на триальных сегментах: вне их экран молчит,
+    какой бы ни была A/B-группа.
+    """
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
     await c.users.col.update_one({'user_data.user_id': 5},
-                                 {'$set': {'growth.ab_group': 'control'}})
+                                 {'$set': {'growth.ab_group': 'bonus_30',
+                                           'growth.segment': 'expired_7d'}})
 
     session.calls.clear()
     await dp.feed_update(bot, callback(Menu(screen='payments').pack()))

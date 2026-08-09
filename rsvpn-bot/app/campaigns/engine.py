@@ -36,6 +36,15 @@ class StepContext:
     balance: int
     credited: int
     topups_count: int
+    # Цена суточного тарифа на момент отправки. В текстах кампаний стояли
+    # «4₽ в день» и «хватит на 10 дней» строкой — после смены прайса такие
+    # письма врут, а править их надо в пяти местах. Берём из тарифов.
+    daily_price: int = 0
+    # Суммарная доля бонуса к пополнению для этого получателя: обычный бонус
+    # плюс A/B-надбавка новичкам. Тексты D2 обещают конкретные суммы, и
+    # обещание считается из тех же настроек, по которым потом начисляется, —
+    # иначе после правки процента в админке письмо начинает врать.
+    bonus_rate: float = 0.0
 
     @property
     def is_multi(self) -> bool:
@@ -44,6 +53,11 @@ class StepContext:
     @property
     def total_balance(self) -> int:
         return self.balance + self.credited
+
+    @property
+    def days_on_balance(self) -> int:
+        """На сколько суток хватит баланса после начисления."""
+        return self.total_balance // self.daily_price if self.daily_price else 0
 
 
 @dataclass(frozen=True)
@@ -68,6 +82,13 @@ class CampaignStep:
     # деньги
     credit_to: int = 0              # добить баланс до суммы (если баланс < 4)
     bonus: int = 0                  # фиксированное начисление
+
+    # Перевести на суточный тариф вместе с начислением.
+    # Без этого бонус в 15–40₽ лежит мёртвым грузом: автопродление считает цену
+    # по vpn.period, а у вернувшегося там остался месяц или полгода — денег не
+    # хватает, продления нет, бонус выплачен впустую. Старый бот ставил
+    # vpn.period = 1 в том же запросе, что и начисление.
+    daily_period: bool = False
 
     def flag(self) -> str:
         return f'{self.code}_sent'
@@ -108,7 +129,7 @@ class CampaignEngine:
 
     def __init__(self, bot: Bot, users: UsersRepository, settings, sender,
                  keyboards: dict[str, Callable[[], InlineKeyboardMarkup]],
-                 runs_collection=None, pause_between: float = 0.05):
+                 runs_collection=None, pause_between: float = 0.05, plans=None):
         self.bot = bot
         self.users = users
         self.settings = settings
@@ -116,8 +137,12 @@ class CampaignEngine:
         self.keyboards = keyboards
         self.runs = runs_collection
         self.pause = pause_between
+        self.plans = plans
+        self.daily_price = 0
+        self.bonus_rate = 0.0
 
     async def run(self, steps: list[CampaignStep]) -> CampaignReport:
+        await self._load_prices()
         report = CampaignReport()
         for step in steps:
             if step.settings_key and not await self.settings.flag(step.settings_key):
@@ -153,7 +178,7 @@ class CampaignEngine:
             # Иначе при падении между отправкой и записью флага пользователь
             # получит сообщение и бонус повторно на следующем прогоне.
             if not await self.users.claim_campaign_slot(
-                user['_id'], step.flag(), self._money_update(credited)
+                user['_id'], step.flag(), self._slot_update(step, credited)
             ):
                 report.skipped_claimed += 1
                 continue
@@ -164,6 +189,8 @@ class CampaignEngine:
                 balance=balance,
                 credited=credited,
                 topups_count=int(self.users.pick(user, 'growth.topups_count', 0) or 0),
+                daily_price=self.daily_price,
+                bonus_rate=self.bonus_rate,
             )
 
             markup = self.keyboards.get(step.keyboard)
@@ -190,6 +217,20 @@ class CampaignEngine:
         return report
 
     # ── внутреннее ──────────────────────────────────────────────────────────
+    async def _load_prices(self) -> None:
+        """Цена суток и проценты бонуса — раз на прогон, а не на получателя."""
+        try:
+            if self.plans:
+                plan = await self.plans.by_days(1)
+                self.daily_price = int(plan['price']) if plan else 0
+            rate = 0.0
+            if await self.settings.flag('bonus.topup_enabled'):
+                rate += await self.settings.rate('bonus.topup_rate')
+            rate += await self.settings.rate('bonus.ab_new_trial_rate')
+            self.bonus_rate = rate
+        except Exception:
+            log.exception('цены для текстов кампаний не получены')
+
     def _in_window(self, user: dict, step: CampaignStep, night: bool) -> bool:
         if step.after_step and step.delay_days:
             previous = self.users.pick(user, f'campaigns.{step.after_step}_sent')
@@ -220,15 +261,21 @@ class CampaignEngine:
         return 0
 
     @staticmethod
-    def _money_update(credited: int) -> dict | None:
-        if credited <= 0:
-            return None
-        return {
-            '$inc': {'info.balance': credited},
-            '$push': {'info.transactions': {
+    def _slot_update(step: CampaignStep, credited: int) -> dict | None:
+        """Что записать в том же запросе, что и флаг касания.
+
+        Одним апдейтом — чтобы падение между «начислили» и «отметили» не
+        привело к повторному начислению на следующем прогоне.
+        """
+        update: dict = {}
+        if step.daily_period:
+            update['$set'] = {'vpn.period': 1}
+        if credited > 0:
+            update['$inc'] = {'info.balance': credited}
+            update['$push'] = {'info.transactions': {
                 'amount': credited, 'dt': now(), 'description': 'Бонус за возвращение',
-            }},
-        }
+            }}
+        return update or None
 
     async def _is_good_hour(self) -> bool:
         start = await self.settings.int('campaign.hour_from')

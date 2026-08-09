@@ -109,7 +109,36 @@ async def text(c, settings) -> str:
     lines.append(f'\n<b>{e("megaphone")} Кампании</b>: {ago(campaigns.get("at"))}'
                  + (f' <code>{numbers(campaigns.get("info"))}</code>'
                     if campaigns.get('at') else ''))
+
+    # ── что сейчас раздаётся бесплатно ──────────────────────────────────────
+    # Скидка и бонус живут в настройках и не напоминают о себе: включили на
+    # выходные, забыли выключить — и каждое продление уходит дешевле. Вопрос
+    # «почему упала выручка» начинается отсюда, поэтому цифры видны в /diag,
+    # а не только в разделе, куда надо специально зайти.
+    lines.append(f'\n<b>{e("discount")} Скидки и бонусы сейчас</b>')
+    active = []
+    for key, title in await _discount_rows(settings):
+        rate = await settings.rate(key)
+        if rate > 0:
+            active.append(f'{title}: <b>−{round(rate * 100)}%</b>')
+    lines.append('; '.join(active) if active
+                 else f'{e("ok")} Скидок по аудиториям нет')
+
+    topup_on = await settings.flag('bonus.topup_enabled')
+    topup_rate = round(await settings.rate('bonus.topup_rate') * 100) if topup_on else 0
+    ab_rate = round(await settings.rate('bonus.ab_new_trial_rate') * 100)
+    lines.append(f'Бонус к пополнению: <b>+{topup_rate}%</b>, '
+                 f'новичкам сверх этого: <b>+{ab_rate}%</b>, '
+                 f'рефералам: <b>{round(await settings.rate("bonus.ref_rate") * 100)}%</b>')
     return '\n'.join(lines)
+
+
+async def _discount_rows(settings) -> list[tuple[str, str]]:
+    """Ключи скидок с человеческими названиями — из той же схемы, что и админка."""
+    from app.settings.schema import SCHEMA
+
+    return [(s.key, s.title) for group in SCHEMA for s in group.items
+            if s.key.startswith('discount.') and s.type == 'percent']
 
 
 async def command(message: types.Message, c, settings) -> None:

@@ -22,6 +22,7 @@ def create_scheduler(container, bot) -> AsyncIOScheduler:
         sender=Sender(on_blocked=container.users.mark_blocked),
         keyboards=campaign_keyboards(),
         runs_collection=container.db[names.CAMPAIGN_RUNS],
+        plans=container.plans,
     )
 
     scheduler.add_job(jobs.charge_subscriptions, 'interval', minutes=15,

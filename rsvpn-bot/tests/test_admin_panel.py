@@ -664,3 +664,22 @@ async def test_refresh_shows_fresh_numbers(admin_env):
     await dp.feed_update(bot, callback(Pay(action='refresh', user_id=700).pack()))
 
     assert 'Обычный баланс: <b>150₽</b>' in card(session)
+
+
+async def test_diag_names_the_discount_that_is_running(admin_env):
+    """Включённую на выходные скидку забывают выключить. /diag о ней помнит."""
+    dp, bot, session, container = admin_env
+    await container.settings.set('discount.expired', 0.5)
+
+    await dp.feed_update(bot, message('/diag'))
+
+    assert 'Истёкшие: <b>−50%</b>' in session.last_text
+
+
+async def test_diag_says_when_no_discounts_are_running(admin_env):
+    dp, bot, session, _ = admin_env
+
+    await dp.feed_update(bot, message('/diag'))
+
+    assert 'Скидок по аудиториям нет' in session.last_text
+    assert 'Бонус к пополнению' in session.last_text

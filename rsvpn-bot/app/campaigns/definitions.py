@@ -14,12 +14,21 @@ from app.content import texts
 NEW_TRIAL_BASE = {'growth.has_topup': False}
 
 
-def _t(key: str):
-    """Текст по ключу из реестра: подставляет имя, баланс и начисление."""
+def _t(key: str, **extra):
+    """Текст по ключу из реестра: подставляет имя, баланс и начисление.
+
+    `extra` — постоянные подстановки шага. Так один шаблон обслуживает
+    несколько сегментов, различаясь одним словом («несколько дней назад» /
+    «около месяца назад»), и не превращается в три копии.
+    """
     def render(user: dict, ctx: StepContext) -> str:
         return texts.render(key, name=ctx.name, balance=ctx.balance,
                             credited=ctx.credited, total=ctx.total_balance,
-                            multi=ctx.is_multi)
+                            daily=ctx.daily_price, days_left=ctx.days_on_balance,
+                            ab_percent=round(ctx.bonus_rate * 100),
+                            ab_100=int(100 * (1 + ctx.bonus_rate)),
+                            ab_75=int(75 * (1 + ctx.bonus_rate)),
+                            multi=ctx.is_multi, **extra)
     return render
 
 
@@ -76,11 +85,11 @@ EXPIRED_STEPS = [
     CampaignStep(code='expired_3d', title='Истекли 3 дня',
                  query={**EXPIRED_BASE, 'growth.segment': 'expired_3d'},
                  text=_t('campaign.expired.d3'), keyboard='extend', credit_to=15,
-                 settings_key='campaign.expired_enabled'),
+                 daily_period=True, settings_key='campaign.expired_enabled'),
     CampaignStep(code='expired_7d', title='Истекла неделя',
                  query={**EXPIRED_BASE, 'growth.segment': 'expired_7d'},
                  text=_t('campaign.expired.d7'), keyboard='extend', credit_to=40,
-                 settings_key='campaign.expired_enabled'),
+                 daily_period=True, settings_key='campaign.expired_enabled'),
     CampaignStep(code='expired_14d', title='Истекли 2 недели',
                  query={**EXPIRED_BASE, 'growth.segment': 'expired_14d'},
                  text=_t('campaign.expired.d14'), keyboard='extend',
@@ -105,25 +114,51 @@ EXPIRED_STEPS = [
                  query={**EXPIRED_BASE, 'growth.segment': 'churned_90d'},
                  text=_t('campaign.churned.d90'), keyboard='extend',
                  settings_key='campaign.expired_enabled'),
+    CampaignStep(code='churned_dead', title='Ушли 90+ дней',
+                 query={**EXPIRED_BASE, 'growth.segment': 'churned_dead'},
+                 text=_t('campaign.churned.dead'), keyboard='extend',
+                 settings_key='campaign.expired_enabled'),
 ]
 
 # ── те, кто не заплатил после триала ────────────────────────────────────────
 TRIAL_BASE = {'growth.segment': 'trial', 'growth.has_topup': False}
 
+# Касания идут сериями: S1 сразу, S2 и S3 — через паузу после предыдущего.
+# Пауза считается от даты предыдущего касания, а не от истечения триала,
+# поэтому человек не получает два письма подряд, если сегменты пересчитались
+# с задержкой. Диапазон дней у продолжений шире, чем у S1: иначе пользователь,
+# успевший перейти в соседний сегмент за время паузы, выпадал бы из серии.
 TRIAL_STEPS = [
     CampaignStep(code='trial_back_7d', title='Триал: неделя',
                  query={**TRIAL_BASE, 'growth.days_since_expired': {'$gte': 4, '$lte': 7}},
-                 text=_t('campaign.trial_back.s1'), settings_key='campaign.trial_enabled'),
+                 text=_t('campaign.trial_back.s1', when='несколько дней назад'),
+                 settings_key='campaign.trial_enabled'),
     CampaignStep(code='trial_back_7d_s2', title='Триал: неделя, касание 2',
-                 query={**TRIAL_BASE, 'growth.days_since_expired': {'$gte': 4, '$lte': 14}},
+                 query={**TRIAL_BASE, 'growth.days_since_expired': {'$gte': 4, '$lte': 21}},
                  text=_t('campaign.trial_back.s2'), after_step='trial_back_7d',
                  delay_days=5, settings_key='campaign.trial_enabled'),
+
     CampaignStep(code='trial_back_14d', title='Триал: две недели',
                  query={**TRIAL_BASE, 'growth.days_since_expired': {'$gte': 8, '$lte': 14}},
-                 text=_t('campaign.trial_back.s1'), settings_key='campaign.trial_enabled'),
+                 text=_t('campaign.trial_back.s1', when='около двух недель назад'),
+                 settings_key='campaign.trial_enabled'),
+    CampaignStep(code='trial_back_14d_s2', title='Триал: две недели, касание 2',
+                 query={**TRIAL_BASE, 'growth.days_since_expired': {'$gte': 8, '$lte': 30}},
+                 text=_t('campaign.trial_back.s2'), after_step='trial_back_14d',
+                 delay_days=7, settings_key='campaign.trial_enabled'),
+
     CampaignStep(code='trial_back_30d', title='Триал: месяц',
                  query={**TRIAL_BASE, 'growth.days_since_expired': {'$gte': 15, '$lte': 30}},
-                 text=_t('campaign.trial_back.s1'), settings_key='campaign.trial_enabled'),
+                 text=_t('campaign.trial_back.s1', when='около месяца назад'),
+                 settings_key='campaign.trial_enabled'),
+    CampaignStep(code='trial_back_30d_s2', title='Триал: месяц, касание 2',
+                 query={**TRIAL_BASE, 'growth.days_since_expired': {'$gte': 15, '$lte': 60}},
+                 text=_t('campaign.trial_back.s2'), after_step='trial_back_30d',
+                 delay_days=10, settings_key='campaign.trial_enabled'),
+    CampaignStep(code='trial_back_30d_s3', title='Триал: месяц, касание 3',
+                 query={**TRIAL_BASE, 'growth.days_since_expired': {'$gte': 15, '$lte': 90}},
+                 text=_t('campaign.trial_back.s3'), after_step='trial_back_30d_s2',
+                 delay_days=20, settings_key='campaign.trial_enabled'),
 ]
 
 ALL_STEPS = NEW_TRIAL_STEPS + EXPIRED_STEPS + TRIAL_STEPS

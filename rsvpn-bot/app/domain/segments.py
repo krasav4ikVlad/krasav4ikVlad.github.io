@@ -186,7 +186,10 @@ def determine(user: dict, now, choose=None) -> dict:
     # A/B-группа назначается один раз и дальше не меняется
     growth = user.get('growth') or {}
     ab_group = growth.get('ab_group')
-    if ab_group not in AB_GROUPS:
+    # 'used' — терминальное состояние: бонус новичка уже выдан. Без этой
+    # проверки пересчёт сегментов возвращал человека в бонусную группу, и
+    # второе пополнение в те же трое суток снова получало надбавку.
+    if ab_group != 'used' and ab_group not in AB_GROUPS:
         ab_group = choose(AB_GROUPS) if segment in NEW_TRIAL_SEGMENTS else None
 
     trial_ab = growth.get('trial_ab_group')

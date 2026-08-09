@@ -39,10 +39,8 @@ async def bonus_line(c, user: dict, settings) -> str:
     Условие здесь то же самое, что и при начислении, — иначе экран пообещает
     то, чего человек не получит.
     """
-    from app.services.topup import AB_BONUS_GROUPS
-
     growth = user.get('growth') or {}
-    if growth.get('ab_group') not in AB_BONUS_GROUPS:
+    if growth.get('ab_group') == 'used':
         return ''
     if not str(growth.get('segment') or '').startswith('new_trial'):
         return ''

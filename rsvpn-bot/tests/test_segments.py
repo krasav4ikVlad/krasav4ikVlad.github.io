@@ -198,3 +198,36 @@ async def test_the_bigger_of_overlapping_audiences_wins(container):
     discounts = DiscountService(container.settings)
 
     assert await discounts.rate({'growth': {'segment': 'expired_3d'}}) == 0.35
+
+
+async def test_recalculation_keeps_fields_it_does_not_own(db, user_factory):
+    """Пересчёт сегментов не должен стирать соседей по growth.
+
+    В growth.* живут поля, которые считает не эта задача: кто заблокировал
+    бота и кому сбросили триал. Замена поддокумента целиком стирала их раз в
+    час — рассылка снова била в заблокировавших, а сброшенный триал молча
+    откатывался.
+    """
+    from app.services.segments import SegmentService
+    from app.repositories.users import UsersRepository
+
+    await user_factory(**{'growth.blocked_bot': True, 'growth.trial_reset_at': now()})
+    users = UsersRepository(db['users'])
+
+    await SegmentService(users).run()
+
+    growth = (await db['users'].find_one({'user_data.user_id': 1}))['growth']
+    assert growth['blocked_bot'] is True
+    assert growth['trial_reset_at'] is not None
+    assert growth['segment']
+
+
+def test_used_ab_group_is_never_handed_out_again():
+    """Бонус новичка — один раз. Пересчёт не возвращает человека в группу."""
+    from app.domain.segments import determine
+
+    user = {'user_data': {'date_joined': now()}, 'info': {'balance': 0},
+            'vpn': {'shortUuid': 'x', 'expireAt': now() + timedelta(days=2)},
+            'growth': {'ab_group': 'used'}}
+
+    assert determine(user, now())['ab_group'] == 'used'

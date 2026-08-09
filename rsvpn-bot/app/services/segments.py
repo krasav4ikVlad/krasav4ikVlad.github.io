@@ -51,7 +51,12 @@ class SegmentService:
             segment = growth['segment']
             report.by_segment[segment] = report.by_segment.get(segment, 0) + 1
 
-            update: dict = {'$set': {'growth': growth}}
+            # Точечный $set, а не замена всего growth целиком. В growth.* живут
+            # поля, которые считает не эта задача: growth.blocked_bot (кто
+            # заблокировал бота) и growth.trial_reset_at (сброс триала). Замена
+            # поддокумента стирала их каждый час — рассылка снова била в
+            # заблокировавших, а сброшенный триал молча откатывался.
+            update: dict = {'$set': {f'growth.{k}': v for k, v in growth.items()}}
             previous = self.users.pick(user, 'growth.segment')
             if previous and previous != segment:
                 update['$push'] = {'growth_history': {

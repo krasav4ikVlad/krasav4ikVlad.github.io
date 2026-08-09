@@ -92,3 +92,58 @@ async def test_disabled_step_is_skipped(db, user_factory):
     report = await engine.run([step])
 
     assert report.steps == [] and bot.sent == []
+
+
+async def test_bonus_switches_the_user_to_the_daily_plan(db, user_factory):
+    """Начисление без суточного тарифа — деньги на ветер.
+
+    Автопродление считает цену по vpn.period. У вернувшегося там остаётся
+    месяц или полгода: 15₽ бонуса не покрывают такой тариф, продления нет,
+    бонус лежит мёртвым грузом. Старый бот ставил period=1 тем же запросом.
+    """
+    await user_factory(**{'growth.segment': 'expired_3d', 'growth.has_topup': True,
+                          'growth.balance': 0, 'info.balance': 0, 'vpn.period': 30})
+    step = CampaignStep(code='expired_3d', title='3 дня',
+                        query={'growth.segment': 'expired_3d'},
+                        text=lambda u, ctx: 'вернитесь', credit_to=15,
+                        daily_period=True, respect_night=False)
+
+    await build_engine(db, FakeBot()).run_step(step)
+
+    doc = await db['users'].find_one({'user_data.user_id': 1})
+    assert doc['vpn']['period'] == 1
+    assert doc['info']['balance'] == 15
+
+
+async def test_step_without_daily_period_does_not_touch_the_plan(db, user_factory):
+    await user_factory(**{'growth.segment': 'expired_14d', 'growth.has_topup': True,
+                          'vpn.period': 30})
+    step = CampaignStep(code='expired_14d', title='2 недели',
+                        query={'growth.segment': 'expired_14d'},
+                        text=lambda u, ctx: 'вернитесь', respect_night=False)
+
+    await build_engine(db, FakeBot()).run_step(step)
+
+    doc = await db['users'].find_one({'user_data.user_id': 1})
+    assert doc['vpn']['period'] == 30
+
+
+async def test_every_step_has_its_own_flag_and_text():
+    """Два шага с одним кодом молча съели бы друг друга: флаг общий."""
+    from app.campaigns.definitions import ALL_STEPS
+
+    codes = [s.code for s in ALL_STEPS]
+    assert len(codes) == len(set(codes))
+
+
+async def test_texts_of_all_steps_render(db, user_factory):
+    """Опечатка в ключе текста видна здесь, а не в проде пустым сообщением."""
+    from app.campaigns.definitions import ALL_STEPS
+    from app.campaigns.engine import StepContext
+
+    ctx = StepContext(name='Иван', balance=10, credited=15, topups_count=1,
+                      daily_price=6, bonus_rate=0.5)
+    for step in ALL_STEPS:
+        rendered = step.text({}, ctx)
+        assert rendered and rendered != step.code, step.code
+        assert '{' not in rendered, step.code

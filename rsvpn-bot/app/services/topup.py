@@ -22,7 +22,6 @@ EXPIRED_SEGMENTS = (
     'expired_1d', 'expired_3d', 'expired_7d', 'expired_14d', 'expired_21d',
     'expired_30d', 'churned_45d', 'churned_60d', 'churned_90d', 'churned_dead',
 )
-AB_BONUS_GROUPS = ('bonus_30', 'bonus_15')
 
 
 class TopupService:
@@ -166,7 +165,12 @@ class TopupService:
         group = self.users.pick(user, 'growth.ab_group')
         segment = str(self.users.pick(user, 'growth.segment', '') or '')
 
-        if group not in AB_BONUS_GROUPS or not segment.startswith('new_trial'):
+        # Надбавку получают все новички на триале, а не только «выигравшие»
+        # ветки A/B. Так решено по итогам теста: bonus_30 стабильно бил и
+        # control, и bonus_15, поэтому письма D2/D2 HOT обещают процент всем.
+        # Пока условие включало группу, треть получателей читала обещание
+        # бонуса и не получала его — это худший вариант из трёх возможных.
+        if group == 'used' or not segment.startswith('new_trial'):
             return 0, None
 
         bonus = int(amount * await self.settings.rate('bonus.ab_new_trial_rate'))
