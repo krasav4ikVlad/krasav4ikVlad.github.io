@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Iterable, Optional
 
@@ -55,6 +55,7 @@ class TxKind(str, Enum):
     BONUS = "bonus"              # standalone bonus accrual ("+ акция 20%")
     PURCHASE = "purchase"        # historical "Покупка Pro" records kept in transactions
     GIFT = "gift"                # incoming gift
+    REFUND = "refund"            # "Возврат: ..." — компенсация, не выручка
     UNKNOWN = "unknown"
 
 
@@ -228,10 +229,15 @@ def parse_dt(value: Any) -> Optional[datetime]:
             return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         except ValueError:
             pass
-        for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y",
-                    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        # the bot writes "%d.%m.%Y ..." strings in MOSCOW time (UTC+3):
+        # user_data.date_joined, logs[].timestamp, legacy logs_balance
+        _msk = timezone(timedelta(hours=3))
+        for fmt, tz in (("%d.%m.%Y %H:%M:%S", _msk), ("%d.%m.%Y %H:%M", _msk),
+                        ("%d.%m.%Y", _msk), ("%Y-%m-%d %H:%M:%S", timezone.utc),
+                        ("%Y-%m-%d", timezone.utc)):
             try:
-                return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+                return (datetime.strptime(s, fmt).replace(tzinfo=tz)
+                        .astimezone(timezone.utc))
             except ValueError:
                 continue
     return None
@@ -271,13 +277,16 @@ def parse_amount(value: Any) -> Optional[float]:
 _RE_SOURCE_PAREN = re.compile(r"пополнение[^(«\"]*\(([^)]+)\)", re.IGNORECASE)
 _RE_CARD = re.compile(r"пополнение\s+карт", re.IGNORECASE)
 _RE_TOPUP = re.compile(r"пополнени", re.IGNORECASE)
+# both wordings exist: "Пополнение (cardlink) + бонус 40₽" and the current
+# bot's "Пополнение (tribute), бонус 30₽" — the prefix is optional
 _RE_BONUS = re.compile(
-    r"\+\s*(?:бонус|акци[яией]{1,2})\s*[:\s]*([\d\s.,]+)\s*₽?", re.IGNORECASE
+    r"(?:бонус|акци[яией]{1,2})\s*[:\s]*([\d][\d\s.,]*)\s*₽?", re.IGNORECASE
 )
 _RE_PROMO = re.compile(
     r"промокод[а-яё]*\s*[«\"']?([A-Za-z0-9_\-А-Яа-яЁё]+)[»\"']?", re.IGNORECASE
 )
 _RE_REF = re.compile(r"реферал|referral|ref[\._ ]?income|партн[её]р", re.IGNORECASE)
+_RE_REFUND = re.compile(r"возврат", re.IGNORECASE)
 _RE_PURCHASE = re.compile(r"покупка\s+[«\"']?([^»\"'\n]+?)[»\"']?\s*$", re.IGNORECASE)
 _RE_GIFT = re.compile(r"подар|дарени", re.IGNORECASE)
 # a description that IS a bonus accrual ("Бонус за возвращение (серия)")
@@ -316,6 +325,10 @@ def parse_description(desc: Optional[str]) -> _DescInfo:
     if m:
         info.promo_code = m.group(1)
         info.kind = TxKind.PROMO
+
+    # "Возврат: ..." wins over anything quoted after the colon
+    if info.kind is None and _RE_REFUND.search(text):
+        info.kind = TxKind.REFUND
 
     if info.kind is None and _RE_REF.search(text):
         info.kind = TxKind.REF_INCOME
@@ -394,7 +407,9 @@ def _from_dict(entry: dict) -> Optional[NormalizedTransaction]:
     amount = parse_amount(_first(entry, "amount", "sum", "value", "rub"))
     dt = parse_dt(_first(entry, "dt", "date", "created_at", "timestamp",
                          "ts", "time"))
-    desc = _first(entry, "desc", "description", "details", "text", "title")
+    # format C (promo/legacy dict) keeps the text in "comment"
+    desc = _first(entry, "desc", "description", "details", "text", "title",
+                  "comment")
     desc = str(desc) if desc is not None else None
 
     meta = entry.get("meta")
@@ -407,7 +422,9 @@ def _from_dict(entry: dict) -> Optional[NormalizedTransaction]:
                               or _first(entry, "source", "provider"))
     # None = "not specified" (description may fill it); explicit 0 stays 0
     bonus = parse_amount(_first(meta, "bonus_rub", "bonus", "promo_rub"))
-    promo_code = _first(meta, "promo_code", "promocode", "code")
+    # format C carries the code at the top level ("code": "WELCOME")
+    promo_code = (_first(meta, "promo_code", "promocode", "code")
+                  or _first(entry, "promo_code", "code"))
     promo_code = str(promo_code) if promo_code is not None else None
     payment_id = _first(meta, "payment_id", "order_id", "invoice_id") \
         or _first(entry, "payment_id", "order_id")
@@ -582,6 +599,12 @@ def normalize_transactions(raw: Any) -> tuple[list[NormalizedTransaction], int]:
 # ---------------------------------------------------------------------------
 
 
+def debit_kind_from_desc(desc: Optional[str]) -> tuple[DebitKind, Optional[str]]:
+    """Public alias: classify a spend description (used by the ETL when the
+    current bot writes spends as negative rows in ``info.transactions``)."""
+    return _debit_kind_from_desc(desc)
+
+
 def _debit_kind_from_desc(desc: Optional[str]) -> tuple[DebitKind, Optional[str]]:
     if not desc:
         return DebitKind.OTHER, None
@@ -735,7 +758,8 @@ def normalize_payment_webhook(doc: dict) -> Optional[NormalizedPayment]:
         amount=amount if amount is not None else 0.0,
         commission=parse_amount(payload.get("commission")
                                 or doc.get("commission")) or 0.0,
-        source=normalize_source(doc.get("source") or payload.get("provider")),
+        source=normalize_source(doc.get("provider") or doc.get("source")
+                                or payload.get("provider")),
         status=_normalize_payment_status(
             payload.get("transactionStatus") or doc.get("status"), processed),
         processed=processed,

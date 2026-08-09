@@ -33,6 +33,7 @@ from .normalizer import (
     NormalizedDebit,
     NormalizedTransaction,
     TxKind,
+    debit_kind_from_desc,
     normalize_debits,
     normalize_payment_webhook,
     normalize_transactions,
@@ -134,8 +135,10 @@ def parse_segment_history(raw: Any) -> list[dict]:
     for entry in raw:
         segment, dt = None, None
         if isinstance(entry, dict):
+            # production shape: {"from": ..., "to": ..., "changed_at": Date}
             segment = entry.get("segment") or entry.get("seg") or entry.get("to")
-            dt = parse_dt(entry.get("dt") or entry.get("date") or entry.get("ts")
+            dt = parse_dt(entry.get("dt") or entry.get("changed_at")
+                          or entry.get("date") or entry.get("ts")
                           or entry.get("at"))
         elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
             a, b = entry[0], entry[1]
@@ -217,9 +220,25 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
     username = _pick(doc, "username", "user_data.username", "info.username")
     username = str(username) if username is not None else None
 
-    credits, unparsed_c = normalize_transactions(_pick(doc, "info.transactions"))
+    credits_all, unparsed_c = normalize_transactions(
+        _pick(doc, "info.transactions"))
     debits, unparsed_d = normalize_debits(
         _pick(doc, "logs_balance", "info.logs_balance"))
+
+    # The current bot writes spends as NEGATIVE rows in info.transactions
+    # («Продление подписки», «Плата за устройства»); logs_balance is legacy.
+    # Route them to the debit side so renewals/devices/bypass are counted.
+    credits = []
+    for t in credits_all:
+        if (t.amount < 0
+                and t.kind not in (TxKind.REF_INCOME, TxKind.PROMO,
+                                   TxKind.REFUND)):
+            kind, product = debit_kind_from_desc(t.desc)
+            debits.append(NormalizedDebit(
+                amount=abs(t.amount), dt=t.dt, kind=kind,
+                product=product, desc=t.desc, raw=t.raw))
+        else:
+            credits.append(t)
 
     rows = [_tx_to_flat(t, user_id, username, i, etl_at)
             for i, t in enumerate(credits)]
@@ -280,6 +299,8 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
 
     referrer_id = _pick(doc, "referrer_id", "info.referrer_id",
                         "user_data.referrer")
+    if referrer_id in ("", 0):  # the bot stores "" when there is no referrer
+        referrer_id = None
 
     # registration attribution: paid/utm campaign > referral > organic
     reg_source = "organic"
@@ -291,7 +312,10 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
             (c.get("converted_from") for c in campaigns
              if isinstance(c, dict) and c.get("converted_from")), None)
     if campaign_name:
-        reg_source = str(campaign_name)
+        name = str(campaign_name)
+        # utm вида "ref_XXX" — это реферальные диплинки, не рекламный канал
+        reg_source = ("referral" if name.lower().startswith(("ref_", "ref-"))
+                      else name)
     elif referrer_id is not None:
         reg_source = "referral"
     devices = _parse_extra_devices(_pick(doc, "extraDevices", "info.extraDevices",
@@ -412,8 +436,10 @@ async def sweep_payments(db: AsyncIOMotorDatabase, etl_at: datetime,
         src_db = db.client[settings.payments_db]
     else:
         src_db = db
-    # default name has been seen both singular and plural in the wild
-    candidates = ([settings.payments_collection, "payments_webhooks"]
+    # "payments" is the source of truth per the bot's schema; webhook-log
+    # names are kept for older deployments
+    candidates = (["payments", settings.payments_collection,
+                   "payments_webhooks"]
                   if settings.payments_collection == "payments_webhook"
                   else [settings.payments_collection])
     existing = set(await src_db.list_collection_names())

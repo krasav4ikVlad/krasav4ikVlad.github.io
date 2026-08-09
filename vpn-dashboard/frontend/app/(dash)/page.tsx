@@ -246,6 +246,16 @@ function ProvidersCard() {
   );
 }
 
+const CHURN_REASONS: Record<string, string> = {
+  too_expensive: "дорого",
+  too_cheap_no_trust: "дёшево — не доверяю",
+  not_needed_now: "сейчас не нужно",
+  problems: "были проблемы",
+  found_other: "нашёл другой сервис",
+  hard_to_use: "сложно пользоваться",
+  forgot: "забыл продлить",
+};
+
 function RenewalOutlookCard() {
   const { data, isLoading } = useSWR<T.RenewalOutlook>(
     api.urls.renewalOutlook(),
@@ -310,6 +320,19 @@ function RenewalOutlookCard() {
                   ≈ {fmtMoney(lostRub14)}/мес
                 </span>
               </div>
+              {(data.churn_reasons ?? []).length > 0 ? (
+                <div className="mt-1 space-y-0.5 text-[11px] text-muted">
+                  <div className="font-medium text-ink-2">
+                    Почему уходят (опрос, 30д):
+                  </div>
+                  {data.churn_reasons.slice(0, 4).map((r) => (
+                    <div key={r.reason} className="flex justify-between gap-2">
+                      <span>{CHURN_REASONS[r.reason] ?? r.reason}</span>
+                      <span className="tabular">{fmtNum(r.count)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </div>
           <div className="min-w-0">

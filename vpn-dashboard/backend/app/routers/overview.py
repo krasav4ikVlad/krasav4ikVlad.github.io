@@ -635,9 +635,23 @@ async def _renewal_outlook() -> dict[str, Any]:
             "lost_monthly_rub": r2(churned * monthly_cost),
         })
 
+    # почему уходят — опрос оттока (churn_surveys), последние 30 дней
+    churn_reasons: list[dict[str, Any]] = []
+    if "churn_surveys" in await db.list_collection_names():
+        reason_rows = await db["churn_surveys"].aggregate([
+            {"$match": {"created_at": {"$gte": now - timedelta(days=30)}}},
+            {"$group": {"_id": "$reason", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": 7},
+        ]).to_list(length=7)
+        churn_reasons = [{"reason": str(r.get("_id")),
+                          "count": int(r.get("count") or 0)}
+                         for r in reason_rows if r.get("_id")]
+
     return {
         "min_topup": min_topup,
         "monthly_sub_cost": r2(monthly_cost),
+        "churn_reasons": churn_reasons,
         "today": {
             "expiring": len(users),
             "can_renew_from_balance": can_renew,

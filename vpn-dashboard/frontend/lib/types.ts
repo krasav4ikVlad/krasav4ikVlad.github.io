@@ -366,6 +366,7 @@ export interface ExpiringUser {
 export interface RenewalOutlook {
   min_topup: number;
   monthly_sub_cost: number;
+  churn_reasons: { reason: string; count: number }[];
   today: {
     expiring: number;
     can_renew_from_balance: number;

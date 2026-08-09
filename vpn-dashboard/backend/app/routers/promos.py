@@ -216,7 +216,7 @@ async def campaigns() -> dict:
 # ---------------------------------------------------------------------------
 
 def _broadcast_name(doc: dict) -> str:
-    for key in ("name", "title", "text"):
+    for key in ("name", "title", "audience", "text"):
         value = doc.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()[:_BROADCAST_NAME_LEN]
@@ -235,7 +235,9 @@ async def _broadcast_impact(*, hours: int) -> dict[str, Any]:
         .limit(_BROADCASTS_SCAN).to_list(length=_BROADCASTS_SCAN)
     dated: list[tuple[datetime, dict]] = []
     for doc in raw_docs:
-        dt = parse_dt(doc.get("dt") or doc.get("created_at") or doc.get("date"))
+        dt = parse_dt(doc.get("started_at") or doc.get("finished_at")
+                      or doc.get("dt") or doc.get("created_at")
+                      or doc.get("date"))
         if dt is not None:
             dated.append((as_utc(dt), doc))
     dated.sort(key=lambda item: item[0], reverse=True)

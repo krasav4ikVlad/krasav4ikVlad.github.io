@@ -69,8 +69,9 @@ class TestParseDt:
     def test_iso_string_naive_assumed_utc(self):
         assert parse_dt("2024-05-01T10:00:00") == DT
 
-    def test_russian_date_format(self):
-        assert parse_dt("01.05.2024 10:00:00") == DT
+    def test_russian_date_format_is_moscow_time(self):
+        # the bot writes "%d.%m.%Y ..." strings in MSK (UTC+3)
+        assert parse_dt("01.05.2024 13:00:00") == DT
 
     def test_numeric_string_millis(self):
         assert parse_dt(str(DT_MS)) == DT
@@ -193,6 +194,35 @@ class TestLegacyFormat:
     def test_promo_action_bonus_word(self):
         tx = one([100, DT, "Акция +20%"])
         assert tx.kind is TxKind.BONUS
+
+    def test_comma_bonus_wording(self):
+        # current bot: "Пополнение (tribute), бонус 30₽" — no plus sign;
+        # клиент реально заплатил amount − 30
+        tx = one([130, DT, "Пополнение (tribute), бонус 30₽"])
+        assert tx.kind is TxKind.TOPUP
+        assert tx.source == "tribute"
+        assert tx.bonus == 30.0
+
+    def test_refund_is_not_revenue(self):
+        tx = one({"amount": 100, "dt": DT,
+                  "description": "Возврат: Пополнение (cardlink)"})
+        assert tx.kind is TxKind.REFUND
+
+    def test_schema_format_c_promo(self):
+        """Format C from the schema doc: type/code/created_at/comment."""
+        tx = one({"type": "promo_balance", "amount": 12, "code": "WELCOME",
+                  "created_at": DT, "comment": "Активация промокода WELCOME"})
+        assert tx.kind is TxKind.PROMO
+        assert tx.promo_code == "WELCOME"
+        assert tx.dt == DT
+        assert tx.desc == "Активация промокода WELCOME"
+
+    def test_negative_renewal_dict(self):
+        """Current bot writes spends as negative rows in transactions."""
+        tx = one({"amount": -3, "dt": DT,
+                  "description": "Продление подписки «Ежедневная»"})
+        assert tx.amount == -3.0
+        assert tx.kind is not TxKind.TOPUP
 
     def test_no_description_positive_defaults_to_topup(self):
         tx = one([150, DT])
@@ -512,13 +542,14 @@ class TestDebits:
         assert unparsed == 1
 
     def test_rs2_details_timestamp_format(self):
-        """Production format: details + timestamp keys, Russian dd.mm.yyyy."""
+        """Production format: details + timestamp keys, Russian dd.mm.yyyy
+        strings are Moscow time (UTC+3)."""
         [d] = normalize_debit_entry({"amount": 50,
                                      "details": "Покупка 5 гигабайт",
                                      "timestamp": "05.07.2026 16:38:23"})
         assert d.kind is DebitKind.BYPASS
         assert d.amount == 50.0
-        assert d.dt == datetime(2026, 7, 5, 16, 38, 23, tzinfo=UTC)
+        assert d.dt == datetime(2026, 7, 5, 13, 38, 23, tzinfo=UTC)
 
     def test_rs2_gift_subscription(self):
         [d] = normalize_debit_entry({"amount": 2000,

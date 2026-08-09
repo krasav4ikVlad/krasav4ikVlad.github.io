@@ -126,6 +126,52 @@ class TestFlattenUser:
         assert u["preferred_client"] == "happ"
         assert rows[0]["source"] == "wata"
 
+    def test_negative_transactions_become_debits(self):
+        """Current bot: spends are negative rows in info.transactions."""
+        doc = {
+            "_id": 888,
+            "info": {"transactions": [
+                [150, DT_FIXED, "Пополнение (cardlink)"],
+                {"amount": -3, "dt": DT_FIXED,
+                 "description": "Продление подписки «Ежедневная»"},
+                {"amount": -75, "dt": DT_FIXED,
+                 "description": "Плата за устройства"},
+            ]},
+        }
+        rows, u, unparsed = flatten_user(doc, NOW)
+        assert unparsed == 0
+        debits = [r for r in rows if r["direction"] == "debit"]
+        credits = [r for r in rows if r["direction"] == "credit"]
+        assert len(credits) == 1 and credits[0]["kind"] == "topup"
+        assert {(d["kind"], d["amount"]) for d in debits} == {
+            ("renewal", 3.0), ("device", 75.0)}
+        assert u["renewals_count"] == 1
+
+    def test_schema_growth_history_from_to_changed_at(self):
+        h = parse_segment_history([
+            {"from": "new_trial_d0", "to": "new_trial_d1",
+             "changed_at": "2024-01-05T00:00:00Z"},
+            {"from": "new_trial_d1", "to": "trial",
+             "changed_at": "2024-01-08T00:00:00Z"},
+        ])
+        assert [x["segment"] for x in h] == ["new_trial_d1", "trial"]
+
+    def test_empty_referrer_is_not_referral(self):
+        doc = {"_id": 889, "user_data": {"user_id": 889, "referrer": ""},
+               "info": {"transactions": []}}
+        _, u, _ = flatten_user(doc, NOW)
+        assert u["referrer_id"] is None
+        assert u["reg_source"] == "organic"
+
+    def test_ref_utm_maps_to_referral_channel(self):
+        doc = {"_id": 890,
+               "user_data": {"user_id": 890, "referrer": 111,
+                             "utm": "ref_RepublickCheck"},
+               "info": {"transactions": []}}
+        _, u, _ = flatten_user(doc, NOW)
+        assert u["reg_source"] == "referral"
+        assert u["referrer_id"] == 111
+
     def test_rs2_growth_and_refstats_shape(self):
         """Mirror of the production RS_2 document layout (fake values)."""
         doc = {
