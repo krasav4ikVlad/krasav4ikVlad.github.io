@@ -83,6 +83,16 @@ class BillingService:
 
         return {'plan': plan, 'price': price, 'subscription': subscription}
 
+    async def _plan_for(self, vpn: dict) -> dict | None:
+        """Тариф продления. Срок без тарифа — берём самый короткий.
+
+        В vpn.period попадала длина бесплатного периода, а тарифа на неё нет.
+        Без запасного варианта кнопка «Продлить» отвечала «тариф недоступен»
+        всем, кто пришёл через триал и ни разу не выбирал длительность.
+        """
+        return (await self.plans.by_days(vpn.get('period') or 0)
+                or await self.plans.shortest())
+
     async def extend(self, user_id: int) -> dict:
         """Продление действующей подписки. Новая НЕ создаётся.
 
@@ -102,12 +112,12 @@ class BillingService:
 
         # подписки ещё нет — продлевать нечего, это первая покупка
         if not vpn.get('uuid'):
-            plan = await self.plans.by_days(vpn.get('period') or 0)
+            plan = await self._plan_for(vpn)
             if not plan:
                 raise PlanUnavailable
             return await self.buy(user_id, plan['code'])
 
-        plan = await self.plans.by_days(vpn.get('period') or 0)
+        plan = await self._plan_for(vpn)
         if not plan:
             raise PlanUnavailable
 

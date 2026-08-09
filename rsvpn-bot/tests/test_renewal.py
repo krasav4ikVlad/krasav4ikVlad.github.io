@@ -170,3 +170,55 @@ async def test_reminder_flags_reset_after_renewal(db, user_factory, renewal):
 
     await service.run()
     assert service.expiry.reset_for == [1]
+
+
+# ── срок без тарифа ─────────────────────────────────────────────────────────
+#
+# В vpn.period попадала длина бесплатного периода — 3 дня. Тарифа на 3 дня
+# нет, by_days(3) возвращал None, автопродление отвечало 'unknown_plan' и
+# молча ничего не делало. Живой баланс, ни одной ошибки в логе, подписка
+# умирает — и так у каждого, кто пришёл через триал.
+
+async def test_renewal_heals_a_period_that_has_no_plan(db, user_factory, renewal):
+    service, _ = renewal
+    await make_subscriber(user_factory, period=3, balance=100)
+
+    report = await service.run()
+
+    assert report.renewed == 1, report.notes
+    doc = await db['users'].find_one({'user_data.user_id': 1})
+    assert doc['vpn']['period'] == 1, 'срок не починен — на следующем проходе то же самое'
+    assert doc['info']['balance'] == 94
+
+
+async def test_renewal_charges_full_price_when_the_promo_is_off(db, user_factory, renewal):
+    """Акция «вернись со скидкой» — приглашение вернуться, а не новый прайс."""
+    from app.services.discounts import DiscountService
+
+    service, _ = renewal
+    service.discounts = DiscountService(service.settings)
+    await service.settings.set('discount.no_active', 0.5)
+    await service.settings.set('discount.on_autorenew', False)
+    await make_subscriber(user_factory, period=1, balance=100,
+                          **{'growth.segment': 'trial'})
+
+    await service.run()
+
+    doc = await db['users'].find_one({'user_data.user_id': 1})
+    assert doc['info']['balance'] == 94
+
+
+async def test_renewal_keeps_the_promo_when_it_is_on(db, user_factory, renewal):
+    """Включено — списание совпадает с ценой, которую человек видит на экране."""
+    from app.services.discounts import DiscountService
+
+    service, _ = renewal
+    service.discounts = DiscountService(service.settings)
+    await service.settings.set('discount.no_active', 0.5)
+    await make_subscriber(user_factory, period=1, balance=100,
+                          **{'growth.segment': 'trial'})
+
+    await service.run()
+
+    doc = await db['users'].find_one({'user_data.user_id': 1})
+    assert doc['info']['balance'] == 97

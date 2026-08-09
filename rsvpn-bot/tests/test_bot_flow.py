@@ -1063,7 +1063,10 @@ async def test_subscriber_gets_the_free_period(env):
 
     user = await c.users.get(5)
     assert user['vpn']['shortUuid'] == 's-new'
-    assert user['vpn']['period'] == 3
+    # period — это тариф для продления, а не длина бесплатного периода.
+    # Тарифа на 3 дня нет, и автопродление по нему ничего не находило
+    assert await c.plans.by_days(user['vpn']['period']), 'срок без тарифа'
+    assert user['vpn']['period'] == 1
     assert user['growth']['trial_claimed_at']
     assert user['info']['balance'] == 0        # деньгами по-прежнему не сыпем
 
@@ -1713,3 +1716,22 @@ async def test_restart_marks_a_running_broadcast_for_the_watchdog(env):
     assert len(await mark_interrupted(c)) == 1
     job = await c.db['broadcasts'].find_one({'_id': 'job-restart'})
     assert job['status'] == 'interrupted'
+
+
+async def test_extend_works_after_the_free_period(env):
+    """Кнопка «Продлить» отвечала «тариф недоступен» всем, кто с триала.
+
+    В vpn.period лежала длина бесплатного периода — 3 дня. Тарифа на 3 дня
+    нет, by_days(3) не находил ничего ни здесь, ни в автопродлении.
+    """
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.set_vpn(5, {'uuid': 'u-1', 'shortUuid': 's-1', 'period': 3,
+                              'expireAt': now() + timedelta(days=1)})
+    await c.users.credit(5, 100, 'тест')
+
+    result = await c.billing.extend(5)
+
+    assert result['plan']['days'] == 1
+    user = await c.users.get(5)
+    assert user['vpn']['period'] == 1, 'срок не починен'

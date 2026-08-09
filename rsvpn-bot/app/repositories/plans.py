@@ -52,6 +52,17 @@ class PlansRepository(Repository):
     async def get(self, code: str) -> dict | None:
         return next((p for p in await self._load() if p.get('code') == code), None)
 
+    async def shortest(self) -> dict | None:
+        """Самый короткий включённый тариф.
+
+        Нужен там, где длительность нужна, а человек её не выбирал: после
+        бесплатного периода и при починке подписки со сроком, которого нет
+        среди тарифов. Брать самый короткий — самое щадящее решение: списание
+        минимальное, и человек успевает решить сам.
+        """
+        plans = await self.all()
+        return min(plans, key=lambda p: int(p.get('days', 0) or 0), default=None)
+
     async def by_days(self, days: int) -> dict | None:
         try:
             days = int(days)

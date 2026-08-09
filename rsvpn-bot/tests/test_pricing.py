@@ -37,3 +37,4 @@ def test_referral_and_fee():
 def test_missing_amount_never_negative():
     assert missing_amount(150, 200) == 0
     assert missing_amount(150, 50) == 100
+

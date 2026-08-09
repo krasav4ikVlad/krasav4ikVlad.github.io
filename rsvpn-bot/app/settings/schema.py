@@ -144,6 +144,11 @@ SCHEMA: tuple[Group, ...] = (
                 audience='churned'),
         Setting('discount.no_sub', 'Без подписки и оплат', 'percent', 0.0, min=0, max=0.9,
                 audience='no_sub'),
+        Setting('discount.on_autorenew', 'Скидка действует и на автопродление',
+                'bool', True,
+                hint='Включено — списание совпадает с ценой на экране. '
+                     'Выключено — акция работает только когда человек '
+                     'нажимает сам, а автосписание идёт по полной цене'),
         Setting('discount.notice', 'Подпись к скидке на экране', 'str',
                 'Скидка {percent} уже в цене',
                 hint='{percent} подставится само. Пусто — строка не показывается'),

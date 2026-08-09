@@ -106,7 +106,10 @@ class Container:
                                 legacy=self.config.legacy_collections)
 
         from app.services.trial import TrialService
-        self.trial = TrialService(self.users, self.settings, vpn=None)
+        # plans нужен, чтобы записать в vpn.period существующий тариф:
+        # длина бесплатного периода тарифом не является, и автопродление
+        # по ней ничего не находило
+        self.trial = TrialService(self.users, self.settings, vpn=None, plans=self.plans)
         # именно collection(): в старой базе коллекция называется
         # 'churn_surveys ' — с пробелом на конце, см. app/core/db.py
         self.survey = SurveyService(self.users,

@@ -31,11 +31,12 @@ class TrialResult:
 
 
 class TrialService:
-    def __init__(self, users, settings, vpn, bot=None):
+    def __init__(self, users, settings, vpn, bot=None, plans=None):
         self.users = users
         self.settings = settings
         self.vpn = vpn
         self.bot = bot
+        self.plans = plans
 
     async def channel(self) -> str:
         return str(await self.settings.get('trial.channel') or '').strip()
@@ -151,12 +152,23 @@ class TrialService:
     async def _create_new(self, user_id: int, days: int) -> dict:
         subscription = await self.vpn.create_subscription(user_id, days=days)
         return {
-            'period': days,
+            # vpn.period — это НЕ длина бесплатного периода, а тариф, по
+            # которому потом продлевать. Здесь стояло `days` (3 дня), тарифа
+            # на 3 дня нет, и автопродление после триала молча не срабатывало:
+            # by_days(3) не находит план и списание не происходит вообще.
+            'period': await self._default_period(days),
             'shortUuid': subscription['shortUuid'],
             'uuid': subscription['uuid'],
             'expireAt': subscription['expireAt'],
             'createdAt': subscription['createdAt'],
         }
+
+    async def _default_period(self, days: int) -> int:
+        """Тариф для продления после бесплатного периода — самый короткий."""
+        if not self.plans:
+            return 1
+        plan = await self.plans.by_days(days) or await self.plans.shortest()
+        return int((plan or {}).get('days') or 1)
 
     async def _extend_existing(self, user: dict, days: int) -> dict:
         """Повторный триал после сброса: подписка в панели уже есть.
