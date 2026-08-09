@@ -1802,3 +1802,50 @@ async def test_payout_note_names_the_minimum_for_the_bot_balance(env):
     assert 'на баланс бота — 500₽' in note
     assert 'по СБП — 500₽' in note
     assert '{' not in note, 'плейсхолдер не подставился'
+
+
+async def test_confirmation_shows_the_requisites_not_just_the_method(env):
+    """«СБП» ничего не подтверждает: их может быть два на разные телефоны."""
+    from app.bot.callbacks import Payout
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'info.ref_stats.withdrawable': 900}})
+    await add_sbp_method(dp, bot)
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Payout(action='confirm').pack()))
+
+    assert '+79001234567' in session.last_text
+    assert 'Сбербанк' in session.last_text
+
+
+async def test_confirmation_has_no_duplicate_back_button(env):
+    """«Назад» из футера делает то же, что «Нет, вернуться»."""
+    from app.bot.callbacks import Payout
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'info.ref_stats.withdrawable': 900}})
+
+    session.markups.clear()
+    await dp.feed_update(bot, callback(Payout(action='confirm').pack()))
+
+    labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
+    assert sum(1 for label in labels if 'азад' in label or 'ернуться' in label) == 1, labels
+
+
+async def test_confirmation_for_the_bot_balance_says_where_the_money_goes(env):
+    from app.bot.callbacks import Payout
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'info.ref_stats.withdrawable': 900}})
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Payout(action='confirm').pack()))
+
+    assert 'обычный баланс' in session.last_text

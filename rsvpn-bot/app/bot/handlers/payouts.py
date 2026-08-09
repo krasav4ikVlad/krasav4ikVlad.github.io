@@ -242,18 +242,27 @@ async def confirm(call: types.CallbackQuery, c, user: dict, settings):
 
     methods_list = await c.payouts.methods(call.from_user.id)
     cooldown = await settings.int('payout.cooldown_hours')
+    method = pm.find(methods_list, result.method)
+
+    # Название способа («СБП») ничего не подтверждает: у человека может быть
+    # два СБП на разные телефоны, и промах между ними как раз и стоит суток
+    # ожидания. Показываем сами реквизиты — номер маскирован, но узнаваем.
+    where = (pm.format_details(method) if method else
+             f'<b>Куда:</b> <code>{pm.BOT_BALANCE_TITLE}</code>\n'
+             '• Деньги перейдут на ваш обычный баланс в боте')
 
     text = (profile_caption(user, f'{e("withdraw")} Подтверждение вывода')
-            + f'<b>{e("payout")} Сумма:</b> <code>{result.amount}₽</code>\n'
-            + f'<b>{e("document")} Куда:</b> '
-              f'<code>{pm.selected_title(methods_list, result.method)}</code>\n\n'
-            + '<blockquote>Проверьте, что способ выбран правильно.'
+            + f'<b>{e("payout")} Сумма:</b> <code>{result.amount}₽</code>\n\n'
+            + where + '\n\n'
+            + '<blockquote>Проверьте реквизиты.'
             + (f' Следующую заявку можно будет оформить только через '
                f'{cooldown} ч.' if cooldown else '')
             + '</blockquote>')
 
+    # Без «Назад» из футера: он делает ровно то же, что «Нет, вернуться»,
+    # а на экране выбора из двух вариантов третья кнопка — это шум.
     kb = payout_confirm_keyboard()
-    await footer(kb, settings, back='payout')
+    await footer(kb, settings, back=None)
     await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('referrals')))
     await call.answer()
 
