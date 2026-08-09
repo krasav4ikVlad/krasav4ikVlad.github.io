@@ -175,6 +175,16 @@ class RemnawaveClient:
         """
         return await self.update_subscription(uuid, status=status)
 
+    async def get_subscription(self, uuid: str) -> dict:
+        """Пользователь панели целиком: трафик, статус, когда был онлайн.
+
+        Нужен владельцу личного сервера: без этого «статистика сервера» — это
+        список имён без единой цифры.
+        """
+        if not uuid:
+            return {}
+        return await self._request('GET', f'/api/users/{uuid}') or {}
+
     async def devices(self, uuid: str) -> list[dict]:
         if not uuid:
             return []

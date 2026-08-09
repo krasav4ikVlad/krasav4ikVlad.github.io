@@ -25,6 +25,7 @@ RENEWAL = 'renewal'
 DEVICES = 'devices'
 PANEL_WEBHOOK = 'panel_webhook'
 EXPIRY_SENT = 'expiry_sent'
+PRIVATE_SERVERS = 'private_servers'
 CAMPAIGNS = 'campaigns'
 
 TITLES = {
@@ -32,6 +33,7 @@ TITLES = {
     DEVICES: 'Плата за устройства',
     PANEL_WEBHOOK: 'Вебхук панели',
     EXPIRY_SENT: 'Напоминание отправлено',
+    PRIVATE_SERVERS: 'Плата за личные серверы',
     CAMPAIGNS: 'Кампании',
 }
 

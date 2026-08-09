@@ -77,6 +77,14 @@ async def start(message: types.Message, command: CommandObject, state: FSMContex
         await accept_gift(message, args, c)
         return
 
+    # Приглашение на личный сервер. Показываем экран согласия, а не
+    # добавляем молча: человек должен понимать, куда его зовут и от кого.
+    if args.startswith('srv_'):
+        from app.bot.handlers.private_servers import accept_screen
+
+        await accept_screen(message, args[4:], c, user, settings)
+        return
+
     await show_profile(message, c, user, settings)
 
 

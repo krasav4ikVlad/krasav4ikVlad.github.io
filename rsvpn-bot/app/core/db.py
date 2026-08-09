@@ -33,6 +33,8 @@ MIGRATIONS = 'migrations'
 JOB_RUNS = 'job_runs'
 # состояние ручных рассылок: см. app/admin/broadcast.py
 BROADCASTS = 'broadcasts'
+# личные серверы: см. app/services/private_servers.py
+PRIVATE_SERVERS = 'private_servers'
 
 PAYMENTS = 'payments'
 PAYMENT_WEBHOOKS = 'payments_webhooks'

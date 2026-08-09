@@ -1,0 +1,386 @@
+"""Личный сервер: витрина, покупка, участники, статистика.
+
+Пока функция тестируется, раздел виден только админам — настройка
+`private.visibility`. Кнопки в профиле у обычного человека при этом нет
+совсем: показывать её и отвечать «недоступно» хуже, чем не показывать.
+"""
+
+from __future__ import annotations
+
+from aiogram import F, Router, types
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from app.bot.callbacks import Menu, Server
+from app.bot.keyboards.common import footer
+from app.bot.screens.base import Screen, render
+from app.bot.screens.profile import profile_caption
+from app.content.emoji import e
+from app.core.time import fmt
+from app.domain import private_servers as ps
+
+INVITES_ENABLED = 'info.server_invites_enabled'
+
+ERRORS = {
+    'disabled': 'Личные серверы временно недоступны.',
+    'already_has': 'У вас уже есть сервер.',
+    'no_funds': 'На балансе не хватает {amount}₽.',
+    'unknown_plan': 'Такого тарифа нет.',
+    'not_owner': 'Это не ваш сервер.',
+    'not_active': 'Сервер ещё не запущен.',
+    'no_slots': 'Свободных мест нет.',
+    'bad_code': 'Ссылка недействительна или уже использована.',
+    'own_server': 'Это ваш собственный сервер.',
+    'already_member': 'Вы уже на этом сервере.',
+    'panel': 'Не удалось выдать доступ. Мы уже разбираемся.',
+    'not_member': 'Участник не найден.',
+}
+
+
+class ServerTitle(StatesGroup):
+    value = State()
+
+
+async def visible_for(user_id: int, c, settings) -> bool:
+    """Кому показывать раздел. На время тестов — только админам."""
+    mode = str(await settings.get('private.visibility') or 'admins')
+    if mode == 'off':
+        return False
+    if mode == 'admins':
+        return user_id in (c.config.admin_ids or ())
+    return True
+
+
+def _btn(text: str, action: str, value: str = '') -> types.InlineKeyboardButton:
+    return types.InlineKeyboardButton(
+        text=text, callback_data=Server(action=action, value=value).pack())
+
+
+# ── витрина ─────────────────────────────────────────────────────────────────
+async def shop(event, c, user: dict, settings, note: str = '') -> None:
+    kb = InlineKeyboardBuilder()
+    lines = []
+    for plan, price in await c.private.plans():
+        lines.append(f'<b>{plan.title}</b> — до {plan.slots} человек, '
+                     f'<code>{price}₽</code> в месяц '
+                     f'(≈{price // max(1, plan.slots)}₽ с человека)')
+        kb.row(_btn(f'{plan.title} — {price}₽', 'buy', plan.code))
+
+    text = (profile_caption(user, f'{e("servers")} Свой сервер')
+            + '\n'.join(lines) + '\n\n'
+            + f'<blockquote>{note or await settings.get("private.note")}</blockquote>')
+
+    await footer(kb, settings, back='profile')
+    await render(event, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
+    if isinstance(event, types.CallbackQuery):
+        await event.answer()
+
+
+async def entry(call: types.CallbackQuery, c, user: dict, settings) -> None:
+    """Точка входа: свой сервер, чужой или витрина — что уместно."""
+    if not await visible_for(call.from_user.id, c, settings):
+        await call.answer('Раздел недоступен', show_alert=True)
+        return
+
+    own = await c.private.servers.of_owner(call.from_user.id)
+    if own:
+        await server_screen(call, c, user, settings, own)
+        return
+
+    joined = await c.private.servers.of_member(call.from_user.id)
+    if joined:
+        await server_screen(call, c, user, settings, joined[0])
+        return
+
+    await shop(call, c, user, settings)
+
+
+# ── покупка ─────────────────────────────────────────────────────────────────
+async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+                      settings) -> None:
+    plan = ps.BY_CODE.get(callback_data.value)
+    if not plan:
+        await call.answer(ERRORS['unknown_plan'], show_alert=True)
+        return
+
+    price = await c.private.price(plan)
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn(f'{e("ok")} Оплатить {price}₽', 'order', plan.code))
+    kb.row(_btn(f'{e("back")} Нет, вернуться', 'shop'))
+
+    text = (profile_caption(user, f'{e("servers")} {plan.title}')
+            + f'<b>{e("devices")} Мест:</b> <code>{plan.slots}</code> '
+              f'(вы и ещё {plan.guests})\n'
+            + f'<b>{e("money")} Списание:</b> <code>{price}₽</code> сейчас '
+              'и столько же каждый месяц\n\n'
+            + '<blockquote>Сервер поднимается вручную и обычно готов в течение '
+              'нескольких часов. Пока он готовится, деньги уже списаны — если '
+              'запустить не выйдет, вернём полностью.</blockquote>')
+
+    await footer(kb, settings, back=None)
+    await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
+    await call.answer()
+
+
+async def order(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+                settings) -> None:
+    result = await c.private.request(call.from_user.id, callback_data.value)
+    if not result.ok:
+        await call.answer(ERRORS.get(result.reason, 'Не получилось').format(
+            amount=result.amount), show_alert=True)
+        return
+
+    if c.notifier:
+        from app.admin.private_servers import request_card, request_markup
+
+        await c.notifier.send('payments', await request_card(c, result.server),
+                              markup=request_markup(result.server['_id']))
+
+    await call.answer('Заявка принята', show_alert=True)
+    await server_screen(call, c, await c.users.get(call.from_user.id), settings,
+                        result.server)
+
+
+# ── экран сервера ───────────────────────────────────────────────────────────
+async def server_screen(event, c, user: dict, settings, server: dict,
+                        note: str = '') -> None:
+    owner = server.get('owner_id') == event.from_user.id
+    plan = ps.plan_of(server)
+    paid_until = server.get('paid_until')
+
+    lines = [f'<b>{e("note")} Название:</b> <code>{server.get("title")}</code>',
+             f'<b>{e("stats")} Статус:</b> {ps.STATUS_TITLES.get(server.get("status"), "—")}']
+    if server.get('location'):
+        lines.append(f'<b>{e("globe")} Локация:</b> <code>{server["location"]}</code>')
+    lines.append(f'<b>{e("devices")} Мест:</b> '
+                 f'<code>{ps.occupied(server)} из {server.get("slots")}</code>')
+    if paid_until:
+        lines.append(f'<b>{e("calendar")} Оплачен до:</b> <code>{fmt(paid_until)}</code>')
+    if owner:
+        lines.append(f'<b>{e("money")} Списание:</b> <code>{server.get("price")}₽</code> в месяц')
+
+    kb = InlineKeyboardBuilder()
+    if server.get('status') == ps.ACTIVE:
+        kb.row(_btn(f'{e("shield")} Подключиться', 'link', server['_id']))
+        if owner:
+            if ps.free_slots(server) > 0:
+                kb.row(_btn(f'{e("plus")} Пригласить друга', 'invite', server['_id']))
+            kb.row(_btn(f'{e("stats")} Статистика', 'stats', server['_id']))
+            if server.get('members'):
+                kb.row(_btn(f'{e("friends")} Участники', 'members', server['_id']))
+        else:
+            kb.row(_btn(f'{e("cross")} Выйти с сервера', 'leave', server['_id']))
+
+    hint = note or ('Сервер готовится. Как только он будет поднят, придёт сообщение.'
+                    if server.get('status') == ps.REQUESTED else
+                    'Приглашайте друзей — каждый получит доступ к этому серверу '
+                    'и только к нему.' if owner else
+                    'Вы пользуетесь сервером друга. Оплачивает его владелец.')
+
+    text = (profile_caption(user, f'{e("servers")} Свой сервер')
+            + '\n'.join(lines) + f'\n\n<blockquote>{hint}</blockquote>')
+
+    await footer(kb, settings, back='profile')
+    await render(event, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
+    if isinstance(event, types.CallbackQuery):
+        await event.answer()
+
+
+async def open_server(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+                      settings) -> None:
+    server = await c.private.servers.get(callback_data.value)
+    if not server or not ps.is_member(server, call.from_user.id):
+        await call.answer(ERRORS['not_owner'], show_alert=True)
+        return
+    await server_screen(call, c, user, settings, server)
+
+
+# ── приглашения ─────────────────────────────────────────────────────────────
+async def invite(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+                 settings) -> None:
+    result = await c.private.invite(callback_data.value, call.from_user.id)
+    if not result.ok:
+        await call.answer(ERRORS.get(result.reason, 'Не получилось'), show_alert=True)
+        return
+
+    me = await call.bot.get_me()
+    link = f'https://t.me/{me.username}?start=srv_{result.reason}'
+    server = result.server
+
+    await call.message.answer(
+        f'{e("link")} <b>Ссылка-приглашение</b>\n\n'
+        f'<code>{link}</code>\n\n'
+        f'Свободных мест: <b>{ps.free_slots(server) }</b>. Ссылка одноразовая — '
+        f'сработает только у одного человека.\n\n'
+        f'<blockquote>Друг сможет её принять, только если сам разрешил '
+        f'приглашения на серверы. Это защита от рассылок: добавить человека '
+        f'без его ведома нельзя.</blockquote>')
+    await call.answer()
+
+
+async def accept_screen(message: types.Message, code: str, c, user: dict, settings) -> None:
+    """Экран по ссылке-приглашению. Вызывается из /start."""
+    server = await c.private.servers.by_invite(code)
+    if not server:
+        await message.answer(f'{e("cross")} {ERRORS["bad_code"]}')
+        return
+
+    owner = await c.users.get(server['owner_id'], {'user_data': 1})
+    who = c.users.pick(owner or {}, 'user_data.first_name') or 'Владелец'
+
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn(f'{e("ok")} Принять приглашение', 'accept', code))
+    kb.row(_btn(f'{e("cross")} Отказаться', 'decline', code))
+
+    await message.answer(
+        f'{e("servers")} <b>Приглашение на личный сервер</b>\n\n'
+        f'<b>{who}</b> зовёт вас на сервер «{server.get("title")}».\n'
+        f'Свободных мест: <b>{ps.free_slots(server)}</b>.\n\n'
+        f'<blockquote>Это отдельный сервер, которым пользуется только его '
+        f'владелец и приглашённые. Доступ действует, пока владелец платит '
+        f'за сервер, — своя подписка для этого не нужна.\n\n'
+        f'Приняв приглашение, вы разрешаете присылать вам такие приглашения. '
+        f'Отключить это можно в профиле.</blockquote>',
+        reply_markup=kb.as_markup())
+
+
+async def accept(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+                 settings) -> None:
+    # Согласие — сам факт нажатия. Отдельный тумблер в профиле нужен, чтобы
+    # отказаться от таких приглашений навсегда, а не чтобы включать их
+    # заранее: иначе первая же ссылка упирается в «сходите в настройки».
+    await c.users.col.update_one({'user_data.user_id': call.from_user.id},
+                                 {'$set': {INVITES_ENABLED: True}})
+
+    result = await c.private.join(callback_data.value, call.from_user.id)
+    if not result.ok:
+        await call.answer(ERRORS.get(result.reason, 'Не получилось'), show_alert=True)
+        return
+
+    await call.answer('Вы на сервере', show_alert=True)
+    await server_screen(call, c, await c.users.get(call.from_user.id), settings,
+                        result.server, note='Доступ выдан. Нажмите «Подключиться».')
+
+
+async def decline(call: types.CallbackQuery, c, settings) -> None:
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await call.answer('Приглашение отклонено')
+
+
+# ── участники и статистика ──────────────────────────────────────────────────
+async def members(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+                  settings) -> None:
+    server = await c.private.servers.get(callback_data.value)
+    if not server or server.get('owner_id') != call.from_user.id:
+        await call.answer(ERRORS['not_owner'], show_alert=True)
+        return
+
+    kb = InlineKeyboardBuilder()
+    lines = []
+    for entry_ in server.get('members') or []:
+        member = await c.users.get(entry_['user_id'], {'user_data': 1})
+        name = c.users.pick(member or {}, 'user_data.first_name') or entry_['user_id']
+        lines.append(f'• {name} — с {fmt(entry_.get("joined_at"))}')
+        kb.row(_btn(f'{e("minus")} Убрать {name}', 'kick',
+                    f'{server["_id"]}:{entry_["user_id"]}'))
+
+    kb.row(_btn(f'{e("back")} К серверу', 'open', server['_id']))
+    text = (profile_caption(user, f'{e("friends")} Участники')
+            + ('\n'.join(lines) or 'Пока никого нет.') + '\n\n'
+            + '<blockquote>Убрать участника — значит сразу закрыть ему доступ '
+              'к серверу. Место освободится.</blockquote>')
+
+    await footer(kb, settings, back=None)
+    await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
+    await call.answer()
+
+
+async def kick(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+               settings) -> None:
+    server_id, _, raw = callback_data.value.partition(':')
+    result = await c.private.kick(server_id, call.from_user.id, int(raw or 0))
+    if not result.ok:
+        await call.answer(ERRORS.get(result.reason, 'Не получилось'), show_alert=True)
+        return
+    await call.answer('Участник убран')
+    await members(call, Server(action='members', value=server_id), c, user, settings)
+
+
+async def leave(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+                settings) -> None:
+    result = await c.private.leave(callback_data.value, call.from_user.id)
+    if not result.ok:
+        await call.answer(ERRORS.get(result.reason, 'Не получилось'), show_alert=True)
+        return
+    await call.answer('Вы вышли с сервера', show_alert=True)
+    await shop(call, c, await c.users.get(call.from_user.id), settings,
+               note='Вы больше не на сервере друга.')
+
+
+async def stats(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+                settings) -> None:
+    server = await c.private.servers.get(callback_data.value)
+    if not server or server.get('owner_id') != call.from_user.id:
+        await call.answer(ERRORS['not_owner'], show_alert=True)
+        return
+
+    await call.answer('Спрашиваю панель…')
+    rows = await c.private.stats(server)
+
+    lines = []
+    for row in rows:
+        mark = e('user') if row['owner'] else e('friends')
+        online = fmt(row['online_at']) if row['online_at'] else 'не заходил'
+        lines.append(f'{mark} <b>{row["name"]}</b>\n'
+                     f'   трафик: <code>{ps.gb(row["traffic"])} ГБ</code>, '
+                     f'последний вход: {online}')
+
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn(f'{e("refresh")} Обновить', 'stats', server['_id']))
+    kb.row(_btn(f'{e("back")} К серверу', 'open', server['_id']))
+
+    text = (profile_caption(user, f'{e("stats")} Статистика сервера')
+            + '\n'.join(lines) + '\n\n'
+            + '<blockquote>Трафик считает панель нарастающим итогом с момента '
+              'последнего сброса. Это ваш сервер — видеть, кто его расходует, '
+              'нормально.</blockquote>')
+
+    await footer(kb, settings, back=None)
+    await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
+
+
+async def link(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+               settings) -> None:
+    """Подключение — та же ссылка подписки, сервер в ней уже появился."""
+    server = await c.private.servers.get(callback_data.value)
+    if not server or not ps.is_member(server, call.from_user.id):
+        await call.answer(ERRORS['not_owner'], show_alert=True)
+        return
+    await call.answer()
+    await call.message.answer(
+        f'{e("shield")} Сервер «{server.get("title")}» уже в вашей подписке — '
+        f'откройте «Ваша подписка» и обновите конфиг в приложении. '
+        f'Отдельная ссылка не нужна.')
+
+
+def create_router() -> Router:
+    router = Router(name='private_servers')
+
+    router.callback_query.register(entry, Menu.filter(F.screen == 'private'))
+    router.callback_query.register(shop, Server.filter(F.action == 'shop'))
+    router.callback_query.register(buy_confirm, Server.filter(F.action == 'buy'))
+    router.callback_query.register(order, Server.filter(F.action == 'order'))
+    router.callback_query.register(open_server, Server.filter(F.action == 'open'))
+    router.callback_query.register(invite, Server.filter(F.action == 'invite'))
+    router.callback_query.register(accept, Server.filter(F.action == 'accept'))
+    router.callback_query.register(decline, Server.filter(F.action == 'decline'))
+    router.callback_query.register(members, Server.filter(F.action == 'members'))
+    router.callback_query.register(kick, Server.filter(F.action == 'kick'))
+    router.callback_query.register(leave, Server.filter(F.action == 'leave'))
+    router.callback_query.register(stats, Server.filter(F.action == 'stats'))
+    router.callback_query.register(link, Server.filter(F.action == 'link'))
+    return router

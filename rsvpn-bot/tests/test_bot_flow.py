@@ -128,6 +128,7 @@ async def env(container):
     container.links = LinkEncryptor(FakeCryptoHttp())
     container.trial.vpn = container.vpn
     container.moderation.vpn = container.vpn
+    container.private.vpn = container.vpn
     container.payments = PaymentRegistry(
         [HeleketProvider('key', 'merchant', FakeCryptoHttp())], container.settings)
 

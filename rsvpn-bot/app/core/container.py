@@ -43,6 +43,7 @@ class Container:
     notifier: Any = None
     analytics: Any = None
     expiry: Any = None
+    private: Any = None
     squads: Any = None
     lifeline: Any = None
     renewal: Any = None
@@ -99,6 +100,14 @@ class Container:
 
         from app.services.discounts import DiscountService
         self.discounts = DiscountService(self.settings)
+
+        from app.repositories.private_servers import PrivateServersRepository
+        from app.services.private_servers import PrivateServerService
+        # vpn и bot проставляются позже: покупка сервера возможна и без них,
+        # а выдача доступа — нет
+        self.private = PrivateServerService(
+            self.users, PrivateServersRepository(self.db[names.PRIVATE_SERVERS]),
+            self.settings, vpn=None)
 
         from app.services.wipe import WipeService
         # vpn проставляется в build(): без панели чистится только база
@@ -269,7 +278,8 @@ class Container:
         запуск скажет «уже применена». Боту наоборот важно подняться и работать,
         поэтому у него strict=False.
         """
-        for repo in (self.users, self.plans, self.payments_repo):
+        for repo in (self.users, self.plans, self.payments_repo,
+                     self.private.servers):
             await repo.ensure_indexes()
         for service in (self.promo, self.survey):
             await service.ensure_indexes()
@@ -284,7 +294,8 @@ class Container:
         await self.warn_about_legacy_leftovers()
         await self.warn_about_squads()
 
-        failed = [name for repo in (self.users, self.plans, self.payments_repo)
+        failed = [name for repo in (self.users, self.plans, self.payments_repo,
+                                    self.private.servers)
                   for name in repo.failed_indexes]
         if failed and strict:
             raise RuntimeError('не созданы индексы: ' + ', '.join(failed))
@@ -339,6 +350,7 @@ class Container:
         container.moderation.vpn = container.vpn
         container.wipe.vpn = container.vpn
         container.promo.vpn = container.vpn
+        container.private.vpn = container.vpn
         container.entities = build_entities(container)
         return container
 
@@ -366,6 +378,11 @@ class Container:
         # Notifier раздаётся сервисам явно: без него все админ-уведомления
         # (регистрации, пополнения, заявки на вывод) молча никуда не уходят
         self.notifier = Notifier(bot, self.settings, self.users)
+        # личным серверам bot нужен, чтобы сказать владельцу о приостановке,
+        # а notifier — чтобы заявка дошла до админ-чата
+        if self.private is not None:
+            self.private.bot = bot
+            self.private.notifier = self.notifier
         for service in (self.topup, self.billing, self.gifts, self.payouts):
             if service is not None:
                 service.notifier = self.notifier

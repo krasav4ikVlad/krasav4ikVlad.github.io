@@ -53,3 +53,16 @@ class Admin(CallbackData, prefix='adm'):
     act: str
     a: str = ''
     b: str = ''
+
+
+class Server(CallbackData, prefix='srv'):
+    """Личный сервер: витрина, покупка, участники."""
+    action: str          # shop | buy | order | open | invite | accept | decline
+                         # | members | kick | leave | stats | link
+    value: str = ''
+
+
+class ServerAdmin(CallbackData, prefix='srva'):
+    """Заявка на личный сервер — кнопки под карточкой в админ-чате."""
+    action: str          # give | reject
+    server_id: str

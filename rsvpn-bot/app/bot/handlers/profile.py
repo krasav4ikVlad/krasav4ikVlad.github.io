@@ -23,7 +23,12 @@ class EmailInput(StatesGroup):
     value = State()
 
 
-async def profile_keyboard(user: dict, settings, trial=None) -> InlineKeyboardBuilder:
+def user_id_of(user: dict) -> int:
+    return int(((user or {}).get('user_data') or {}).get('user_id') or 0)
+
+
+async def profile_keyboard(user: dict, settings, trial=None,
+                           container=None) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     has_sub = bool((user.get('vpn') or {}).get('shortUuid'))
 
@@ -57,13 +62,23 @@ async def profile_keyboard(user: dict, settings, trial=None) -> InlineKeyboardBu
         kb.add(types.InlineKeyboardButton(
             text=f'{e("promo")} Промокод', callback_data=Menu(screen='promo').pack()))
 
+    # Личный сервер: на время тестов кнопки нет ни у кого, кроме админов.
+    # Показывать её всем и отвечать «недоступно» хуже, чем не показывать.
+    if container is not None:
+        from app.bot.handlers.private_servers import visible_for
+
+        if await visible_for(user_id_of(user), container, settings):
+            kb.row(types.InlineKeyboardButton(
+                text=f'{e("servers")} Свой сервер',
+                callback_data=Menu(screen='private').pack()))
+
     return await footer(kb, settings, back=None)
 
 
 async def show_profile(event, c, user: dict, settings) -> None:
     await render(event, Screen(
         text=profile_caption(user),
-        markup=(await profile_keyboard(user, settings, c.trial)).as_markup(),
+        markup=(await profile_keyboard(user, settings, c.trial, c)).as_markup(),
         image=c.media('profile'),
     ))
 

@@ -256,6 +256,22 @@ SCHEMA: tuple[Group, ...] = (
                      'с настройкой и однажды соврёт'),
     )),
 
+    Group('private', f'{e("servers")} Личные серверы', (
+        Setting('private.visibility', 'Кому виден раздел', 'str', 'admins',
+                hint='off — выключен совсем; admins — только админам (на время '
+                     'тестов); all — всем. Кнопка у обычного человека при '
+                     '«admins» не показывается вовсе'),
+        Setting('private.enabled', 'Приём заявок', 'bool', True,
+                hint='Выключает покупку, не трогая уже работающие серверы'),
+        Setting('private.price_mini', 'Мини (5 мест)', 'int', 990, unit='₽', min=0),
+        Setting('private.price_company', 'Компания (10 мест)', 'int', 1500, unit='₽', min=0),
+        Setting('private.price_team', 'Команда (15 мест)', 'int', 2000, unit='₽', min=0),
+        Setting('private.note', 'Подпись на витрине', 'text',
+                'Свой сервер — отдельная нода, на которой только вы и те, кого '
+                'вы позвали. Скорость не делится с чужими. Платит владелец, '
+                'друзья скидываются ему сами.'),
+    )),
+
     Group('lifeline', f'{e("knot")} Lifeline (сервер после истечения)', (
         Setting('lifeline.enabled', 'Переводить истёкших на TG-сервер', 'bool', True),
         Setting('lifeline.grace_days', 'Сколько дней держать', 'int', 3, unit=' дн.', min=1),

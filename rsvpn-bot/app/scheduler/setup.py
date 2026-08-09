@@ -27,6 +27,10 @@ def create_scheduler(container, bot) -> AsyncIOScheduler:
 
     scheduler.add_job(jobs.charge_subscriptions, 'interval', minutes=15,
                       args=[container], id='charge_subscriptions')
+    # Раз в час: месячная плата за личные серверы. Чаще незачем — списание
+    # привязано к дате, а не к моменту.
+    scheduler.add_job(jobs.charge_private_servers, 'interval', minutes=60,
+                      args=[container], id='charge_private_servers')
     scheduler.add_job(jobs.reconcile_lifeline, 'interval', minutes=15,
                       args=[container], id='reconcile_lifeline')
     scheduler.add_job(jobs.update_segments, 'interval', minutes=60,

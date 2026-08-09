@@ -731,3 +731,83 @@ async def test_expiry_test_reports_a_disabled_threshold(admin_env):
     await dp.feed_update(bot, callback(Adm(act='exptestgo', a='1d').pack()))
 
     assert not [t for name, t in session.calls if name == 'SendMessage']
+
+
+# ── личные серверы ──────────────────────────────────────────────────────────
+
+async def test_private_server_button_hidden_from_regular_users(admin_env):
+    """На время тестов раздел виден только админам, и кнопки быть не должно."""
+    from app.bot.handlers.private_servers import visible_for
+
+    dp, bot, session, container = admin_env
+
+    assert await visible_for(ADMIN.id, container, container.settings) is True
+    assert await visible_for(999999, container, container.settings) is False
+
+
+async def test_private_server_visibility_can_be_opened_to_everyone(admin_env):
+    from app.bot.handlers.private_servers import visible_for
+
+    dp, bot, session, container = admin_env
+    await container.settings.set('private.visibility', 'all')
+
+    assert await visible_for(999999, container, container.settings) is True
+
+
+async def test_private_server_can_be_switched_off_entirely(admin_env):
+    from app.bot.handlers.private_servers import visible_for
+
+    dp, bot, session, container = admin_env
+    await container.settings.set('private.visibility', 'off')
+
+    assert await visible_for(ADMIN.id, container, container.settings) is False
+
+
+async def test_admin_gives_the_server_by_squad_uuid(admin_env):
+    from app.bot.callbacks import ServerAdmin
+
+    dp, bot, session, container = admin_env
+    container.attach_bot(bot)
+    container.private.vpn = FakePanel()
+    await container.users.create({'user_data': {'user_id': ADMIN.id},
+                                  'info': {'balance': 3000},
+                                  'vpn': {'uuid': 'u-1', 'shortUuid': 's-1'}})
+    request = await container.private.request(ADMIN.id, 'mini')
+
+    await dp.feed_update(bot, callback(
+        ServerAdmin(action='give', server_id=request.server['_id']).pack()))
+    await dp.feed_update(bot, message('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'))
+    await dp.feed_update(bot, message('Нидерланды'))
+
+    server = await container.private.servers.get(request.server['_id'])
+    assert server['status'] == 'active'
+    assert server['squad_uuid'] == 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    assert server['location'] == 'Нидерланды'
+
+
+async def test_admin_is_not_allowed_to_paste_garbage_instead_of_a_uuid(admin_env):
+    """Панель проглотит мусор молча, и сервер будет «выдан», но пустой."""
+    from app.bot.callbacks import ServerAdmin
+
+    dp, bot, session, container = admin_env
+    container.attach_bot(bot)
+    await container.users.create({'user_data': {'user_id': ADMIN.id},
+                                  'info': {'balance': 3000}})
+    request = await container.private.request(ADMIN.id, 'mini')
+
+    await dp.feed_update(bot, callback(
+        ServerAdmin(action='give', server_id=request.server['_id']).pack()))
+    await dp.feed_update(bot, message('какой-то сквад'))
+
+    server = await container.private.servers.get(request.server['_id'])
+    assert server['status'] == 'requested'
+    assert 'UUID' in session.last_text
+
+
+class FakePanel:
+    async def update_subscription(self, uuid, **kw):
+        return {'uuid': uuid}
+
+    async def create_subscription(self, user_id, days):
+        return {'uuid': f'u-{user_id}', 'shortUuid': f's-{user_id}',
+                'expireAt': None, 'createdAt': None}

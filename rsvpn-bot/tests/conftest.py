@@ -256,6 +256,16 @@ class FakeCollection:
             if value not in items:
                 items = items + [value]
             self._set_path(doc, key, items)
+        for key, value in (update.get('$pull') or {}).items():
+            # значение — либо сам элемент, либо шаблон полей, как в Mongo
+            items = self._get(doc, key) or []
+            if isinstance(value, dict):
+                kept = [item for item in items
+                        if not (isinstance(item, dict)
+                                and all(item.get(k) == v for k, v in value.items()))]
+            else:
+                kept = [item for item in items if item != value]
+            self._set_path(doc, key, kept)
 
         return FakeResult(matched=1, modified=0 if upserted else 1, upserted_id=upserted)
 

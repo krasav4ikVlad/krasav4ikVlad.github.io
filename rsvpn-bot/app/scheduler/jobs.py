@@ -65,6 +65,18 @@ async def charge_subscriptions(container) -> None:
         log.warning('плата за устройства пропущена: сервис не собран')
 
 
+async def charge_private_servers(container) -> None:
+    """Ежемесячная плата за личные серверы владельцам."""
+    if not container.private:
+        return
+    report = await container.private.charge_due()
+    if report['checked']:
+        log.info('личные серверы: списано %s на %s₽, приостановлено %s, закрыто %s',
+                 report['charged'], report['amount'], report['suspended'],
+                 report['closed'])
+        await container.health.mark(health.PRIVATE_SERVERS, **report)
+
+
 async def reconcile_lifeline(container) -> None:
     """Вернуть тех, кто продлился, но остался на запасном сервере."""
     if not container.lifeline:
