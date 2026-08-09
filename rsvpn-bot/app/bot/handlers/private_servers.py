@@ -155,9 +155,10 @@ async def choose_profile(call: types.CallbackQuery, callback_data: Server, c,
     kb = InlineKeyboardBuilder()
     lines = []
     for profile in ps.PROFILES:
-        mark = f'{e("ok")} ' if profile.code == ps.DEFAULT_PROFILE else ''
+        # Без пометки на кнопке: галочка во всём остальном боте означает
+        # «выбрано», и здесь она читалась как уже сделанный выбор.
         lines.append(f'<b>{profile.title}</b> — {profile.hint}')
-        kb.row(_btn(f'{mark}{profile.title}', 'prof',
+        kb.row(_btn(profile.title, 'prof',
                     _pick(plan.code, location.code, profile.code)))
     kb.row(_btn(f'{e("back")} К локациям', 'buy', plan.code))
 
@@ -165,8 +166,8 @@ async def choose_profile(call: types.CallbackQuery, callback_data: Server, c,
             + '\n'.join(lines) + '\n\n'
             + '<blockquote>От протокола зависит скорость и то, как сервер '
               'переживает блокировки. Не знаете, что выбрать, — берите '
-              f'{ps.BY_PROFILE[ps.DEFAULT_PROFILE].title}, он отмечен галочкой. '
-              'Поменять потом можно через поддержку.</blockquote>')
+              f'{ps.BY_PROFILE[ps.DEFAULT_PROFILE].title}: он подходит '
+              'большинству. Поменять потом можно через поддержку.</blockquote>')
 
     await footer(kb, settings, back=None)
     await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
