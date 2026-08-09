@@ -683,3 +683,51 @@ async def test_diag_says_when_no_discounts_are_running(admin_env):
 
     assert 'Скидок по аудиториям нет' in session.last_text
     assert 'Бонус к пополнению' in session.last_text
+
+
+# ── проверка напоминаний ────────────────────────────────────────────────────
+#
+# «Придёт ли мне сообщение о продлении» — вопрос, на который иначе отвечает
+# только ожидание: событие рождается в панели и приходит по её расписанию.
+
+async def test_expiry_test_button_sends_the_real_reminder(admin_env):
+    from app.bot.callbacks import Admin as Adm
+
+    dp, bot, session, container = admin_env
+    container.attach_bot(bot)
+    await container.users.create({'user_data': {'user_id': ADMIN.id},
+                                  'info': {'balance': 50}})
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Adm(act='exptestgo', a='1d').pack()))
+
+    texts = [t for name, t in session.calls if name == 'SendMessage']
+    assert texts, 'напоминание не отправлено'
+    assert 'RS VPN' in texts[0] or 'подписка' in texts[0].lower()
+
+
+async def test_expiry_test_does_not_eat_the_real_reminder(admin_env):
+    """Иначе проверка «съедала» бы настоящее письмо: флаг однократности."""
+    from app.bot.callbacks import Admin as Adm
+
+    dp, bot, session, container = admin_env
+    container.attach_bot(bot)
+    await container.users.create({'user_data': {'user_id': ADMIN.id}})
+    await dp.feed_update(bot, callback(Adm(act='exptestgo', a='1d').pack()))
+
+    doc = await container.users.col.find_one({'user_data.user_id': ADMIN.id})
+    assert not ((doc.get('vpn') or {}).get('notified') or {}).get('1d')
+
+
+async def test_expiry_test_reports_a_disabled_threshold(admin_env):
+    from app.bot.callbacks import Admin as Adm
+
+    dp, bot, session, container = admin_env
+    container.attach_bot(bot)
+    await container.users.create({'user_data': {'user_id': ADMIN.id}})
+    await container.settings.set('expiry.send_1d', False)
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Adm(act='exptestgo', a='1d').pack()))
+
+    assert not [t for name, t in session.calls if name == 'SendMessage']
