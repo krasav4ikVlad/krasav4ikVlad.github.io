@@ -189,12 +189,12 @@ function RegEconomicsSection() {
     fetcher,
     { keepPreviousData: true },
   );
-  const [targetRub, setTargetRub] = useState("50000");
+  const [targetRub, setTargetRub] = useState("2000");
 
   const value30 = data?.horizons.d30.value_per_reg ?? 0;
   const target = Number(targetRub) || 0;
-  // R регистраций/день → 30R в месяц → 30R × value30 ₽/мес
-  const regsForTarget = value30 > 0 ? target / (30 * value30) : null;
+  // steady state: R рег/день × ценность-30д = дополнительных ₽/сутки
+  const regsForTarget = value30 > 0 ? target / value30 : null;
   const regsOffset = data?.regs_per_day_to_offset_churn ?? null;
   const trendData = (data?.trend ?? []).map((t) => ({
     bucket: t.cohort,
@@ -260,7 +260,7 @@ function RegEconomicsSection() {
             <div className="space-y-3 self-center">
               <div>
                 <label className="text-xs text-muted">
-                  Хочу дополнительно, ₽/мес
+                  Хочу дополнительно, ₽/сутки
                 </label>
                 <Input
                   value={targetRub}
@@ -279,7 +279,9 @@ function RegEconomicsSection() {
                       ≈ {fmtNum(Math.ceil(regsForTarget))} рег/день
                     </span>{" "}
                     <span className="text-muted">
-                      (одна регистрация ≈ {fmtMoney(value30)} в первый месяц)
+                      (одна регистрация ≈ {fmtMoney(value30)} за первые 30
+                      дней ≈ {fmtMoney(value30)} к суточной выручке в
+                      устоявшемся режиме)
                     </span>
                   </>
                 ) : (
@@ -289,11 +291,12 @@ function RegEconomicsSection() {
               <div className="space-y-1 text-xs text-muted">
                 <p>
                   Сейчас: {fmtNum(data.regs_per_day_14d)} рег/день ≈{" "}
-                  {fmtMoney(data.current_monthly_value)}/мес
+                  {fmtMoney(data.regs_per_day_14d * value30)}/сутки (
+                  {fmtMoney(data.current_monthly_value)}/мес)
                 </p>
                 <p>
-                  Отток за 30 дней: {fmtNum(data.churned_30d)} юзеров ≈{" "}
-                  {fmtMoney(data.churn_lost_monthly_rub)}/мес — чтобы просто
+                  Отток: ≈ {fmtMoney(data.churn_lost_monthly_rub / 30)}/сутки (
+                  {fmtNum(data.churned_30d)} юзеров за 30 дней) — чтобы просто
                   стоять на месте, нужно{" "}
                   <span className="font-medium text-ink-2">
                     {regsOffset !== null ? `≈ ${regsOffset} рег/день` : "—"}
