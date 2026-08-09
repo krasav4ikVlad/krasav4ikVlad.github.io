@@ -26,13 +26,27 @@ from app.domain import private_servers as ps
 log = logging.getLogger(__name__)
 
 
+_MISSING = object()
+
+
 def _first(data: dict, *keys):
-    """Первое непустое поле из перечисленных."""
+    """Первое непустое поле из перечисленных.
+
+    Ноль — это значение, а не пропуск: на новом сервере трафика честно ноль,
+    и путать его с «панель такого поля не прислала» нельзя, иначе рабочий
+    сервер отмечается ошибкой. Поэтому ноль запоминается и возвращается,
+    только если непустого значения не нашлось вовсе.
+    """
+    zero = _MISSING
     for key in keys:
         value = (data or {}).get(key)
-        if value not in (None, '', 0):
+        if value in (None, ''):
+            continue
+        if value:
             return value
-    return None
+        if zero is _MISSING:
+            zero = value
+    return None if zero is _MISSING else zero
 
 
 @dataclass(frozen=True)
@@ -216,20 +230,38 @@ class PrivateServerService:
                    'owner': user_id == server.get('owner_id'),
                    'traffic': 0, 'online_at': None, 'status': '', 'error': ''}
             uuid = self.users.pick(user or {}, 'vpn.uuid')
-            if uuid:
-                try:
-                    panel = await self.vpn.get_subscription(uuid)
-                    # Имена полей у панели менялись между версиями: берём
-                    # первое непустое, иначе экран показывает нули на живом
-                    # сервере и это невозможно отличить от «трафика нет».
-                    row['traffic'] = _first(panel, 'usedTrafficBytes',
-                                            'lifetimeUsedTrafficBytes', 'usedTraffic') or 0
-                    row['online_at'] = parse_dt(_first(panel, 'onlineAt', 'lastConnectedAt',
-                                                       'subLastOpenedAt'))
-                    row['status'] = panel.get('status') or ''
-                except Exception as exc:      # панель недоступна — не рушим экран
-                    row['error'] = str(exc)
-                    log.warning('статистика %s не получена: %s', user_id, exc)
+            if not uuid:
+                # Ноль без объяснения читается как «трафика нет», хотя на
+                # самом деле нам нечего было спрашивать у панели.
+                row['error'] = 'нет подписки в панели'
+                rows.append(row)
+                continue
+
+            try:
+                panel = await self.vpn.get_subscription(uuid)
+            except Exception as exc:          # панель недоступна — не рушим экран
+                row['error'] = str(exc)
+                log.warning('статистика %s не получена: %s', user_id, exc)
+                rows.append(row)
+                continue
+
+            # Имена полей у панели менялись между версиями: берём первое
+            # непустое, иначе экран показывает нули на живом сервере и это
+            # невозможно отличить от «трафика нет».
+            traffic = _first(panel, 'usedTrafficBytes', 'lifetimeUsedTrafficBytes',
+                             'usedTraffic', 'trafficUsedBytes')
+            row['traffic'] = traffic or 0
+            row['online_at'] = parse_dt(_first(panel, 'onlineAt', 'lastConnectedAt',
+                                               'subLastOpenedAt', 'lastOnlineAt'))
+            row['status'] = panel.get('status') or ''
+            row['fields'] = sorted(panel)[:40]
+
+            if traffic is None:
+                row['error'] = 'панель не отдала трафик'
+                # Единственный способ понять, как поле называется в этой
+                # версии панели, — увидеть, что она вообще прислала.
+                log.warning('панель по %s не отдала трафик, поля ответа: %s',
+                            user_id, row['fields'])
             rows.append(row)
         return rows
 

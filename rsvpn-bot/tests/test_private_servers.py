@@ -600,3 +600,41 @@ async def test_a_panel_failure_is_marked_not_silently_zeroed(service):
     rows = await srv.stats(server)
 
     assert rows[0]['error'] and rows[0]['traffic'] == 0
+
+
+async def test_missing_panel_subscription_is_named_not_shown_as_zero(service):
+    """Три причины нулей неразличимы на экране, если их не назвать."""
+    srv, vpn, users = service
+    server = await live_server(service)
+    await users.set_vpn(1, {'uuid': ''})
+
+    rows = await srv.stats(server)
+
+    assert rows[0]['error'] == 'нет подписки в панели'
+
+
+async def test_panel_without_traffic_fields_is_reported(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def empty(uuid):
+        return {'status': 'ACTIVE', 'username': '802421217'}
+
+    vpn.get_subscription = empty
+    rows = await srv.stats(server)
+
+    assert rows[0]['error'] == 'панель не отдала трафик'
+    assert 'username' in rows[0]['fields'], 'без полей ответа чинить нечего'
+
+
+async def test_zero_traffic_on_a_working_panel_is_not_an_error(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def fresh(uuid):
+        return {'usedTrafficBytes': 0, 'status': 'ACTIVE'}
+
+    vpn.get_subscription = fresh
+    rows = await srv.stats(server)
+
+    assert not rows[0]['error'] and rows[0]['traffic'] == 0

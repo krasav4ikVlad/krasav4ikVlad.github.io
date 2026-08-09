@@ -460,26 +460,28 @@ async def stats(call: types.CallbackQuery, callback_data: Server, c, user: dict,
     for row in rows:
         mark = e('user') if row['owner'] else e('friends')
         online = fmt(row['online_at']) if row['online_at'] else 'не заходил'
-        lines.append(f'{mark} <b>{row["name"]}</b>\n'
-                     f'   трафик: <code>{ps.traffic(row["traffic"])}</code>, '
-                     f'последний вход: {online}')
+        detail = (f'{e("warning")} {row["error"]}' if row.get('error') else
+                  f'трафик: <code>{ps.traffic(row["traffic"])}</code>, '
+                  f'последний вход: {online}')
+        lines.append(f'{mark} <b>{row["name"]}</b>\n   {detail}')
 
     location = ps.location_of(server)
     used = sum(row['traffic'] for row in rows)
     if location and location.limited:
         share = round(ps.gb(used) / location.traffic_gb * 100, 1)
-        lines.append(f'\n<b>{e("traffic")} Всего:</b> '
-                     f'<code>{ps.traffic(used)}</code> из '
-                     f'<code>{location.traffic_title}</code> ({share}%)')
+        quota = f' из <code>{location.traffic_title}</code> ({share}%)'
+    elif location:
+        quota = ' (без ограничения)'
     else:
-        lines.append(f'\n<b>{e("traffic")} Всего:</b> '
-                     f'<code>{ps.traffic(used)}</code> (без ограничения)')
+        # Сервер заведён до того, как появился выбор площадки: квоты у него
+        # в базе нет. Врать «без ограничения» нельзя — она может быть.
+        quota = ' (квота площадки не указана)'
+    lines.append(f'\n<b>{e("traffic")} Всего:</b> <code>{ps.traffic(used)}</code>{quota}')
 
     # Панель не ответила — на экране это выглядит как «трафика нет», хотя
     # он есть. Нули и молчание должны различаться.
     if any(row.get('error') for row in rows):
-        lines.append(f'{e("warning")} Панель ответила не по всем участникам — '
-                     f'цифры неполные.')
+        lines.append(f'\n{e("warning")} Цифры неполные — см. пометки выше.')
 
     kb = InlineKeyboardBuilder()
     kb.row(_btn(f'{e("refresh")} Обновить', 'stats', server['_id']))

@@ -215,11 +215,81 @@ async def listing(message: types.Message, c, settings) -> None:
     await message.answer('\n'.join(lines))
 
 
+async def set_location(message: types.Message, command, c, settings) -> None:
+    """`/srvloc <id> <локация> [протокол]` — проставить площадку задним числом.
+
+    Серверы, заведённые до того, как появился выбор площадки, лежат без кода
+    локации: у них не с чем сравнивать расход, и экран честно пишет, что
+    квота неизвестна. Пересоздавать их ради этого незачем.
+    """
+    parts = (command.args or '').split()
+    if len(parts) < 2 or parts[1] not in ps.BY_LOCATION:
+        await message.answer(
+            f'{e("cross")} <code>/srvloc srv_xxxxxxxx локация [протокол]</code>\n\n'
+            f'Локации: <code>{", ".join(ps.BY_LOCATION)}</code>\n'
+            f'Протоколы: <code>{", ".join(ps.BY_PROFILE)}</code>')
+        return
+
+    server_id, code = parts[0], parts[1]
+    if not await c.private.servers.get(server_id):
+        await message.answer(f'{e("cross")} Сервер не найден.')
+        return
+
+    location = ps.BY_LOCATION[code]
+    fields = {'location': code, 'traffic_gb': location.traffic_gb}
+    if len(parts) > 2 and parts[2] in ps.BY_PROFILE:
+        fields['profile'] = parts[2]
+
+    await c.private.servers.set(server_id, **fields)
+    server = await c.private.servers.get(server_id)
+    await message.answer(
+        f'{e("ok")} <code>{server_id}</code>: {ps.location_title(server)}, '
+        f'{location.traffic_title}, протокол {ps.profile_title(server)}.')
+
+
+async def diagnose(message: types.Message, command, c, settings) -> None:
+    """`/srvdiag <id сервера>` — что бот знает и что отвечает панель.
+
+    Нужна, потому что «статистика по нулям» имеет три разные причины: нет
+    подписки в панели, панель не ответила, поле называется иначе. По экрану
+    пользователя они неразличимы, а по этой выдаче — сразу видно.
+    """
+    server_id = (command.args or '').strip()
+    server = await c.private.servers.get(server_id) if server_id else None
+    if not server:
+        await message.answer(f'{e("cross")} Укажите id: <code>/srvdiag srv_xxxxxxxx</code>')
+        return
+
+    lines = [f'{e("tools")} <b>Диагностика {server_id}</b>',
+             f'локация: <code>{server.get("location") or "—"}</code> '
+             f'({ps.location_title(server)}), '
+             f'протокол: <code>{server.get("profile") or "—"}</code>',
+             f'сквад: <code>{server.get("squad_uuid") or "не задан"}</code>', '']
+
+    for row in await c.private.stats(server):
+        user = await c.users.get(row['user_id'], {'vpn.uuid': 1,
+                                                  'vpn.activeInternalSquads': 1})
+        squads = c.users.pick(user or {}, 'vpn.activeInternalSquads') or []
+        lines.append(
+            f'<code>{row["user_id"]}</code> uuid=<code>'
+            f'{c.users.pick(user or {}, "vpn.uuid") or "нет"}</code>\n'
+            f'  трафик: <code>{row["traffic"]}</code> байт, '
+            f'статус: <code>{row["status"] or "—"}</code>\n'
+            f'  сквад сервера выдан: {"да" if server.get("squad_uuid") in squads else "НЕТ"}\n'
+            + (f'  {e("warning")} {row["error"]}\n' if row.get('error') else '')
+            + (f'  поля ответа: <code>{", ".join(row.get("fields") or [])}</code>'
+               if row.get('fields') else ''))
+
+    await message.answer('\n'.join(lines))
+
+
 def register(router: Router) -> None:
     from aiogram.filters import Command
 
     router.message.register(listing, Command('servers'))
     router.message.register(squad_command, Command('squad'))
+    router.message.register(diagnose, Command('srvdiag'))
+    router.message.register(set_location, Command('srvloc'))
     router.callback_query.register(give, Adm.filter(F.action == 'give'))
     router.callback_query.register(reject, Adm.filter(F.action == 'reject'))
     router.message.register(take_squad, Provision.squad)
