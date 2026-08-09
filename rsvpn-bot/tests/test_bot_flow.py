@@ -1735,3 +1735,70 @@ async def test_extend_works_after_the_free_period(env):
     assert result['plan']['days'] == 1
     user = await c.users.get(5)
     assert user['vpn']['period'] == 1, 'срок не починен'
+
+
+# ── подтверждение вывода ────────────────────────────────────────────────────
+#
+# «Заказать вывод» — обычная кнопка в списке, по которой промахиваются.
+# Цена промаха несоразмерна: следующую заявку можно подать только через сутки,
+# и человек узнаёт об этом уже после того, как отправил её не туда.
+
+async def test_order_button_asks_before_sending(env):
+    from app.bot.callbacks import Payout
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'info.ref_stats.withdrawable': 900}})
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Payout(action='confirm').pack()))
+
+    assert 'Подтверждение вывода' in session.last_text
+    assert '900₽' in session.last_text
+    assert '24 ч' in session.last_text, 'про паузу не сказано — ради неё всё и делалось'
+    stats = (await c.users.get(5))['info']['ref_stats']
+    assert not stats.get('pending_payout_active'), 'заявка ушла без подтверждения'
+
+
+async def test_confirmation_leads_to_a_real_request(env):
+    from app.bot.callbacks import Payout
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'info.ref_stats.withdrawable': 900}})
+
+    await dp.feed_update(bot, callback(Payout(action='confirm').pack()))
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Payout(action='order').pack()))
+
+    assert (await c.users.get(5))['info']['ref_stats']['pending_payout_active'] is True
+
+
+async def test_confirmation_is_not_offered_when_the_request_is_impossible(env):
+    """Подтверждать, чтобы потом получить «нельзя», — то же, что не спрашивать."""
+    from app.bot.callbacks import Payout
+
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'info.ref_stats.withdrawable': 100}})
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Payout(action='confirm').pack()))
+
+    assert 'Подтверждение вывода' not in session.last_text
+
+
+async def test_payout_note_names_the_minimum_for_the_bot_balance(env):
+    """Минимум 500₽ действует и на баланс бота, а в подписи был только СБП."""
+    from app.bot.handlers.payouts import payout_note
+
+    dp, bot, session, c = env
+
+    note = await payout_note(c.settings)
+
+    assert 'на баланс бота — 500₽' in note
+    assert 'по СБП — 500₽' in note
+    assert '{' not in note, 'плейсхолдер не подставился'

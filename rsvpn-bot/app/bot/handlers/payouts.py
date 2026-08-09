@@ -20,6 +20,7 @@ from app.bot.callbacks import Menu, Payout
 from app.bot.filters.feature import Feature
 from app.bot.keyboards.common import footer
 from app.bot.keyboards.payouts import (draft_keyboard, methods_keyboard,
+                                       payout_confirm_keyboard,
                                        payout_menu_keyboard)
 from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import profile_caption
@@ -175,6 +176,28 @@ async def delete_method(call: types.CallbackQuery, callback_data: Payout, c, use
 
 
 # ── заявка ──────────────────────────────────────────────────────────────────
+async def payout_note(settings) -> str:
+    """Подпись с минимумами. Суммы подставляются из настроек, а не вписаны.
+
+    Вручную вписанное число живёт своей жизнью: минимум на баланс бота
+    подняли до 500₽, а в подписи он был указан только для СБП — люди
+    оформляли заявку и получали отказ.
+    """
+    template = str(await settings.get('payout.note') or '')
+    values = {
+        'min_balance': await settings.int('payout.min_withdraw'),
+        'min_sbp': await settings.int('payout.min_sbp'),
+        'min_card': await settings.int('payout.min_card'),
+        'min_crypto': await settings.int('payout.min_crypto_usd'),
+        'cooldown': await settings.int('payout.cooldown_hours'),
+    }
+    try:
+        return template.format(**values)
+    except (KeyError, IndexError, ValueError):
+        # в подписи опечатка в плейсхолдере — текст всё равно должен дойти
+        return template
+
+
 async def payout_menu(event, c, user: dict, settings, note: str = ''):
     user_id = event.from_user.id
     stats = c.users.pick(user, 'info.ref_stats', {}) or {}
@@ -184,7 +207,7 @@ async def payout_menu(event, c, user: dict, settings, note: str = ''):
     text = (profile_caption(user, f'{e("withdraw")} Вывод средств')
             + f'<b>{e("payout")} Доступно к выводу:</b> <code>{stats.get("withdrawable", 0)}₽</code>\n'
             + f'<b>{e("document")} Куда:</b> <code>{pm.selected_title(methods, selected)}</code>\n\n'
-            + f'<blockquote>{note or await settings.get("payout.note")}</blockquote>')
+            + f'<blockquote>{note or await payout_note(settings)}</blockquote>')
 
     kb = payout_menu_keyboard(methods, selected)
     await footer(kb, settings, back='referrals')
@@ -199,15 +222,48 @@ async def pick_method(call: types.CallbackQuery, callback_data: Payout, c, user:
     await payout_menu(call, c, await c.users.get(call.from_user.id), settings)
 
 
+async def _refuse(call: types.CallbackQuery, result, settings) -> None:
+    template = PAYOUT_MESSAGES.get(result.reason, 'Заявку оформить не удалось.')
+    await call.answer(template.format(
+        minimum=await settings.int('payout.min_withdraw'),
+        cooldown=await settings.int('payout.cooldown_hours'),
+        wait=result.wait_hours), show_alert=True)
+
+
+# Подтверждение стоит здесь не «на всякий случай»: следующую заявку можно
+# подать только через сутки, а «Заказать вывод» — обычная кнопка в списке,
+# по которой промахиваются. Человек узнаёт про паузу уже после того, как
+# отправил заявку не туда, и сутки ждёт из-за одного лишнего касания.
+async def confirm(call: types.CallbackQuery, c, user: dict, settings):
+    result = await c.payouts.check(call.from_user.id)
+    if not result.ok:
+        await _refuse(call, result, settings)
+        return
+
+    methods_list = await c.payouts.methods(call.from_user.id)
+    cooldown = await settings.int('payout.cooldown_hours')
+
+    text = (profile_caption(user, f'{e("withdraw")} Подтверждение вывода')
+            + f'<b>{e("payout")} Сумма:</b> <code>{result.amount}₽</code>\n'
+            + f'<b>{e("document")} Куда:</b> '
+              f'<code>{pm.selected_title(methods_list, result.method)}</code>\n\n'
+            + '<blockquote>Проверьте, что способ выбран правильно.'
+            + (f' Следующую заявку можно будет оформить только через '
+               f'{cooldown} ч.' if cooldown else '')
+            + '</blockquote>')
+
+    kb = payout_confirm_keyboard()
+    await footer(kb, settings, back='payout')
+    await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('referrals')))
+    await call.answer()
+
+
 async def order(call: types.CallbackQuery, c, user: dict, settings):
     result = await c.payouts.request(call.from_user.id)
 
     if not result.ok:
-        template = PAYOUT_MESSAGES.get(result.reason, 'Заявку оформить не удалось.')
-        await call.answer(template.format(
-            minimum=await settings.int('payout.min_withdraw'),
-            cooldown=await settings.int('payout.cooldown_hours'),
-            wait=result.wait_hours), show_alert=True)
+        await _refuse(call, result, settings)
+        await payout_menu(call, c, await c.users.get(call.from_user.id), settings)
         return
 
     if c.notifier:
@@ -236,6 +292,7 @@ def create_router() -> Router:
     router.callback_query.register(payout_menu, Menu.filter(F.screen == 'payout'), feature)
     router.callback_query.register(payout_menu, Payout.filter(F.action == 'menu'), feature)
     router.callback_query.register(pick_method, Payout.filter(F.action == 'pick'), feature)
+    router.callback_query.register(confirm, Payout.filter(F.action == 'confirm'), feature)
     router.callback_query.register(order, Payout.filter(F.action == 'order'), feature)
 
     router.callback_query.register(methods_screen, Payout.filter(F.action == 'methods'), feature)

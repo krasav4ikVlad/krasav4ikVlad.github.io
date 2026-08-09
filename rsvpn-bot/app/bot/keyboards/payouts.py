@@ -53,8 +53,17 @@ def payout_menu_keyboard(methods: list[dict], selected: str) -> InlineKeyboardBu
     for method in methods:
         kb.row(_btn(mark(method['id'], f'{e("document")} {pm.method_title(method)}'), 'pick', method['id']))
 
-    kb.row(_btn(f'{e("withdraw")} Заказать вывод', 'order'))
+    # Ведёт на подтверждение, а не сразу на заявку: следующую можно подать
+    # только через сутки, а промахнуться по кнопке — одно движение пальцем.
+    kb.row(_btn(f'{e("withdraw")} Заказать вывод', 'confirm'))
     kb.row(_btn(f'{e("settings")} Способы вывода', 'methods'))
+    return kb
+
+
+def payout_confirm_keyboard() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn(f'{e("ok")} Да, отправить заявку', 'order'))
+    kb.row(_btn(f'{e("back")} Нет, вернуться', 'menu'))
     return kb
 
 

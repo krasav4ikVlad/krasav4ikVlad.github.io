@@ -48,28 +48,46 @@ class PayoutService:
         self.settings = settings
         self.notifier = notifier
 
-    async def request(self, user_id: int) -> PayoutRequest:
+    async def check(self, user_id: int) -> PayoutRequest:
+        """Можно ли сейчас оформить заявку. Ничего не меняет.
+
+        Отдельно от request(), потому что экран подтверждения обязан знать
+        ответ заранее: подтверждать, чтобы потом получить «нельзя», — то же
+        самое, что не спрашивать вовсе.
+        """
         if not await self.settings.flag('features.payouts_enabled'):
             return PayoutRequest(False, 'disabled')
 
         user = await self.users.get(user_id, {'info.ref_stats': 1})
         stats = self.users.pick(user or {}, 'info.ref_stats', {}) or {}
         amount = int(stats.get('withdrawable', 0) or 0)
+        selected = stats.get('payout_selected') or methods.BOT_BALANCE
 
         minimum = await self.settings.int('payout.min_withdraw')
         if amount < minimum:
-            return PayoutRequest(False, 'below_min', amount=amount)
+            return PayoutRequest(False, 'below_min', amount=amount, method=selected)
 
         if stats.get('pending_payout_active'):
-            return PayoutRequest(False, 'pending', amount=amount)
+            return PayoutRequest(False, 'pending', amount=amount, method=selected)
 
         cooldown = await self.settings.int('payout.cooldown_hours')
         last = stats.get('last_payout_request_at')
         if last and cooldown:
             passed = hours_since(last)
             if passed < cooldown:
-                return PayoutRequest(False, 'cooldown', amount=amount,
+                return PayoutRequest(False, 'cooldown', amount=amount, method=selected,
                                      wait_hours=round(cooldown - passed, 1))
+
+        return PayoutRequest(True, amount=amount, method=selected)
+
+    async def request(self, user_id: int) -> PayoutRequest:
+        checked = await self.check(user_id)
+        if not checked.ok:
+            return checked
+
+        user = await self.users.get(user_id, {'info.ref_stats': 1})
+        stats = self.users.pick(user or {}, 'info.ref_stats', {}) or {}
+        amount = int(stats.get('withdrawable', 0) or 0)
 
         # Метку ставим атомарно: двойной клик не создаст две заявки
         claimed = await self.users.col.update_one(
