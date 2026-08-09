@@ -8,12 +8,13 @@ import useSWR from "swr";
 import { TrendingUp } from "lucide-react";
 import { api, fetcher } from "@/lib/api";
 import type * as T from "@/lib/types";
-import { fmtMoney, fmtNum, fmtPct } from "@/lib/format";
+import { fmtDate, fmtMoney, fmtNum, fmtPct } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { StackedBars } from "@/components/charts/stacked-bars";
 import { TimeSeries } from "@/components/charts/timeseries";
 import { TableSkeleton } from "@/components/ui/skeleton";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
@@ -311,11 +312,139 @@ function RegEconomicsSection() {
   );
 }
 
+const PRIORITY_BADGE: Record<string, "critical" | "warning" | "default"> = {
+  high: "critical",
+  medium: "warning",
+  low: "default",
+};
+
+function RegSourcesSection() {
+  const { data, isLoading } = useSWR<T.RegSources>(
+    api.urls.regSources(),
+    fetcher,
+    { keepPreviousData: true },
+  );
+  const names = Object.fromEntries(
+    (data?.keys ?? []).map((k) => [k, k === "referral" ? "рефералка" : k]),
+  );
+
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>Откуда идут регистрации</CardTitle>
+          <p className="mt-0.5 text-xs text-muted">
+            Суточные регистрации по источникам за 30 дней (utm-кампания →
+            рефералка → organic) и что сделать, чтобы их было больше
+          </p>
+        </div>
+        {data ? (
+          <Badge variant="outline">
+            {fmtNum(data.total_regs_30d)} за 30 дней
+          </Badge>
+        ) : null}
+      </CardHeader>
+      {isLoading && !data ? (
+        <TableSkeleton rows={5} />
+      ) : !data || data.total_regs_30d === 0 ? (
+        <div className="py-8 text-center text-sm text-muted">
+          Пока нет регистраций за 30 дней
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <StackedBars
+            data={data.series}
+            keys={data.keys}
+            names={names}
+            height={220}
+            xKey="day"
+            xFormatter={(d) => fmtDate(d)}
+            valueFormatter={(v) => fmtNum(v)}
+          />
+          <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
+            <Table>
+              <THead>
+                <TR>
+                  <TH>Источник</TH>
+                  <TH className="text-right">За 30д</TH>
+                  <TH className="text-right">Доля</TH>
+                  <TH className="text-right">Неделя к неделе</TH>
+                  <TH className="text-right">₽ с рег (30д)</TH>
+                  <TH className="text-right">Платят</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {data.sources.map((s) => (
+                  <TR key={s.source}>
+                    <TD className="font-medium text-ink">
+                      {names[s.source] ?? s.source}
+                    </TD>
+                    <TD className="text-right tabular">{fmtNum(s.regs_30d)}</TD>
+                    <TD className="text-right tabular text-ink-2">
+                      {fmtPct(s.share_pct)}
+                    </TD>
+                    <TD
+                      className={cn(
+                        "text-right tabular",
+                        s.trend_pct === null
+                          ? "text-muted"
+                          : s.trend_pct >= 0
+                            ? "text-[var(--delta-good)]"
+                            : "text-critical",
+                      )}
+                    >
+                      {s.trend_pct === null
+                        ? `${s.prev7} → ${s.last7}`
+                        : `${fmtPct(s.trend_pct, true)} (${s.prev7} → ${s.last7})`}
+                    </TD>
+                    <TD className="text-right tabular text-ink-2">
+                      {s.value_per_reg_30d === null
+                        ? "—"
+                        : fmtMoney(s.value_per_reg_30d)}
+                    </TD>
+                    <TD className="text-right tabular text-ink-2">
+                      {s.paying_share_pct === null
+                        ? "—"
+                        : fmtPct(s.paying_share_pct)}
+                    </TD>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-ink-2">Что сделать</div>
+              {data.recommendations.map((r, i) => (
+                <div
+                  key={i}
+                  className="flex items-start gap-2 rounded-md border border-hairline bg-surface-2/40 p-2.5 text-xs text-ink-2"
+                >
+                  <Badge
+                    variant={PRIORITY_BADGE[r.priority] ?? "default"}
+                    className="mt-0.5 shrink-0"
+                  >
+                    {r.priority === "high"
+                      ? "важно"
+                      : r.priority === "medium"
+                        ? "стоит"
+                        : "потом"}
+                  </Badge>
+                  <span>{r.text}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function ExperimentsPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-semibold text-ink">Эксперименты</h1>
       <RegEconomicsSection />
+      <RegSourcesSection />
       <OpportunitiesSection />
       <AbSection />
     </div>

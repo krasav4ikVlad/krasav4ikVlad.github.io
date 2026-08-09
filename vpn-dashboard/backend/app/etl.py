@@ -277,6 +277,23 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
         utm = _pick(doc, "user_data.utm")
         if utm:
             campaigns = {"converted_from": str(utm)}
+
+    referrer_id = _pick(doc, "referrer_id", "info.referrer_id",
+                        "user_data.referrer")
+
+    # registration attribution: paid/utm campaign > referral > organic
+    reg_source = "organic"
+    campaign_name = None
+    if isinstance(campaigns, dict):
+        campaign_name = campaigns.get("converted_from")
+    elif isinstance(campaigns, list):
+        campaign_name = next(
+            (c.get("converted_from") for c in campaigns
+             if isinstance(c, dict) and c.get("converted_from")), None)
+    if campaign_name:
+        reg_source = str(campaign_name)
+    elif referrer_id is not None:
+        reg_source = "referral"
     devices = _parse_extra_devices(_pick(doc, "extraDevices", "info.extraDevices",
                                          "vpn.extraDevices", "vpn.extra_devices",
                                          "vpn.devices"))
@@ -320,8 +337,8 @@ def flatten_user(doc: dict, etl_at: datetime) -> tuple[list[dict], Optional[dict
                                     "vpn.sub_until", "vpn.expires_at",
                                     "vpn.until", "growth.expire_at")),
         "balance": parse_amount(_pick(doc, "balance", "info.balance")) or 0.0,
-        "referrer_id": _pick(doc, "referrer_id", "info.referrer_id",
-                             "user_data.referrer"),
+        "referrer_id": referrer_id,
+        "reg_source": reg_source,
         "ref_stats": ref_stats,
         "campaigns": campaigns if isinstance(campaigns, (dict, list)) else None,
         "extra_devices": devices,

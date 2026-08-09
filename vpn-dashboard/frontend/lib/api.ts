@@ -121,6 +121,7 @@ export const api = {
       `/api/experiments/ab${qs(undefined, { experiment })}`,
     opportunities: () => "/api/experiments/opportunities",
     regEconomics: () => "/api/experiments/registration-economics",
+    regSources: () => "/api/experiments/registration-sources",
   },
 
   alertsTest: () => request<{ sent: boolean }>("/api/alerts/test", { method: "POST" }),

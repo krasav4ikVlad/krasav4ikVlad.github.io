@@ -444,6 +444,27 @@ export interface RegEconomics {
   monthly_sub_cost: number;
 }
 
+// ---- registration sources ----
+export interface RegSourceRow {
+  source: string;
+  regs_30d: number;
+  share_pct: number;
+  last7: number;
+  prev7: number;
+  trend_pct: number | null;
+  value_per_reg_30d: number | null;
+  paying_share_pct: number | null;
+  quality_users: number;
+}
+export interface RegSources {
+  window_days: number;
+  total_regs_30d: number;
+  keys: string[];
+  series: Record<string, unknown>[];
+  sources: RegSourceRow[];
+  recommendations: { priority: string; text: string }[];
+}
+
 // ---- alerts ----
 export interface AlertRow {
   key: string;

@@ -377,3 +377,173 @@ async def _registration_economics() -> dict[str, Any]:
 async def registration_economics() -> dict[str, Any]:
     """Ценность одной регистрации и сколько регистраций в день нужно."""
     return await _registration_economics()
+
+
+# ---------------------------------------------------------------------------
+# GET /experiments/registration-sources — откуда идут регистрации
+# ---------------------------------------------------------------------------
+
+_SRC_WINDOW_DAYS = 30
+_SRC_TOP = 6
+
+
+@cached(ttl=300, prefix="experiments:reg-sources")
+async def _registration_sources() -> dict[str, Any]:
+    db = get_db()
+    uf = db[USERS_FLAT]
+    now = datetime.now(timezone.utc)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    since = today - timedelta(days=_SRC_WINDOW_DAYS)
+
+    # daily registrations per source, last 30 days
+    daily_rows = await uf.aggregate([
+        {"$match": {"joined_at": {"$type": "date", "$gte": since}}},
+        {"$group": {
+            "_id": {"day": {"$dateTrunc": {"date": "$joined_at",
+                                           "unit": "day"}},
+                    "source": {"$ifNull": ["$reg_source", "organic"]}},
+            "count": {"$sum": 1},
+        }},
+    ]).to_list(length=None)
+
+    totals: dict[str, int] = {}
+    last7: dict[str, int] = {}
+    prev7: dict[str, int] = {}
+    per_day: dict[str, dict[str, int]] = {}
+    for row in daily_rows:
+        key = row.get("_id") or {}
+        day = as_utc(key.get("day"))
+        if day is None:
+            continue
+        source = str(key.get("source") or "organic")
+        count = int(row.get("count") or 0)
+        totals[source] = totals.get(source, 0) + count
+        day_key = day.date().isoformat()
+        per_day.setdefault(day_key, {})
+        per_day[day_key][source] = per_day[day_key].get(source, 0) + count
+        age_days = (today - day).days
+        if age_days < 7:
+            last7[source] = last7.get(source, 0) + count
+        elif age_days < 14:
+            prev7[source] = prev7.get(source, 0) + count
+
+    top_sources = [s for s, _ in sorted(totals.items(),
+                                        key=lambda kv: -kv[1])][:_SRC_TOP]
+    series = []
+    for i in range(_SRC_WINDOW_DAYS, -1, -1):
+        day_key = (today - timedelta(days=i)).date().isoformat()
+        row: dict[str, Any] = {"day": day_key}
+        for source, count in per_day.get(day_key, {}).items():
+            slot = source if source in top_sources else "другое"
+            row[slot] = row.get(slot, 0) + count
+        series.append(row)
+
+    # quality per source: completed 30d windows (joined 30..120 days ago)
+    quality_rows = await uf.aggregate([
+        {"$match": {"joined_at": {"$type": "date",
+                                  "$gte": today - timedelta(days=120),
+                                  "$lt": now - timedelta(days=30)},
+                    "rev_d30": {"$ne": None}}},
+        {"$group": {
+            "_id": {"$ifNull": ["$reg_source", "organic"]},
+            "users": {"$sum": 1},
+            "revenue30": {"$sum": "$rev_d30"},
+            "paying": {"$sum": {"$cond": [{"$gt": ["$rev_d30", 0]}, 1, 0]}},
+        }},
+    ]).to_list(length=None)
+    quality = {str(r["_id"]): r for r in quality_rows}
+
+    total_regs = sum(totals.values())
+    sources_summary = []
+    for source in top_sources + (["другое"] if len(totals) > _SRC_TOP else []):
+        if source == "другое":
+            count = total_regs - sum(totals[s] for s in top_sources)
+            l7 = sum(v for k, v in last7.items() if k not in top_sources)
+            p7 = sum(v for k, v in prev7.items() if k not in top_sources)
+            q: dict[str, Any] = {}
+        else:
+            count = totals.get(source, 0)
+            l7, p7 = last7.get(source, 0), prev7.get(source, 0)
+            q = quality.get(source, {})
+        q_users = int(q.get("users") or 0)
+        sources_summary.append({
+            "source": source,
+            "regs_30d": count,
+            "share_pct": r2(count / total_regs * 100) if total_regs else 0.0,
+            "last7": l7,
+            "prev7": p7,
+            "trend_pct": r2((l7 - p7) / p7 * 100) if p7 else None,
+            "value_per_reg_30d": r2(float(q.get("revenue30") or 0) / q_users)
+                if q_users else None,
+            "paying_share_pct": r2(int(q.get("paying") or 0) / q_users * 100)
+                if q_users else None,
+            "quality_users": q_users,
+        })
+
+    # --- рекомендации -----------------------------------------------------
+    recommendations: list[dict[str, str]] = []
+    organic_share = (totals.get("organic", 0) / total_regs
+                     if total_regs else 0)
+    if total_regs and organic_share > 0.5:
+        recommendations.append({
+            "priority": "high",
+            "text": f"{organic_share * 100:.0f}% регистраций без атрибуции "
+                    "(organic). Размечайте все ссылки UTM-метками "
+                    "(user_data.utm) — иначе непонятно, какие каналы "
+                    "работают, а какие сжигают бюджет.",
+        })
+    priced = [s for s in sources_summary
+              if s["value_per_reg_30d"] is not None
+              and s["quality_users"] >= 10 and s["source"] != "другое"]
+    if len(priced) >= 2:
+        best = max(priced, key=lambda s: s["value_per_reg_30d"])
+        worst = min(priced, key=lambda s: s["value_per_reg_30d"])
+        if best["source"] != worst["source"]:
+            recommendations.append({
+                "priority": "high",
+                "text": f"Лучший канал по деньгам — «{best['source']}»: "
+                        f"{best['value_per_reg_30d']:.0f}₽ с регистрации против "
+                        f"{worst['value_per_reg_30d']:.0f}₽ у «{worst['source']}». "
+                        "Перекладывайте бюджет в первый и ищите похожие площадки.",
+            })
+    for s in sources_summary:
+        if (s["trend_pct"] is not None and s["trend_pct"] <= -40
+                and s["prev7"] >= 10):
+            recommendations.append({
+                "priority": "medium",
+                "text": f"«{s['source']}» просел на {abs(s['trend_pct']):.0f}% "
+                        f"неделя к неделе ({s['prev7']} → {s['last7']}). "
+                        "Проверьте: не кончилась ли кампания/бюджет, жива ли "
+                        "ссылка, не забанили ли площадку.",
+            })
+    ref_share = totals.get("referral", 0) / total_regs if total_regs else 0
+    if total_regs and ref_share < 0.15:
+        recommendations.append({
+            "priority": "medium",
+            "text": f"Рефералка приносит лишь {ref_share * 100:.0f}% "
+                    "регистраций. Самый дешёвый канал: напомните о ней после "
+                    "каждого успешного продления и покажите юзеру его "
+                    "реф-ссылку в главном меню.",
+        })
+    if not recommendations:
+        recommendations.append({
+            "priority": "low",
+            "text": "Каналы стабильны. Следующий шаг — масштабировать лучший "
+                    "по ценности регистрации и A/B-тестить онбординг "
+                    "(trial_ab_group).",
+        })
+
+    return {
+        "window_days": _SRC_WINDOW_DAYS,
+        "total_regs_30d": total_regs,
+        "keys": top_sources + (["другое"] if len(totals) > _SRC_TOP else []),
+        "series": series,
+        "sources": sources_summary,
+        "recommendations": recommendations,
+    }
+
+
+@router.get("/registration-sources")
+async def registration_sources() -> dict[str, Any]:
+    """Суточные регистрации по источникам, качество каналов и рекомендации."""
+    return await _registration_sources()
