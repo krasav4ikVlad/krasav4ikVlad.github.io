@@ -51,13 +51,13 @@ async def request_card(c, server: dict) -> str:
     plan = ps.plan_of(server)
     location = ps.location_of(server)
 
-    return (f'{e("servers")} <b>Заявка на личный сервер</b>\n\n'
+    return (f'{e("private")} <b>Заявка на личный сервер</b>\n\n'
             f'{e("user")} '
             + (f'@{username} ' if username else '')
             + f'(<code>{server["owner_id"]}</code>)\n'
             f'{e("document")} Тариф: <b>{plan.title if plan else server.get("plan")}</b>, '
             f'мест {server.get("slots")}\n'
-            f'{e("globe")} Локация: <b>{ps.location_title(server)}</b>, '
+            f'{e("pin")} Локация: <b>{ps.location_title(server)}</b>, '
             f'трафик {location.traffic_title if location else "—"}\n'
             f'{e("tools")} Протокол: <b>{ps.profile_title(server)}</b>\n'
             f'{e("money")} Оплачено: <b>{server.get("price")}₽</b> в месяц\n'
@@ -196,7 +196,7 @@ async def provision(message: types.Message, c, server_id: str, squad: str) -> No
     try:
         await message.bot.send_message(
             server['owner_id'],
-            f'{e("servers")} <b>Ваш сервер готов</b>\n\n'
+            f'{e("private")} <b>Ваш сервер готов</b>\n\n'
             f'«{server.get("title")}» уже работает.\n'
             f'Локация: {ps.location_title(server)}, '
             f'протокол: {ps.profile_title(server)}.\n'
@@ -239,7 +239,7 @@ async def listing(message: types.Message, c, settings) -> None:
         {'status': {'$in': list(ps.LIVE_STATUSES)}}).to_list(length=100)
 
     if not servers:
-        await message.answer(f'{e("servers")} Личных серверов пока нет.')
+        await message.answer(f'{e("private")} Личных серверов пока нет.')
         return
 
     # Сколько долей на каждой машине — чтобы было видно, куда сядет
@@ -249,7 +249,7 @@ async def listing(message: types.Message, c, settings) -> None:
         if server.get('squad_uuid'):
             on_squad[server['squad_uuid']] = on_squad.get(server['squad_uuid'], 0) + 1
 
-    lines = [f'{e("servers")} <b>Личные серверы</b>\n']
+    lines = [f'{e("private")} <b>Личные серверы</b>\n']
     total = 0
     for server in servers:
         if server.get('status') == ps.ACTIVE:

@@ -256,7 +256,7 @@ SCHEMA: tuple[Group, ...] = (
                      'с настройкой и однажды соврёт'),
     )),
 
-    Group('private', f'{e("servers")} Личные серверы', (
+    Group('private', f'{e("private")} Личные серверы', (
         Setting('private.visibility', 'Кому виден раздел', 'str', 'admins',
                 hint='off — выключен совсем; admins — только админам (на время '
                      'тестов); all — всем. Кнопка у обычного человека при '

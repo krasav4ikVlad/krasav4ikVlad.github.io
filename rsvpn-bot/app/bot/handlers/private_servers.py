@@ -80,7 +80,7 @@ async def shop(event, c, user: dict, settings, note: str = '') -> None:
         lines.append(row)
         kb.row(_btn(f'{plan.title} — {price}₽', 'buy', plan.code))
 
-    text = (profile_caption(user, f'{e("servers")} Свой сервер')
+    text = (profile_caption(user, f'{e("private")} Свой сервер')
             + '\n\n'.join(lines) + '\n\n'
             + f'<blockquote>{note or await settings.get("private.note")}</blockquote>')
 
@@ -148,7 +148,7 @@ async def choose_location(call: types.CallbackQuery, callback_data: Server, c,
             'в месяц — на несколько человек этого хватает с запасом. '
             'Отмеченные «безлимит» работают без ограничения по трафику.')
 
-    text = (profile_caption(user, f'{e("globe")} Где поднять сервер')
+    text = (profile_caption(user, f'{e("pin")} Где поднять сервер')
             + f'<b>Тариф:</b> <code>{plan.title}</code>, мест {plan.slots}'
             + (f' (машина общая: на ней '
                f'{ps.others_on_machine(await c.private.shares_limit(plan))})'
@@ -212,8 +212,8 @@ async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user:
     kb.row(_btn(f'{e("ok")} Оплатить {price}₽', 'order', callback_data.value))
     kb.row(_btn(f'{e("back")} Назад', 'loc', _pick(plan.code, location.code)))
 
-    text = (profile_caption(user, f'{e("servers")} {plan.title}')
-            + f'<b>{e("globe")} Локация:</b> <code>{location.title}</code>\n'
+    text = (profile_caption(user, f'{e("private")} {plan.title}')
+            + f'<b>{e("pin")} Локация:</b> <code>{location.title}</code>\n'
             + f'<b>{e("traffic")} Трафик:</b> <code>{location.traffic_title}</code>\n'
             + f'<b>{e("tools")} Протокол:</b> <code>{profile.title}</code>\n'
             + f'<b>{e("devices")} Мест:</b> <code>{plan.slots}</code> '
@@ -272,7 +272,7 @@ async def server_screen(event, c, user: dict, settings, server: dict,
              f'<b>{e("stats")} Статус:</b> {ps.STATUS_TITLES.get(server.get("status"), "—")}']
     location = ps.location_of(server)
     if location:
-        lines.append(f'<b>{e("globe")} Локация:</b> <code>{location.title}</code>')
+        lines.append(f'<b>{e("pin")} Локация:</b> <code>{location.title}</code>')
         lines.append(f'<b>{e("traffic")} Трафик:</b> <code>{location.traffic_title}</code>')
     if ps.profile_of(server):
         lines.append(f'<b>{e("tools")} Протокол:</b> '
@@ -323,7 +323,7 @@ async def server_screen(event, c, user: dict, settings, server: dict,
     # Заметка — обычным блоком, а не цитатой: внутри цитаты Telegram не даёт
     # скопировать <code> нажатием, а ссылку-приглашение показывают ровно
     # ради этого.
-    text = (profile_caption(user, f'{e("servers")} Свой сервер')
+    text = (profile_caption(user, f'{e("private")} Свой сервер')
             + '\n'.join(lines)
             + (f'\n\n{note}' if note else '')
             + f'\n\n<blockquote>{hint}</blockquote>')
@@ -387,7 +387,7 @@ async def accept_screen(message: types.Message, code: str, c, user: dict, settin
     kb.row(_btn(f'{e("cross")} Отказаться', 'decline', code))
 
     await message.answer(
-        f'{e("servers")} <b>Приглашение на личный сервер</b>\n\n'
+        f'{e("private")} <b>Приглашение на личный сервер</b>\n\n'
         f'<b>{who}</b> зовёт вас на сервер «{server.get("title")}».\n'
         f'Свободных мест: <b>{ps.free_slots(server)}</b>.\n\n'
         f'<blockquote>Это отдельный сервер, которым пользуется только его '

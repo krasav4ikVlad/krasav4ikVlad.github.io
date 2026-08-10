@@ -69,7 +69,7 @@ async def profile_keyboard(user: dict, settings, trial=None,
 
         if await visible_for(user_id_of(user), container, settings):
             kb.row(types.InlineKeyboardButton(
-                text=f'{e("servers")} Свой сервер',
+                text=f'{e("private")} Свой сервер',
                 callback_data=Menu(screen='private').pack()))
 
     return await footer(kb, settings, back=None)
