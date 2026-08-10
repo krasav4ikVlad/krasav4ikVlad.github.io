@@ -983,7 +983,7 @@ async def test_a_share_request_shows_where_it_fits(admin_env):
     await container.users.create({'user_data': {'user_id': 555},
                                   'info': {'balance': 3000},
                                   'vpn': {'uuid': 'u-555', 'shortUuid': 's-555'}})
-    taken = await container.private.request(555, 'share', location='ams',
+    taken = await container.private.request(555, 'share', location='nl',
                                             profile='reality')
     await container.private.activate(taken.server['_id'],
                                      'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
@@ -991,7 +991,7 @@ async def test_a_share_request_shows_where_it_fits(admin_env):
     await container.users.create({'user_data': {'user_id': 556},
                                   'info': {'balance': 3000},
                                   'vpn': {'uuid': 'u-556', 'shortUuid': 's-556'}})
-    second = await container.private.request(556, 'share', location='ams',
+    second = await container.private.request(556, 'share', location='nl',
                                              profile='reality')
 
     card = await request_card(container, second.server)

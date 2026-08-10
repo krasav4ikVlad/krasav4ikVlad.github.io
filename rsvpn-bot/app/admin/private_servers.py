@@ -287,11 +287,21 @@ async def set_location(message: types.Message, command, c, settings) -> None:
         return
 
     server_id, code = parts[0], parts[1]
-    if not await c.private.servers.get(server_id):
+    server = await c.private.servers.get(server_id)
+    if not server:
         await message.answer(f'{e("cross")} Сервер не найден.')
         return
 
     location = ps.BY_LOCATION[code]
+    # Долю продаём только на безлимит: терабайт на трёх покупателей с их
+    # людьми кончается за месяц, и разбираться придётся со всеми сразу.
+    if not ps.allowed_location(ps.plan_of(server), location):
+        await message.answer(
+            f'{e("cross")} <code>{code}</code> — площадка с лимитом трафика, '
+            f'а тариф долевой. Безлимитные: '
+            f'<code>{", ".join(loc.code for loc in ps.UNLIMITED)}</code>')
+        return
+
     fields = {'location': code, 'traffic_gb': location.traffic_gb}
     if len(parts) > 2 and parts[2] in ps.BY_PROFILE:
         fields['profile'] = parts[2]

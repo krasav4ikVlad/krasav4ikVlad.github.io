@@ -1110,7 +1110,8 @@ async def test_a_silent_panel_still_falls_back(service):
 async def share_server(service_tuple, owner, squad=SQUAD):
     service, vpn, users = service_tuple
     await owner_with_money(users, owner)
-    result = await service.request(owner, 'share', location='ams', profile='reality')
+    # Долю продаём только на безлимитных площадках — «ams» она бы не приняла.
+    result = await service.request(owner, 'share', location='nl', profile='reality')
     await service.activate(result.server['_id'], squad)
     return await service.servers.get(result.server['_id'])
 
@@ -1126,13 +1127,31 @@ async def test_three_shares_fit_on_one_machine(service):
     assert len(await srv.servers.on_squad(SQUAD)) == 3
 
 
+async def test_a_share_cannot_be_bought_on_a_limited_location(service):
+    """Терабайт на трёх покупателей с их людьми кончится за месяц."""
+    srv, vpn, users = service
+    await owner_with_money(users, 1)
+
+    result = await srv.request(1, 'share', location='ams', profile='reality')
+
+    assert not result.ok and result.reason == 'limited_location'
+    assert (await users.get(1))['info']['balance'] == 3000, 'деньги списаны'
+
+
+async def test_only_unlimited_locations_are_offered_for_a_share(service):
+    assert ps.locations_for(ps.BY_CODE['share']) == ps.UNLIMITED
+    assert ps.locations_for(ps.BY_CODE['mini']) == ps.LOCATIONS
+    assert not ps.allowed_location(ps.BY_CODE['share'], ps.BY_LOCATION['ams'])
+    assert ps.allowed_location(ps.BY_CODE['share'], ps.BY_LOCATION['tyo'])
+
+
 async def test_the_fourth_share_is_refused(service):
     """Иначе канал делится на четверых, а продано было на троих."""
     srv, vpn, users = service
     for owner in (1, 2, 3):
         await share_server(service, owner)
     await owner_with_money(users, 4)
-    extra = await srv.request(4, 'share', location='ams', profile='reality')
+    extra = await srv.request(4, 'share', location='nl', profile='reality')
 
     result = await srv.activate(extra.server['_id'], SQUAD)
 
@@ -1156,7 +1175,7 @@ async def test_shares_of_different_plans_do_not_mix(service):
     srv, vpn, users = service
     await share_server(service, 1)
     await owner_with_money(users, 2)
-    other = await srv.request(2, 'mini', location='ams', profile='reality')
+    other = await srv.request(2, 'mini', location='nl', profile='reality')
 
     result = await srv.activate(other.server['_id'], SQUAD)
 
@@ -1303,12 +1322,12 @@ async def test_free_squads_show_where_a_share_fits(service):
     srv, vpn, users = service
     await share_server(service, 1)
 
-    free = await srv.free_squads('ams', 'reality')
+    free = await srv.free_squads('nl', 'reality')
 
-    assert free == [{'squad': SQUAD, 'used': 1, 'limit': 3, 'title': 'Амстердам',
-                     'location': 'ams', 'profile': 'reality'}]
+    assert free == [{'squad': SQUAD, 'used': 1, 'limit': 3, 'title': 'Нидерланды',
+                     'location': 'nl', 'profile': 'reality'}]
     assert await srv.free_squads('tyo', 'reality') == [], 'чужая локация'
-    assert await srv.free_squads('ams', 'grpc') == [], 'другой протокол'
+    assert await srv.free_squads('nl', 'grpc') == [], 'другой протокол'
 
 
 async def test_a_full_machine_is_not_offered(service):
@@ -1316,14 +1335,14 @@ async def test_a_full_machine_is_not_offered(service):
     for owner in (1, 2, 3):
         await share_server(service, owner)
 
-    assert await srv.free_squads('ams', 'reality') == []
+    assert await srv.free_squads('nl', 'reality') == []
 
 
 async def test_the_share_price_is_a_third(service):
     srv, vpn, users = service
     await owner_with_money(users, 1)
 
-    result = await srv.request(1, 'share', location='ams', profile='reality')
+    result = await srv.request(1, 'share', location='nl', profile='reality')
 
     assert result.amount == 390
     assert (await users.get(1))['info']['balance'] == 3000 - 390
@@ -1336,7 +1355,7 @@ async def test_the_number_of_shares_comes_from_settings(service):
     await share_server(service, 1)
     await share_server(service, 2)
     await owner_with_money(users, 3)
-    third = await srv.request(3, 'share', location='ams', profile='reality')
+    third = await srv.request(3, 'share', location='nl', profile='reality')
 
     result = await srv.activate(third.server['_id'], SQUAD)
 

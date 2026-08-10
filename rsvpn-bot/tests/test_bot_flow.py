@@ -1940,6 +1940,34 @@ async def test_the_share_plan_is_offered_first_and_explains_itself(env):
     assert 'ещё двое покупателей' in session.last_text
 
 
+async def test_a_share_offers_only_unlimited_locations(env):
+    """Лимитную площадку на долю не продаём — и не показываем."""
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+
+    await dp.feed_update(bot, callback(Server(action='buy', value='share').pack()))
+
+    labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
+    assert any('Токио' in label for label in labels), labels
+    assert not any('1 ТБ' in label for label in labels), labels
+
+
+async def test_an_old_button_cannot_sneak_a_limited_location(env):
+    """Экран, открытый вчера, живёт в чате вечно, и нажать его можно и завтра."""
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+    await c.users.credit(5, 3000, 'тест')
+
+    await dp.feed_update(bot, callback(
+        Server(action='order', value='share-ams-reality').pack()))
+
+    assert not await c.private.servers.of_owner(5), 'долю продали на лимитной'
+
+
 async def test_buying_a_share_warns_that_the_machine_is_shared(env):
     """Умолчать, что машина общая, — это претензия в поддержку через неделю."""
     from app.bot.callbacks import Server
@@ -1948,7 +1976,7 @@ async def test_buying_a_share_warns_that_the_machine_is_shared(env):
     await _open_servers(dp, bot, c)
 
     await dp.feed_update(bot, callback(
-        Server(action='prof', value='share-ams-reality').pack()))
+        Server(action='prof', value='share-nl-reality').pack()))
 
     text = session.last_text
     assert '390₽' in text and 'Мест:</b> <code>5</code>' in text

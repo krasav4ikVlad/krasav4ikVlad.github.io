@@ -221,6 +221,10 @@ class PrivateServerService:
         place = ps.BY_LOCATION.get(location)
         if not place:
             return Result(False, 'unknown_location')
+        # Кнопка с лимитной площадкой для доли не рисуется, но открытый
+        # раньше экран живёт в чате вечно, и нажать его можно и завтра.
+        if not ps.allowed_location(plan, place):
+            return Result(False, 'limited_location')
         if profile not in ps.BY_PROFILE:
             profile = ps.DEFAULT_PROFILE
 

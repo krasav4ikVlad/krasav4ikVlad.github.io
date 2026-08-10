@@ -186,6 +186,23 @@ def others_on_machine(shares: int) -> str:
     return OTHERS_WORDS.get(others, f'ещё {others} покупателей')
 
 
+def locations_for(plan: ServerPlan | None) -> tuple[Location, ...]:
+    """Какие площадки продаём под этот тариф.
+
+    На долевой машине живут три покупателя со своими людьми — до пятнадцати
+    человек. Терабайт на всех кончится в первый же месяц, и разбираться,
+    чей это был торрент, придётся с тремя оплатившими сразу. Поэтому долю
+    сажаем только на безлимитные площадки.
+    """
+    if plan and plan.shared:
+        return UNLIMITED
+    return LOCATIONS
+
+
+def allowed_location(plan: ServerPlan | None, location: Location | None) -> bool:
+    return bool(location) and location in locations_for(plan)
+
+
 def is_shared(server: dict | None) -> bool:
     """Долевой сервер: машина одна, владельцев несколько."""
     plan = plan_of(server)

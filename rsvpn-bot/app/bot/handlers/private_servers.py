@@ -28,6 +28,8 @@ ERRORS = {
     'no_funds': 'На балансе не хватает {amount}₽.',
     'unknown_plan': 'Такого тарифа нет.',
     'unknown_location': 'Такой локации нет.',
+    'limited_location': 'На долевой машине доступны только безлимитные '
+                        'площадки. Выберите другую.',
     'unknown_profile': 'Такого профиля нет.',
     'not_owner': 'Это не ваш сервер.',
     'not_active': 'Сервер ещё не запущен.',
@@ -132,26 +134,27 @@ async def choose_location(call: types.CallbackQuery, callback_data: Server, c,
         return
 
     kb = InlineKeyboardBuilder()
-    for location in ps.LIMITED:
+    # Без значка: в остальном боте он означает «выбрано», и здесь читался
+    # как уже сделанный выбор. Отличие и так в подписи.
+    for location in ps.locations_for(plan):
         kb.row(_btn(f'{location.title} — {location.traffic_title}', 'loc',
                     _pick(plan.code, location.code)))
-    for location in ps.UNLIMITED:
-        # Без значка: в остальном боте он означает «выбрано», и здесь
-        # читался как уже сделанный выбор. Отличие и так в подписи.
-        kb.row(_btn(f'{location.title} — безлимит', 'loc',
-                    _pick(plan.code, location.code)))
     kb.row(_btn(f'{e("back")} К тарифам', 'shop'))
+
+    hint = ('Все площадки под этот тариф — без ограничения по трафику: на '
+            'машине живут три покупателя со своими людьми, и терабайт на всех '
+            'кончился бы за месяц.' if plan.shared else
+            'Площадки с пометкой «1 ТБ» ограничены по трафику на весь сервер '
+            'в месяц — на несколько человек этого хватает с запасом. '
+            'Отмеченные «безлимит» работают без ограничения по трафику.')
 
     text = (profile_caption(user, f'{e("globe")} Где поднять сервер')
             + f'<b>Тариф:</b> <code>{plan.title}</code>, мест {plan.slots}'
             + (f' (машина общая: на ней '
                f'{ps.others_on_machine(await c.private.shares_limit(plan))})'
                if plan.shared else '') + '\n\n'
-            + '<blockquote>Площадки с пометкой «1 ТБ» ограничены по трафику на '
-              'весь сервер в месяц — на несколько человек этого хватает с '
-              'запасом. Отмеченные «безлимит» работают без ограничения по '
-              'трафику.\n\nБлиже к вам — быстрее отклик: для России это '
-              'европейские точки.</blockquote>')
+            + f'<blockquote>{hint}\n\nБлиже к вам — быстрее отклик: для России '
+              f'это европейские точки.</blockquote>')
 
     await footer(kb, settings, back=None)
     await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
@@ -164,6 +167,9 @@ async def choose_profile(call: types.CallbackQuery, callback_data: Server, c,
     plan, location = ps.BY_CODE.get(plan_code), ps.BY_LOCATION.get(location_code)
     if not plan or not location:
         await call.answer(ERRORS['unknown_location'], show_alert=True)
+        return
+    if not ps.allowed_location(plan, location):
+        await call.answer(ERRORS['limited_location'], show_alert=True)
         return
 
     kb = InlineKeyboardBuilder()
@@ -196,6 +202,9 @@ async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user:
     profile = ps.BY_PROFILE.get(parts[2] if len(parts) > 2 else '')
     if not plan or not location or not profile:
         await call.answer(ERRORS['unknown_plan'], show_alert=True)
+        return
+    if not ps.allowed_location(plan, location):
+        await call.answer(ERRORS['limited_location'], show_alert=True)
         return
 
     price = await c.private.price(plan)
