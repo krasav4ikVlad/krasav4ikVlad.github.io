@@ -190,14 +190,14 @@ class TrialService:
         await self.vpn.update_subscription(vpn['uuid'], expire_at=new_expire,
                                            status='ACTIVE')
 
+        # ByPass живёт на той же дате — выравниваем общим способом, чтобы
+        # правило было одно на все продления, а не своё в каждом сервисе.
+        from app.services import bypass
+
         fields = {'expireAt': new_expire}
-        if vpn.get('bypass_uuid'):
-            try:
-                await self.vpn.update_subscription(vpn['bypass_uuid'],
-                                                   expire_at=new_expire, status='ACTIVE')
-                fields['bypass_expireAt'] = new_expire
-            except Exception as exc:      # ByPass — дополнение, а не сама подписка
-                log.warning('bypass не продлён на триале: %s', exc)
+        await bypass.sync_expiry(self.users, self.vpn,
+                                 self.users.pick(user, 'user_data.user_id'),
+                                 new_expire, vpn=vpn, status='ACTIVE')
 
         # Длительность не трогаем, если человек её уже выбирал: иначе
         # автопродление пошло бы искать тариф на 3 дня и не нашло.

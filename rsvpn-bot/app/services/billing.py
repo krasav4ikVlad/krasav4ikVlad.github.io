@@ -72,6 +72,13 @@ class BillingService:
             'createdAt': subscription['createdAt'],
         })
 
+        # Обычно ByPass без основной подписки не заводят, но у вернувшихся
+        # после удаления подписки он остаётся — и тогда живёт по старой дате.
+        from app.services import bypass
+
+        await bypass.sync_expiry(self.users, self.vpn, user_id,
+                                 subscription['expireAt'])
+
         if plan.get('gift_count') and plan.get('gift_type'):
             await self.users.col.update_one(
                 {'user_data.user_id': user_id},

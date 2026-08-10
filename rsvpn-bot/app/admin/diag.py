@@ -155,6 +155,42 @@ async def command(message: types.Message, c, settings) -> None:
     await message.answer(await text(c, settings), reply_markup=_kb())
 
 
+async def bypass_sync(message: types.Message, command, c, settings) -> None:
+    """`/bypasssync [fix]` — у кого ByPass кончается не тогда, когда подписка.
+
+    Без аргумента только показывает: правка ходит в панель по запросу на
+    человека, и запускать её вслепую, не увидев масштаба, незачем.
+    """
+    from app.services import bypass
+
+    apply = 'fix' in (command.args or '').split()
+    if apply and c.vpn is None:
+        # Без панели правка молча запишется в «не вышло» на каждом человеке.
+        await message.answer(f'{e("cross")} Клиент панели не собран — править '
+                             f'нечем. Проверьте настройки подключения к Remnawave.')
+        return
+
+    report = await bypass.repair(c.users, c.vpn, apply=apply)
+
+    if not report['checked']:
+        await message.answer(f'{e("ok")} Даты ByPass и подписок совпадают у всех.')
+        return
+
+    rows = '\n'.join(
+        f'<code>{row["user_id"]}</code>: подписка {fmt(row["main"])}, '
+        f'ByPass {fmt(row["bypass"]) if row["bypass"] else "нет даты"}'
+        for row in report['rows'])
+
+    await message.answer(
+        f'{e("warning")} <b>Расхождений: {report["checked"]}</b>\n\n{rows}'
+        + (f'\n\n<b>Выровнено:</b> {report["fixed"]}'
+           + (f', не вышло: {report["failed"]}' if report['failed'] else '')
+           if apply else
+           '\n\n<blockquote>Это только показ. Чтобы выровнять даты по основной '
+           'подписке, пришлите <code>/bypasssync fix</code>. Фоновая задача '
+           'делает то же самое раз в шесть часов.</blockquote>'))
+
+
 async def refresh(call: types.CallbackQuery, c, settings) -> None:
     try:
         await call.message.edit_text(await text(c, settings), reply_markup=_kb())
@@ -249,6 +285,7 @@ async def test_send(call: types.CallbackQuery, callback_data: Adm, c, settings) 
 
 def register(router: Router) -> None:
     router.message.register(command, Command('diag'))
+    router.message.register(bypass_sync, Command('bypasssync'))
     router.callback_query.register(refresh, Adm.filter(F.act == 'diag'))
     router.callback_query.register(test_menu, Adm.filter(F.act == 'exptest'))
     router.callback_query.register(test_send, Adm.filter(F.act == 'exptestgo'))

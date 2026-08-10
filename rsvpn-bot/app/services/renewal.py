@@ -28,6 +28,7 @@ from datetime import timedelta
 
 from app.core.errors import VpnPanelError
 from app.core.time import now, parse_dt
+from app.services import bypass
 
 log = logging.getLogger(__name__)
 
@@ -155,19 +156,12 @@ class RenewalService:
             log.error('продление %s не удалось, деньги возвращены: %s', user_id, exc)
             return 'error_panel'
 
-        # ByPass — отдельная подписка в панели, обновляем только если она есть.
-        # В оригинале PATCH уходил и с пустым uuid, а результат не проверялся.
-        bypass_uuid = vpn.get('bypass_uuid')
-        if bypass_uuid:
-            try:
-                await self.vpn.update_subscription(bypass_uuid, expire_at=new_expire)
-            except VpnPanelError as exc:
-                log.warning('bypass %s не продлён: %s', user_id, exc)
+        await self.users.set_vpn(user_id, {'expireAt': new_expire})
 
-        fields = {'expireAt': new_expire}
-        if bypass_uuid:
-            fields['bypass_expireAt'] = new_expire
-        await self.users.set_vpn(user_id, fields)
+        # ByPass — отдельная подписка в панели, и дата у неё должна быть та
+        # же. Раньше она писалась в базу и тогда, когда панель отказала:
+        # человек видел один срок, а доступ терял в другой.
+        await bypass.sync_expiry(self.users, self.vpn, user_id, new_expire, vpn=vpn)
 
         # 3. Последействия: сбросить напоминания и вернуть родные серверы
         if self.expiry:

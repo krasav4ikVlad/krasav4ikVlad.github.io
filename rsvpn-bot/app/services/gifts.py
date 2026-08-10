@@ -179,4 +179,9 @@ class GiftService:
 
         await self.vpn.update_subscription(vpn['uuid'], expire_at=new_expire)
         await self.users.set_vpn(user_id, {'expireAt': new_expire})
+        # Подарок двигает основную дату — значит, и ByPass. Без этого он
+        # отключался раньше подписки, за которую человеку уже заплатили.
+        from app.services import bypass
+
+        await bypass.sync_expiry(self.users, self.vpn, user_id, new_expire, vpn=vpn)
         return True

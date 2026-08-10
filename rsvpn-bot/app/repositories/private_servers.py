@@ -102,6 +102,11 @@ class PrivateServersRepository(Repository):
     async def set(self, server_id: str, **fields) -> None:
         await self.col.update_one({'_id': server_id}, {'$set': fields})
 
+    async def delete(self, server_id: str) -> bool:
+        """Стереть сервер совсем. Для тестов: закрытый остаётся в истории."""
+        result = await self.col.delete_one({'_id': server_id})
+        return getattr(result, 'deleted_count', 0) == 1
+
     async def add_member(self, server_id: str, user_id: int, limit: int) -> bool:
         """Занять слот атомарно.
 

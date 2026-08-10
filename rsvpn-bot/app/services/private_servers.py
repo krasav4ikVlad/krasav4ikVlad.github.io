@@ -22,6 +22,7 @@ from datetime import timedelta
 from app.content.emoji import e
 from app.core.time import now, parse_dt
 from app.domain import private_servers as ps
+from app.services import bypass
 
 log = logging.getLogger(__name__)
 
@@ -327,6 +328,37 @@ class PrivateServerService:
                                 'Возврат: сервер не выдан')
         await self.servers.set(server_id, status=ps.CANCELLED, cancel_reason=reason,
                                cancelled_at=now())
+        return Result(True, server=server, amount=amount)
+
+    async def wipe(self, server_id: str, refund: bool = False) -> Result:
+        """Стереть сервер совсем: доступ снять, документ удалить.
+
+        Отличается от `close` тем, что не оставляет следа: закрытый сервер
+        виден в истории и в выгрузках, а этот нужен, чтобы пройти покупку
+        заново на своём же аккаунте. Деньги по умолчанию не возвращаются —
+        это команда для тестов, а не отмена заказа.
+        """
+        server = await self.servers.get(server_id)
+        if not server:
+            return Result(False, 'not_found')
+
+        for user_id in self._everyone(server):
+            try:
+                await self._revoke(server, user_id)
+            except Exception:
+                # Панель могла и не знать про этот сквад. Документ всё равно
+                # убираем: иначе человек остаётся с сервером, которого нет.
+                log.exception('доступ %s к серверу %s не снят при удалении',
+                              user_id, server_id)
+
+        amount = int(server.get('price') or 0) if refund else 0
+        if amount:
+            await self.users.credit(server['owner_id'], amount,
+                                    'Возврат за личный сервер')
+
+        await self.servers.delete(server_id)
+        log.warning('сервер %s удалён совсем (владелец %s, возврат %s₽)',
+                    server_id, server.get('owner_id'), amount)
         return Result(True, server=server, amount=amount)
 
     # ── участники ───────────────────────────────────────────────────────────
@@ -803,6 +835,12 @@ class PrivateServerService:
             expire_at=paid_until if expires and expires < paid_until else None)
         await self.users.set_vpn(user_id, fields)
 
+        # Доступ к серверу двигает срок основной подписки — ByPass должен
+        # ехать вместе с ней, иначе он кончается посреди оплаченного месяца.
+        if 'expireAt' in fields:
+            await bypass.sync_expiry(self.users, self.vpn, user_id, fields['expireAt'],
+                                     vpn=vpn)
+
     async def _revoke(self, server: dict, user_id: int) -> None:
         """Снять доступ и вернуть человеку его собственный срок."""
         squad = server.get('squad_uuid')
@@ -834,6 +872,11 @@ class PrivateServerService:
         if previous:
             fields['expireAt'] = previous
         await self.users.set_vpn(user_id, fields)
+
+        # Срок вернулся к своему — ByPass возвращаем туда же: иначе он
+        # остаётся действовать дольше подписки, за которую никто не платил.
+        if previous:
+            await bypass.sync_expiry(self.users, self.vpn, user_id, previous, vpn=vpn)
 
     async def _elsewhere_on_squad(self, server: dict, user_id: int) -> bool:
         """Есть ли у человека доступ к этой же машине по другой доле."""

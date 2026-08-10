@@ -27,6 +27,7 @@ PANEL_WEBHOOK = 'panel_webhook'
 EXPIRY_SENT = 'expiry_sent'
 PRIVATE_SERVERS = 'private_servers'
 CAMPAIGNS = 'campaigns'
+BYPASS_SYNC = 'bypass_sync'
 
 TITLES = {
     RENEWAL: 'Автопродление',
@@ -35,6 +36,7 @@ TITLES = {
     EXPIRY_SENT: 'Напоминание отправлено',
     PRIVATE_SERVERS: 'Плата за личные серверы',
     CAMPAIGNS: 'Кампании',
+    BYPASS_SYNC: 'Сверка дат ByPass',
 }
 
 

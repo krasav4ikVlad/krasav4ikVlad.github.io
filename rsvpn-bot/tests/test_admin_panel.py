@@ -482,6 +482,56 @@ async def test_diag_reports_a_disabled_setting(admin_env):
     assert 'Выключено в настройках' in session.last_text
 
 
+async def test_bypasssync_shows_before_it_fixes(admin_env):
+    """Правка ходит в панель на каждого — вслепую её запускать не стоит."""
+    from datetime import timedelta
+
+    from app.core.time import now, parse_dt
+
+    dp, bot, session, container = admin_env
+    container.vpn = FakePanel()
+    await container.users.create({
+        'user_data': {'user_id': 77}, 'info': {'balance': 0},
+        'vpn': {'uuid': 'u-77', 'shortUuid': 's-77',
+                'expireAt': now() + timedelta(days=30),
+                'bypass_uuid': 'bp-77', 'bypass_expireAt': now()}})
+
+    await dp.feed_update(bot, message('/bypasssync'))
+    assert 'Расхождений: 1' in session.last_text
+    user = await container.users.get(77)
+    assert parse_dt(user['vpn']['bypass_expireAt']) < now() + timedelta(days=1)
+
+    await dp.feed_update(bot, message('/bypasssync fix'))
+    user = await container.users.get(77)
+    assert parse_dt(user['vpn']['bypass_expireAt']) == parse_dt(user['vpn']['expireAt'])
+
+
+async def test_bypasssync_without_a_panel_says_so(admin_env):
+    """Иначе отчёт «не вышло у 300 человек» выглядит как беда с датами."""
+    from datetime import timedelta
+
+    from app.core.time import now
+
+    dp, bot, session, container = admin_env
+    container.vpn = None
+    await container.users.create({
+        'user_data': {'user_id': 78}, 'info': {'balance': 0},
+        'vpn': {'uuid': 'u-78', 'expireAt': now() + timedelta(days=30),
+                'bypass_uuid': 'bp-78', 'bypass_expireAt': now()}})
+
+    await dp.feed_update(bot, message('/bypasssync fix'))
+
+    assert 'панели не собран' in session.last_text
+
+
+async def test_bypasssync_says_when_everything_matches(admin_env):
+    dp, bot, session, container = admin_env
+
+    await dp.feed_update(bot, message('/bypasssync'))
+
+    assert 'совпадают' in session.last_text
+
+
 async def test_diag_notices_a_wrong_secret(admin_env):
     """Панель зовёт, но подпись не сходится — это отдельная беда, и по
     молчанию бота её не отличить от ненастроенных вебхуков."""
@@ -882,6 +932,46 @@ async def test_squad_command_without_a_server_says_so(admin_env):
         '/squad aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'))
 
     assert 'какой сервер' in session.last_text
+
+
+async def test_srvdel_removes_the_server_by_owner(admin_env):
+    """Своего же сервера мешает завести второй — команда нужна для тестов."""
+    dp, bot, session, container = admin_env
+    server_id = await _pending_server(container, bot)
+
+    await dp.feed_update(bot, message(f'/srvdel {ADMIN.id}'))
+
+    assert await container.private.servers.get(server_id) is None
+    assert 'удалён' in session.last_text
+
+
+async def test_srvdel_does_not_refund_unless_asked(admin_env):
+    dp, bot, session, container = admin_env
+    await _pending_server(container, bot)
+    before = (await container.users.get(ADMIN.id))['info']['balance']
+
+    await dp.feed_update(bot, message(f'/srvdel {ADMIN.id}'))
+
+    assert (await container.users.get(ADMIN.id))['info']['balance'] == before
+
+
+async def test_srvdel_refunds_on_request(admin_env):
+    dp, bot, session, container = admin_env
+    server_id = await _pending_server(container, bot)
+    price = (await container.private.servers.get(server_id))['price']
+    before = (await container.users.get(ADMIN.id))['info']['balance']
+
+    await dp.feed_update(bot, message(f'/srvdel {server_id} refund'))
+
+    assert (await container.users.get(ADMIN.id))['info']['balance'] == before + price
+
+
+async def test_srvdel_without_arguments_explains_itself(admin_env):
+    dp, bot, session, container = admin_env
+
+    await dp.feed_update(bot, message('/srvdel'))
+
+    assert 'refund' in session.last_text and 'srv_' in session.last_text
 
 
 async def test_a_share_request_shows_where_it_fits(admin_env):

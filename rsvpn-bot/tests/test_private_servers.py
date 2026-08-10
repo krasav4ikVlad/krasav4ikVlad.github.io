@@ -1259,6 +1259,46 @@ async def test_closing_the_last_share_frees_the_machine(service):
     assert sent and 'можно гасить' in sent[-1], sent
 
 
+async def test_wiping_a_server_frees_the_owner_to_buy_again(service, db):
+    """Команда для тестов: закрытый сервер виден в истории, а этот — нет."""
+    srv, vpn, users = service
+    server = await live_server(service)
+    await users.create({'user_data': {'user_id': 2}, 'info': {'balance': 0},
+                        'vpn': {'uuid': 'u-2', 'shortUuid': 's-2',
+                                'activeInternalSquads': []}})
+    invite = await srv.invite(server['_id'], 1)
+    await srv.join(invite.reason, 2)
+
+    result = await srv.wipe(server['_id'])
+
+    assert result.ok and result.amount == 0, 'деньги вернулись без спроса'
+    assert await db['private_servers'].count_documents({}) == 0
+    assert not await srv.servers.of_owner(1), 'бот не даст купить второй'
+    assert SQUAD not in vpn.state['u-2']['squads'], 'участник остался с доступом'
+
+
+async def test_wiping_can_return_the_money(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+    before = (await users.get(1))['info']['balance']
+
+    result = await srv.wipe(server['_id'], refund=True)
+
+    assert result.amount == server['price']
+    assert (await users.get(1))['info']['balance'] == before + server['price']
+
+
+async def test_wiping_a_share_leaves_the_neighbours_alone(service):
+    srv, vpn, users = service
+    mine = await share_server(service, 1)
+    neighbour = await share_server(service, 2)
+
+    await srv.wipe(mine['_id'])
+
+    assert await srv.servers.get(neighbour['_id']), 'снесли соседнюю долю'
+    assert SQUAD in vpn.state['u-2']['squads'], 'сосед потерял доступ'
+
+
 async def test_free_squads_show_where_a_share_fits(service):
     srv, vpn, users = service
     await share_server(service, 1)

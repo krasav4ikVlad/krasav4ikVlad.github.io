@@ -87,6 +87,27 @@ async def reconcile_lifeline(container) -> None:
         log.info('lifeline: возвращено %s подписок', restored)
 
 
+async def sync_bypass(container) -> None:
+    """Свести даты ByPass с основными подписками.
+
+    Все места, которые двигают срок, синхронизируют ByPass сами. Задача —
+    страховка: панель могла не ответить в тот момент, а расхождение видно
+    человеку как «VPN отключился раньше времени».
+    """
+    from app.services import bypass
+
+    if container.vpn is None:
+        log.warning('сверка ByPass пропущена: клиент панели не собран')
+        return
+
+    report = await bypass.repair(container.users, container.vpn, apply=True)
+    if report['checked']:
+        log.warning('ByPass: расхождений %s, выровнено %s, не вышло %s',
+                    report['checked'], report['fixed'], report['failed'])
+        await container.health.mark(health.BYPASS_SYNC, **{
+            key: report[key] for key in ('checked', 'fixed', 'failed')})
+
+
 async def update_segments(container) -> None:
     """Пересчёт growth.segment — без него кампании никого не найдут."""
     from app.services.segments import SegmentService

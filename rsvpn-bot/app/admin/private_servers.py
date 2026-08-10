@@ -352,10 +352,68 @@ async def diagnose(message: types.Message, command, c, settings) -> None:
     await message.answer('\n'.join(lines))
 
 
+async def delete_server(message: types.Message, command, c, settings) -> None:
+    """`/srvdel <id сервера|id юзера|@username> [refund]` — стереть сервер.
+
+    Нужна для тестов: пока раздел обкатывается, свой же сервер приходится
+    заводить и заводить заново, а второй одному человеку бот не продаст.
+    Деньги возвращаются только по слову `refund` — на тестовом прогоне
+    возврат мешает, а на живом человеке без него нельзя.
+    """
+    parts = (command.args or '').split()
+    if not parts:
+        await message.answer(
+            f'{e("trash")} <b>Удаление личного сервера</b>\n\n'
+            f'<code>/srvdel srv_xxxxxxxx</code> — по id сервера\n'
+            f'<code>/srvdel 123456789</code> или <code>/srvdel @username</code> — '
+            f'по владельцу\n'
+            f'<code>/srvdel srv_xxxxxxxx refund</code> — ещё и вернуть деньги\n\n'
+            f'<blockquote>Доступ снимается у всех участников, документ стирается '
+            f'совсем — владелец сможет купить сервер заново. Отменить нельзя. '
+            f'VPS в панели бот не трогает.</blockquote>')
+        return
+
+    target, refund = parts[0], 'refund' in parts[1:]
+
+    if target.startswith('srv_'):
+        server = await c.private.servers.get(target)
+    else:
+        owner = await c.moderation.find_user(target)
+        if not owner:
+            await message.answer(f'{e("cross")} Пользователь <code>{target}</code> '
+                                 f'не найден.')
+            return
+        server = await c.private.servers.of_owner(
+            (owner.get('user_data') or {}).get('user_id'))
+
+    if not server:
+        await message.answer(f'{e("cross")} Сервера нет: ни по id, ни у этого '
+                             f'человека.')
+        return
+
+    members = len(server.get('members') or [])
+    result = await c.private.wipe(server['_id'], refund=refund)
+    if not result.ok:
+        await message.answer(f'{e("cross")} Не вышло: {result.reason}')
+        return
+
+    await message.answer(
+        f'{e("trash")} Сервер <code>{server["_id"]}</code> удалён.\n'
+        f'Владелец: <code>{server.get("owner_id")}</code>, '
+        f'участников отключено: {members}.\n'
+        + (f'Возвращено: <code>{result.amount}₽</code>.\n' if result.amount else '')
+        + (f'\n<blockquote>Тариф долевой: на машине '
+           f'<code>…{(server.get("squad_uuid") or "")[-6:]}</code> освободилась '
+           f'доля, VPS гасить не нужно.</blockquote>' if ps.is_shared(server) else
+           f'\n<blockquote>VPS и сквад в панели остались — если сервер больше '
+           f'не нужен, погасите его руками.</blockquote>'))
+
+
 def register(router: Router) -> None:
     from aiogram.filters import Command
 
     router.message.register(listing, Command('servers'))
+    router.message.register(delete_server, Command('srvdel'))
     router.message.register(squad_command, Command('squad'))
     router.message.register(diagnose, Command('srvdiag'))
     router.message.register(set_location, Command('srvloc'))

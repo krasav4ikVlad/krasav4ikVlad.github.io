@@ -42,6 +42,12 @@ def create_scheduler(container, bot) -> AsyncIOScheduler:
     scheduler.add_job(jobs.watch_broadcasts, 'interval', minutes=1,
                       args=[container, bot], id='watch_broadcasts',
                       next_run_time=now() + timedelta(minutes=1))
+    # Раз в шесть часов: даты ByPass и основной подписки должны совпадать.
+    # Сами сервисы их и так выравнивают — это подбор за отказавшей панелью
+    # и за подписками, приехавшими из старого бота.
+    scheduler.add_job(jobs.sync_bypass, 'interval', minutes=360,
+                      args=[container], id='sync_bypass',
+                      next_run_time=now() + timedelta(minutes=3))
     scheduler.add_job(jobs.run_campaigns, 'interval', minutes=60,
                       args=[container, bot, engine], id='campaigns',
                       next_run_time=now() + timedelta(minutes=10))
