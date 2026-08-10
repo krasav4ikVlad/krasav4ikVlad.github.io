@@ -1936,7 +1936,8 @@ async def test_the_share_plan_is_offered_first_and_explains_itself(env):
     labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
     assert labels[0].startswith('Доля'), labels
     assert '390₽' in labels[0]
-    assert 'только ваши' in session.last_text
+    assert 'машина общая' in session.last_text
+    assert 'ещё двое покупателей' in session.last_text
 
 
 async def test_buying_a_share_warns_that_the_machine_is_shared(env):

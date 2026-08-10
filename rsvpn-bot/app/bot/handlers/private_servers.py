@@ -61,24 +61,25 @@ def _btn(text: str, action: str, value: str = '') -> types.InlineKeyboardButton:
 
 # ── витрина ─────────────────────────────────────────────────────────────────
 async def shop(event, c, user: dict, settings, note: str = '') -> None:
+    # Тарифов четыре, и раньше каждый занимал две плотные строки, из которых
+    # три четверти повторяли друг друга («сервер целиком ваш» трижды подряд).
+    # Читается это как сплошной текст, а выбирают тут по двум числам: цена и
+    # сколько человек. Их и выносим, остальное — общей подписью снизу.
     kb = InlineKeyboardBuilder()
     lines = []
     for plan, price in await c.private.plans():
+        row = (f'<b>{plan.title}</b> — <code>{price}₽</code> в месяц\n'
+               f'   до {plan.slots} человек, по {price // max(1, plan.slots)}₽ '
+               f'с каждого')
         if plan.shared:
             shares = await c.private.shares_limit(plan)
-            what = (f'машину покупаете не только вы: кроме вас на ней '
-                    f'{ps.others_on_machine(shares)} со своими людьми. '
-                    f'Ваши {plan.slots} мест — только ваши')
-        else:
-            what = 'сервер целиком ваш'
-        lines.append(f'<b>{plan.title}</b> — до {plan.slots} человек, '
-                     f'<code>{price}₽</code> в месяц '
-                     f'(≈{price // max(1, plan.slots)}₽ с человека)\n'
-                     f'   <i>{what}</i>')
+            row += (f'\n   <i>машина общая: кроме вас на ней '
+                    f'{ps.others_on_machine(shares)}</i>')
+        lines.append(row)
         kb.row(_btn(f'{plan.title} — {price}₽', 'buy', plan.code))
 
     text = (profile_caption(user, f'{e("servers")} Свой сервер')
-            + '\n'.join(lines) + '\n\n'
+            + '\n\n'.join(lines) + '\n\n'
             + f'<blockquote>{note or await settings.get("private.note")}</blockquote>')
 
     await footer(kb, settings, back='profile')
