@@ -175,13 +175,13 @@ async def choose_profile(call: types.CallbackQuery, callback_data: Server, c,
     kb = InlineKeyboardBuilder()
     lines = []
     for profile in ps.PROFILES:
-        # Роутер — отдельной строкой и жирным, а не хвостом описания: это
-        # единственное различие, которое потом не переиграть, и потерять
-        # его в конце фразы означает продать не то, что человек ждал.
+        # Про роутер — последней фразой описания, и у Hysteria2 тоже:
+        # молчание про него читается как «наверное, тоже можно», а протокол
+        # на работающем сервере уже не поменять.
         # Значка нет нарочно: во всём остальном боте галочка означает
         # «выбрано», и здесь она читалась бы как сделанный выбор.
-        lines.append(f'<b>{profile.title}</b> — {profile.hint}\n'
-                     f'   <b>{ps.router_hint(profile)}</b>')
+        lines.append(f'<b>{profile.title}</b> — {profile.hint} '
+                     f'{ps.router_hint(profile)}')
         kb.row(_btn(profile.title, 'prof',
                     _pick(plan.code, location.code, profile.code)))
     kb.row(_btn(f'{e("back")} К локациям', 'buy', plan.code))
