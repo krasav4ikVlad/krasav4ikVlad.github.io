@@ -568,8 +568,7 @@ async def router_setup(call: types.CallbackQuery, callback_data: Server, c, user
               f'Нажмите на ссылку, чтобы скопировать. В прошивке роутера '
               f'(Keenetic, OpenWrt с xray, Padavan) добавьте её как VLESS-'
               f'подключение — поля разберутся сами.\n\n'
-              f'Роутер считается одним устройством из вашего лимита, зато '
-              f'через него работает вся домашняя сеть.'))
+              f'Через роутер работает вся домашняя сеть.'))
 
 
 def create_router() -> Router:
