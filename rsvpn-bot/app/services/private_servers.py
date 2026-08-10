@@ -121,6 +121,60 @@ def _traffic_of(panel: dict):
     return None
 
 
+# ── разбор ссылок подписки ──────────────────────────────────────────────────
+#
+# В подписке лежат не только серверы. Строки-подсказки («⬆️Обход LTE в
+# описании подписки⬆️») оформлены такими же ссылками — иначе клиент их не
+# покажет. Роутеру они не годятся: подключение по ним не поднимется.
+
+# Значки, которыми размечают такие подсказки: стрелки на соседнюю строку,
+# предупреждения, запреты. Заданы диапазонами, а не символами: писать значок
+# в коде здесь нельзя (реестр в app/content/emoji.py — для того, что бот
+# показывает, а это то, что он читает), да и перечислять их пришлось бы
+# бесконечно.
+BANNER_RANGES = ((0x2190, 0x21FF),      # стрелки
+                 (0x2B00, 0x2BFF),      # стрелки-значки
+                 (0x2600, 0x27BF))      # предупреждения, крестики, дингбаты
+# Флаги (U+1F1E6…) сюда не попадают нарочно: ими подписывают как раз
+# настоящие серверы.
+
+
+def link_remark(link: str) -> str:
+    """Подпись ссылки — то, что после решётки. Обычно percent-encoded."""
+    from urllib.parse import unquote
+
+    if '#' not in link:
+        return ''
+    try:
+        return unquote(link.rsplit('#', 1)[-1]).strip()
+    except Exception:
+        return link.rsplit('#', 1)[-1].strip()
+
+
+def link_host(link: str) -> str:
+    body = link.split('://', 1)[-1].split('#', 1)[0].split('?', 1)[0]
+    host = body.rsplit('@', 1)[-1]
+    return host.rsplit(':', 1)[0].strip('[]').lower()
+
+
+def is_banner_link(link: str) -> bool:
+    """Ссылка-подпись, а не сервер.
+
+    Два признака, и хватает любого: значок-стрелка в названии и адрес,
+    которого не бывает, — в подписях туда пишут что попало вроде `11111`.
+    """
+    remark = link_remark(link)
+    if any(low <= ord(char) <= high
+           for char in remark for low, high in BANNER_RANGES):
+        return True
+
+    host = link_host(link)
+    if not host:
+        return True
+    # доменное имя или IP; всё остальное — заглушка
+    return '.' not in host and ':' not in host
+
+
 # Как в записи расхода по ноде называют пользователя и объём
 USER_KEYS = ('userUuid', 'uuid', 'user_uuid')
 NAME_KEYS = ('username', 'userName', 'name')
@@ -483,11 +537,11 @@ class PrivateServerService:
         return rows
 
     async def router_links(self, server: dict, user_id: int) -> tuple[list[str], str]:
-        """VLESS-ссылки для роутера: (ссылки, заметка).
+        """Ссылка для роутера: (ссылки, заметка).
 
         Роутеру нужна прямая ссылка, а не подписка: прошивки умеют xray, но
-        не умеют её обновлять. Первой идёт ссылка на ноду этого сервера —
-        отличаем по имени ноды в подписи ссылки.
+        не умеют её обновлять. Отдаём ровно одну — ту, что ведёт на сервер
+        владельца, а не первую попавшуюся из подписки.
         """
         if not ps.router_ready(server):
             return [], 'на роутер ставится только TCP Reality и gRPC'
@@ -507,7 +561,8 @@ class PrivateServerService:
         if not vless:
             return [], 'панель не отдала ни одной VLESS-ссылки'
 
-        # Имя ноды сервера — по нему узнаём нужную ссылку среди прочих.
+        # Имя ноды сервера — самый надёжный признак: если панель его отдала,
+        # гадать не нужно.
         names = []
         try:
             for node in await self.vpn.squad_nodes(server.get('squad_uuid') or ''):
@@ -518,12 +573,20 @@ class PrivateServerService:
             log.info('имя ноды сервера не получено: %s', exc)
 
         def mine(link: str) -> bool:
-            tail = link.rsplit('#', 1)[-1].lower()
-            return any(name in tail or tail in name for name in names)
+            tail = link_remark(link).lower()
+            return bool(tail) and any(name in tail or tail in name for name in names)
 
         ours = [link for link in vless if mine(link)]
-        return (ours or vless), ('' if ours else 'ссылку своего сервера '
-                                 'не опознали — выберите по названию')
+        if ours:
+            return ours[-1:], ''
+
+        # По имени не вышло. Служебные строки-подписи («⬆️Обход LTE в
+        # описании подписки⬆️») лежат в подписке такими же ссылками, и
+        # роутеру они не годятся — отсеиваем их и берём последнюю рабочую:
+        # личный сервер добавляется после общих и идёт в конце списка.
+        real = [link for link in vless if not is_banner_link(link)] or vless
+        return real[-1:], (f'по подписи «{link_remark(real[-1]) or "без названия"}». '
+                           f'Если это не ваш сервер — напишите в поддержку')
 
     # ── продление ───────────────────────────────────────────────────────────
     async def set_autorenew(self, server_id: str, owner_id: int, on: bool) -> Result:

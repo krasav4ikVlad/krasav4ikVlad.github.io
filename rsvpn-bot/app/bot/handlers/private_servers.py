@@ -555,9 +555,11 @@ async def router_setup(call: types.CallbackQuery, callback_data: Server, c, user
                                  f'вышло: {note}. Напишите в поддержку.')
         return
 
-    # Ссылки — обычным блоком и в <code>: из цитаты роутерную строку не
-    # скопировать, а вручную такое не перенабирают.
-    shown = '\n\n'.join(f'<code>{link}</code>' for link in links[:3])
+    # Ссылка — обычным блоком и в <code>: из цитаты роутерную строку не
+    # скопировать, а вручную такое не перенабирают. Показываем одну: в
+    # подписке рядом лежат общие серверы и строки-подсказки, и выбор из
+    # пяти похожих ссылок — это способ подключиться не туда.
+    shown = '\n\n'.join(f'<code>{link}</code>' for link in links[:2])
     await server_screen(
         call, c, user, settings, server,
         note=(f'{e("tools")} <b>Ссылка для роутера</b>'

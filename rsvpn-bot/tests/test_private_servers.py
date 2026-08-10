@@ -8,7 +8,7 @@ from app.core.time import now, parse_dt
 from app.domain import private_servers as ps
 from app.repositories.private_servers import PrivateServersRepository
 from app.repositories.users import UsersRepository
-from app.services.private_servers import PrivateServerService
+from app.services.private_servers import PrivateServerService, is_banner_link
 from app.settings.service import SettingsService
 
 SQUAD = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
@@ -1139,16 +1139,41 @@ async def test_the_link_of_our_own_node_comes_first(service):
     assert not note
 
 
-async def test_unrecognised_node_leaves_all_the_links_with_a_warning(service):
-    """Лучше показать все и предупредить, чем молча дать ссылку не туда."""
+async def test_without_a_node_name_the_last_link_wins(service):
+    """Личный сервер добавляется после общих и идёт в подписке последним."""
     srv, vpn, users = service
     server = await live_server(service)
-    vpn.keys = ['vless://a#Один', 'vless://b#Другой']
+    vpn.keys = ['vless://a@one.example:443#Общий', 'vless://b@two.example:443#Мой']
 
     links, note = await srv.router_links(server, 1)
 
-    assert links == ['vless://a#Один', 'vless://b#Другой']
-    assert 'не опознали' in note
+    assert links == ['vless://b@two.example:443#Мой']
+    assert 'Мой' in note, 'по какой подписи выбрали — должно быть видно'
+
+
+async def test_service_banners_are_not_offered_as_a_server(service):
+    """В подписке подсказки оформлены ссылками; роутер по ним не поднимется."""
+    srv, vpn, users = service
+    server = await live_server(service)
+    vpn.keys = [
+        'vless://a@31.76.119.87:443#%F0%9F%87%A9%F0%9F%87%AA%20%D0%93%D0%B5%D1%80'
+        '%D0%BC%D0%B0%D0%BD%D0%B8%D1%8F-1',
+        'vless://b@11111:443#%E2%AC%86%EF%B8%8F%D0%9E%D0%B1%D1%85%D0%BE%D0%B4%20LTE',
+        'vless://c@web.max.ru:443#%E2%AC%87%EF%B8%8F%D0%94%D0%BE%D0%BF%D0%BE%D0%BB'
+        '%D0%BD%D0%B8%D1%82%D0%B5%D0%BB%D1%8C%D0%BD%D1%8B%D0%B5%E2%AC%87%EF%B8%8F',
+    ]
+
+    links, note = await srv.router_links(server, 1)
+
+    assert links == [vpn.keys[0]], 'выбрана строка-подсказка, а не сервер'
+    assert 'Германия-1' in note
+
+
+def test_banner_recognition():
+    assert is_banner_link('vless://x@11111:443#Сервер'), 'адреса 11111 не бывает'
+    assert is_banner_link('vless://x@web.max.ru:443#%E2%AC%87%EF%B8%8F%D0%94%D0%BE%D0%BF')
+    assert not is_banner_link('vless://x@31.76.119.87:443#Германия-1')
+    assert not is_banner_link('vless://x@de1.example.com:443#Германия-1')
 
 
 async def test_a_panel_without_vless_says_so(service):
