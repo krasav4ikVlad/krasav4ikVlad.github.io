@@ -562,9 +562,8 @@ async def router_setup(call: types.CallbackQuery, callback_data: Server, c, user
     shown = '\n\n'.join(f'<code>{link}</code>' for link in links[:2])
     await server_screen(
         call, c, user, settings, server,
-        note=(f'{e("tools")} <b>Ссылка для роутера</b>'
-              + (f' — {note}' if note else '')
-              + f'\n{shown}\n\n'
+        note=(f'{e("tools")} <b>Ссылка для роутера</b>\n\n'
+              f'{shown}\n\n'
               f'Нажмите на ссылку, чтобы скопировать. В прошивке роутера '
               f'(Keenetic, OpenWrt с xray, Padavan) добавьте её как VLESS-'
               f'подключение — поля разберутся сами.\n\n'
