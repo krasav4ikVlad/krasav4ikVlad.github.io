@@ -1950,8 +1950,8 @@ async def test_buying_a_share_warns_that_the_machine_is_shared(env):
         Server(action='prof', value='share-ams-reality').pack()))
 
     text = session.last_text
-    assert '390₽' in text and 'Мест:</b> <code>6</code>' in text
-    assert '3 владельца' in text and 'не видят' in text
+    assert '390₽' in text and 'Мест:</b> <code>5</code>' in text
+    assert 'ещё двое покупателей' in text and 'не видят' in text
 
 
 async def test_full_purchase_saves_the_choice(env):

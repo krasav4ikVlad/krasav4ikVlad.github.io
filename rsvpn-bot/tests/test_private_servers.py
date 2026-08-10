@@ -1327,7 +1327,7 @@ async def test_the_share_price_is_a_third(service):
 
     assert result.amount == 390
     assert (await users.get(1))['info']['balance'] == 3000 - 390
-    assert result.server['slots'] == 6, 'владелец и пятеро друзей'
+    assert result.server['slots'] == 5, 'владелец и четверо друзей'
 
 
 async def test_the_number_of_shares_comes_from_settings(service):

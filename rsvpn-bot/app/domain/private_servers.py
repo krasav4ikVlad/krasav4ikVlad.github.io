@@ -46,7 +46,7 @@ class ServerPlan:
 # тот же личный сервер: своя ссылка, свои приглашения, своя статистика.
 # Соседей он не видит — ни в участниках, ни в цифрах.
 PLANS: tuple[ServerPlan, ...] = (
-    ServerPlan('share', 'Доля', slots=6, price=390, order=5, shares=3),
+    ServerPlan('share', 'Доля', slots=5, price=390, order=5, shares=3),
     ServerPlan('mini', 'Мини', slots=5, price=990, order=10),
     ServerPlan('company', 'Компания', slots=10, price=1500, order=20),
     ServerPlan('team', 'Команда', slots=15, price=2000, order=30),
@@ -169,6 +169,21 @@ def location_title(server: dict | None) -> str:
 def profile_title(server: dict | None) -> str:
     profile = profile_of(server)
     return profile.title if profile else '—'
+
+
+# Словами, а не цифрой: «кроме вас ещё 2 покупателя» читается как строка из
+# отчёта, а сказать это надо так, чтобы человек точно понял, с кем делит
+# машину, и не обнаружил соседей уже после оплаты.
+OTHERS_WORDS = {1: 'ещё один покупатель', 2: 'ещё двое покупателей',
+                3: 'ещё трое покупателей', 4: 'ещё четверо покупателей'}
+
+
+def others_on_machine(shares: int) -> str:
+    """Сколько покупателей, кроме этого, живёт на той же машине."""
+    others = max(0, int(shares or 1) - 1)
+    if not others:
+        return ''
+    return OTHERS_WORDS.get(others, f'ещё {others} покупателей')
 
 
 def is_shared(server: dict | None) -> bool:

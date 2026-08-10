@@ -64,8 +64,13 @@ async def shop(event, c, user: dict, settings, note: str = '') -> None:
     kb = InlineKeyboardBuilder()
     lines = []
     for plan, price in await c.private.plans():
-        what = ('машина на троих, места и статистика — только ваши'
-                if plan.shared else 'сервер целиком ваш')
+        if plan.shared:
+            shares = await c.private.shares_limit(plan)
+            what = (f'машину покупаете не только вы: кроме вас на ней '
+                    f'{ps.others_on_machine(shares)} со своими людьми. '
+                    f'Ваши {plan.slots} мест — только ваши')
+        else:
+            what = 'сервер целиком ваш'
         lines.append(f'<b>{plan.title}</b> — до {plan.slots} человек, '
                      f'<code>{price}₽</code> в месяц '
                      f'(≈{price // max(1, plan.slots)}₽ с человека)\n'
@@ -137,7 +142,10 @@ async def choose_location(call: types.CallbackQuery, callback_data: Server, c,
     kb.row(_btn(f'{e("back")} К тарифам', 'shop'))
 
     text = (profile_caption(user, f'{e("globe")} Где поднять сервер')
-            + f'<b>Тариф:</b> <code>{plan.title}</code>, мест {plan.slots}\n\n'
+            + f'<b>Тариф:</b> <code>{plan.title}</code>, мест {plan.slots}'
+            + (f' (машина общая: на ней '
+               f'{ps.others_on_machine(await c.private.shares_limit(plan))})'
+               if plan.shared else '') + '\n\n'
             + '<blockquote>Площадки с пометкой «1 ТБ» ограничены по трафику на '
               'весь сервер в месяц — на несколько человек этого хватает с '
               'запасом. Отмеченные «безлимит» работают без ограничения по '
@@ -202,11 +210,12 @@ async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user:
               f'(вы и ещё {plan.guests})\n'
             + f'<b>{e("money")} Списание:</b> <code>{price}₽</code> сейчас '
               'и столько же каждый месяц\n\n'
-            + (f'<blockquote>Машину делят {plan.shares} владельца, и это всё, '
-               f'что вас связывает: у каждого свои {plan.guests} мест, своя '
-               f'ссылка и своя статистика. Ни вы их, ни они вас не видят — '
-               f'ни в участниках, ни в цифрах. Общая только скорость канала, '
-               f'поэтому и цена втрое ниже.</blockquote>\n\n'
+            + (f'<blockquote>Эту же машину покупаете не только вы: кроме вас '
+               f'на ней {ps.others_on_machine(await c.private.shares_limit(plan))}, '
+               f'и у каждого свои {plan.slots} мест. Всё остальное раздельно — '
+               f'свои приглашения, своя статистика, своё продление. Ни вы их, '
+               f'ни они вас не видят. Общая только скорость канала, поэтому и '
+               f'цена втрое ниже.</blockquote>\n\n'
                if plan.shared else '')
             + '<blockquote>Оплата помесячная: списываем сейчас за первый месяц '
               'и дальше столько же каждые 30 дней. Отказаться от следующего '
@@ -293,9 +302,10 @@ async def server_screen(event, c, user: dict, settings, server: dict,
             'Продление выключено: сервер доработает оплаченный месяц и '
             'закроется. Передумаете — включите обратно.'
             if owner and not server.get('autorenew', True) else
-            'Ваша доля на машине: приглашайте друзей, места и статистика '
-            'только ваши. Остальных владельцев машины вы не видите, и они '
-            'вас — тоже.' if owner and ps.is_shared(server) else
+            f'Ваша доля на машине: {server.get("slots")} мест, приглашения и '
+            f'статистика только ваши. Эту же машину купили '
+            f'{ps.others_on_machine(ps.shares_of(server))} — их и их гостей вы '
+            f'не видите, они вас тоже.' if owner and ps.is_shared(server) else
             'Приглашайте друзей — каждый получит доступ к этому серверу '
             'и только к нему.' if owner else
             'Вы пользуетесь сервером друга. Оплачивает его владелец.')

@@ -202,9 +202,9 @@ async def provision(message: types.Message, c, server_id: str, squad: str) -> No
             f'протокол: {ps.profile_title(server)}.\n'
             + f'Мест: {server.get("slots")}, оплачен до '
               f'{fmt(server.get("paid_until"))}.\n\n'
-            + ('Места и статистика — только ваши: остальных владельцев '
-               'машины вы не видите, и они вас тоже.\n\n'
-               if ps.is_shared(server) else '')
+            + (f'Эту же машину купили {ps.others_on_machine(ps.shares_of(server))}, '
+               f'но места и статистика у вас свои: их и их гостей вы не видите, '
+               f'они вас тоже.\n\n' if ps.is_shared(server) else '')
             + 'Откройте профиль → «Свой сервер», чтобы позвать друзей.')
     except Exception as exc:
         log.warning('владелец %s не уведомлён о выдаче: %s', server['owner_id'], exc)
