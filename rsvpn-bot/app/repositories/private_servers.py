@@ -20,6 +20,7 @@ class PrivateServersRepository(Repository):
         await self.ensure_index('status')
         await self.ensure_index('members.user_id')
         await self.ensure_index('invites.code')
+        await self.ensure_index('squad_uuid')
 
     # ── чтение ──────────────────────────────────────────────────────────────
     async def get(self, server_id: str) -> dict | None:
@@ -37,6 +38,18 @@ class PrivateServersRepository(Repository):
 
     async def by_invite(self, code: str) -> dict | None:
         return await self.col.find_one({'invites.code': code})
+
+    async def on_squad(self, squad_uuid: str) -> list[dict]:
+        """Живые серверы на этой машине.
+
+        Для долевого тарифа их несколько: у каждого свой владелец, свои
+        участники и своя оплата, а сквад — общий.
+        """
+        if not squad_uuid:
+            return []
+        return await self.col.find({'squad_uuid': squad_uuid,
+                                    'status': {'$in': list(ps.LIVE_STATUSES)}}
+                                   ).to_list(length=50)
 
     async def pending(self) -> list[dict]:
         return await self.col.find({'status': ps.REQUESTED}).sort('created_at', 1

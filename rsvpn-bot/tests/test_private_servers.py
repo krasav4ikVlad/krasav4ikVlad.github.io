@@ -1101,6 +1101,208 @@ async def test_a_silent_panel_still_falls_back(service):
     assert rows[0]['source'] == 'user' and rows[0]['traffic'] == 4096
 
 
+# ── долевой сервер ──────────────────────────────────────────────────────────
+#
+# Одна машина на трёх владельцев. Для каждого это его сервер: свои места,
+# свои приглашения, своя статистика. Соседей по машине он видеть не должен
+# нигде — ни в участниках, ни в цифрах, ни в приглашениях.
+
+async def share_server(service_tuple, owner, squad=SQUAD):
+    service, vpn, users = service_tuple
+    await owner_with_money(users, owner)
+    result = await service.request(owner, 'share', location='ams', profile='reality')
+    await service.activate(result.server['_id'], squad)
+    return await service.servers.get(result.server['_id'])
+
+
+async def test_three_shares_fit_on_one_machine(service):
+    srv, vpn, users = service
+    first = await share_server(service, 1)
+    second = await share_server(service, 2)
+    third = await share_server(service, 3)
+
+    assert all(s['status'] == ps.ACTIVE for s in (first, second, third))
+    assert len({s['_id'] for s in (first, second, third)}) == 3, 'это один документ'
+    assert len(await srv.servers.on_squad(SQUAD)) == 3
+
+
+async def test_the_fourth_share_is_refused(service):
+    """Иначе канал делится на четверых, а продано было на троих."""
+    srv, vpn, users = service
+    for owner in (1, 2, 3):
+        await share_server(service, owner)
+    await owner_with_money(users, 4)
+    extra = await srv.request(4, 'share', location='ams', profile='reality')
+
+    result = await srv.activate(extra.server['_id'], SQUAD)
+
+    assert not result.ok and result.reason == 'squad_full'
+    assert (await srv.servers.get(extra.server['_id']))['status'] == ps.REQUESTED
+
+
+async def test_a_whole_server_does_not_share_a_machine(service):
+    """Обычный тариф занимает машину целиком: тот же сквад — это опечатка."""
+    srv, vpn, users = service
+    await live_server(service, owner=1)
+    await owner_with_money(users, 2)
+    second = await srv.request(2, 'company', location='ams', profile='grpc')
+
+    result = await srv.activate(second.server['_id'], SQUAD)
+
+    assert not result.ok and result.reason == 'squad_busy'
+
+
+async def test_shares_of_different_plans_do_not_mix(service):
+    srv, vpn, users = service
+    await share_server(service, 1)
+    await owner_with_money(users, 2)
+    other = await srv.request(2, 'mini', location='ams', profile='reality')
+
+    result = await srv.activate(other.server['_id'], SQUAD)
+
+    assert not result.ok and result.reason in ('squad_busy', 'squad_mismatch')
+
+
+async def test_neighbours_are_invisible_in_stats(service):
+    """Главное свойство тарифа: сосед по машине не должен быть виден."""
+    srv, vpn, users = service
+    mine = await share_server(service, 1)
+    await share_server(service, 2)
+    await users.create({'user_data': {'user_id': 20}, 'info': {'balance': 0},
+                        'vpn': {'uuid': 'u-20'}})
+    invite = await srv.invite(mine['_id'], 1)
+    await srv.join(invite.reason, 20)
+
+    rows = await srv.stats(await srv.servers.get(mine['_id']))
+
+    assert {row['user_id'] for row in rows} == {1, 20}, 'в статистике чужие люди'
+
+
+async def test_a_neighbours_invite_does_not_open_my_share(service):
+    srv, vpn, users = service
+    mine = await share_server(service, 1)
+    neighbour = await share_server(service, 2)
+    await users.create({'user_data': {'user_id': 20}, 'info': {'balance': 0},
+                        'vpn': {'uuid': 'u-20'}})
+
+    invite = await srv.invite(neighbour['_id'], 2)
+    await srv.join(invite.reason, 20)
+
+    assert not ps.is_member(await srv.servers.get(mine['_id']), 20)
+    assert len((await srv.servers.get(neighbour['_id']))['members']) == 1
+
+
+async def test_leaving_one_share_keeps_access_to_the_other(service):
+    """Сквад на машине общий: снять его — значит выгнать человека оттуда,
+    откуда его никто не выгонял."""
+    srv, vpn, users = service
+    first = await share_server(service, 1)
+    second = await share_server(service, 2)
+    await users.create({'user_data': {'user_id': 20}, 'info': {'balance': 0},
+                        'vpn': {'uuid': 'u-20', 'shortUuid': 's-20',
+                                'activeInternalSquads': []}})
+    for server, owner in ((first, 1), (second, 2)):
+        invite = await srv.invite(server['_id'], owner)
+        await srv.join(invite.reason, 20)
+
+    await srv.leave(first['_id'], 20)
+
+    assert SQUAD in vpn.state['u-20']['squads'], 'потерял доступ ко второй доле'
+    assert not ps.is_member(await srv.servers.get(first['_id']), 20)
+
+
+async def test_leaving_the_last_share_does_revoke_access(service):
+    srv, vpn, users = service
+    first = await share_server(service, 1)
+    await users.create({'user_data': {'user_id': 20}, 'info': {'balance': 0},
+                        'vpn': {'uuid': 'u-20', 'shortUuid': 's-20',
+                                'activeInternalSquads': []}})
+    invite = await srv.invite(first['_id'], 1)
+    await srv.join(invite.reason, 20)
+
+    await srv.leave(first['_id'], 20)
+
+    assert SQUAD not in vpn.state['u-20']['squads']
+
+
+async def test_closing_a_share_does_not_tell_admins_to_kill_the_machine(service, db):
+    """«Можно гасить VPS» под последней долей выключило бы сервер соседям."""
+    srv, vpn, users = service
+    mine = await share_server(service, 1)
+    await share_server(service, 2)
+
+    sent = []
+
+    class Notifier:
+        async def send(self, topic, text, **kw):
+            sent.append(text)
+
+    srv.notifier = Notifier()
+    await srv.close(mine, reason='тест')
+
+    assert sent and 'не гасить' in sent[-1], sent
+
+
+async def test_closing_the_last_share_frees_the_machine(service):
+    srv, vpn, users = service
+    only = await share_server(service, 1)
+
+    sent = []
+
+    class Notifier:
+        async def send(self, topic, text, **kw):
+            sent.append(text)
+
+    srv.notifier = Notifier()
+    await srv.close(only, reason='тест')
+
+    assert sent and 'можно гасить' in sent[-1], sent
+
+
+async def test_free_squads_show_where_a_share_fits(service):
+    srv, vpn, users = service
+    await share_server(service, 1)
+
+    free = await srv.free_squads('ams', 'reality')
+
+    assert free == [{'squad': SQUAD, 'used': 1, 'limit': 3, 'title': 'Амстердам',
+                     'location': 'ams', 'profile': 'reality'}]
+    assert await srv.free_squads('tyo', 'reality') == [], 'чужая локация'
+    assert await srv.free_squads('ams', 'grpc') == [], 'другой протокол'
+
+
+async def test_a_full_machine_is_not_offered(service):
+    srv, vpn, users = service
+    for owner in (1, 2, 3):
+        await share_server(service, owner)
+
+    assert await srv.free_squads('ams', 'reality') == []
+
+
+async def test_the_share_price_is_a_third(service):
+    srv, vpn, users = service
+    await owner_with_money(users, 1)
+
+    result = await srv.request(1, 'share', location='ams', profile='reality')
+
+    assert result.amount == 390
+    assert (await users.get(1))['info']['balance'] == 3000 - 390
+    assert result.server['slots'] == 6, 'владелец и пятеро друзей'
+
+
+async def test_the_number_of_shares_comes_from_settings(service):
+    srv, vpn, users = service
+    await srv.settings.set('private.shares', 2)
+    await share_server(service, 1)
+    await share_server(service, 2)
+    await owner_with_money(users, 3)
+    third = await srv.request(3, 'share', location='ams', profile='reality')
+
+    result = await srv.activate(third.server['_id'], SQUAD)
+
+    assert not result.ok and result.reason == 'squad_full'
+
+
 # ── ссылка для роутера ──────────────────────────────────────────────────────
 #
 # Роутер не умеет обновлять подписку, ему нужна прямая ссылка. И только там,

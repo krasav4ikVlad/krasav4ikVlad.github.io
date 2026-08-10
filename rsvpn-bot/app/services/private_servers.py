@@ -246,6 +246,43 @@ class PrivateServerService:
                  server['_id'], user_id, plan.code, place.code, profile, amount)
         return Result(True, server=dict(server, price=amount), amount=amount)
 
+    async def shares_limit(self, plan: ps.ServerPlan) -> int:
+        """Сколько долей сажаем на машину. Правится из админки, как и цены."""
+        if not plan.shared:
+            return 1
+        return await self.settings.int('private.shares') or plan.shares
+
+    async def free_squads(self, location: str, profile: str) -> list[dict]:
+        """Машины, куда можно подсадить ещё одну долю.
+
+        Админу иначе пришлось бы держать в голове, какой сквад чем занят:
+        доли выдаются по одной, а сервер под ними один и тот же.
+        """
+        live = await self.servers.col.find(
+            {'status': {'$in': list(ps.LIVE_STATUSES)},
+             'squad_uuid': {'$nin': ['', None]}}).to_list(length=300)
+
+        by_squad: dict[str, list[dict]] = {}
+        for server in live:
+            by_squad.setdefault(server['squad_uuid'], []).append(server)
+
+        rows = []
+        for squad, servers in by_squad.items():
+            plan = ps.plan_of(servers[0])
+            if not plan or not plan.shared:
+                continue
+            # Локация и протокол у соседей по машине общие — подсадить долю
+            # в другую страну физически нельзя.
+            if servers[0].get('location') != location or servers[0].get('profile') != profile:
+                continue
+            limit = await self.shares_limit(plan)
+            if len(servers) < limit:
+                rows.append({'squad': squad, 'used': len(servers), 'limit': limit,
+                             'title': servers[0].get('title') or '',
+                             'location': servers[0].get('location') or '',
+                             'profile': servers[0].get('profile') or ''})
+        return rows
+
     async def activate(self, server_id: str, squad_uuid: str) -> Result:
         """Админ поднял VPS и привязал сквад — сервер начинает работать."""
         server = await self.servers.get(server_id)
@@ -253,6 +290,22 @@ class PrivateServerService:
             return Result(False, 'not_found')
         if server.get('status') != ps.REQUESTED:
             return Result(False, 'wrong_status', server=server)
+
+        # Один сквад — одна машина. Сколько долей на неё можно посадить,
+        # решает тариф: обычный сервер занимает её целиком, и повторная
+        # выдача того же сквада почти всегда опечатка в UUID.
+        plan = ps.plan_of(server)
+        neighbours = await self.servers.on_squad(squad_uuid)
+        limit = await self.shares_limit(plan) if plan else 1
+        if len(neighbours) >= limit:
+            return Result(False, 'squad_full' if limit > 1 else 'squad_busy',
+                          server=server)
+        # Смешивать тарифы на одной машине нельзя: у соседей общие локация,
+        # протокол и квота трафика, а мест продано было бы разное.
+        if neighbours and any(n.get('plan') != server.get('plan')
+                              or n.get('location') != server.get('location')
+                              for n in neighbours):
+            return Result(False, 'squad_mismatch', server=server)
 
         paid_until = now() + timedelta(days=ps.CHARGE_PERIOD_DAYS)
         await self.servers.set(server_id, status=ps.ACTIVE, squad_uuid=squad_uuid,
@@ -692,9 +745,13 @@ class PrivateServerService:
         await self._tell(server['owner_id'],
                          f'Сервер «{server.get("title")}» закрыт: {reason}.')
         if self.notifier:
+            # На долевой машине живут ещё двое. Погасить VPS по такому
+            # сообщению — значит выключить сервер оплатившим людям.
+            left = len(await self.servers.on_squad(server.get('squad_uuid') or ''))
+            what = (f'освободилась доля, на машине осталось {left} — VPS не гасить'
+                    if left else 'можно гасить VPS')
             await self.notifier.send(
-                'payments',
-                f'Сервер {server["_id"]} закрыт ({reason}) — можно гасить VPS')
+                'payments', f'Сервер {server["_id"]} закрыт ({reason}) — {what}')
 
     # ── работа с панелью ────────────────────────────────────────────────────
     @staticmethod
@@ -754,6 +811,13 @@ class PrivateServerService:
         if not vpn.get('uuid'):
             return
 
+        # На долевой машине сквад общий. Если человек сидит ещё и в соседней
+        # доле — забирать сквад нельзя: он потеряет доступ там, где его
+        # никто не выгонял.
+        if await self._elsewhere_on_squad(server, user_id):
+            log.info('%s остаётся на скваде %s по другой доле', user_id, squad)
+            return
+
         squads = [s for s in (vpn.get('activeInternalSquads') or []) if s != squad]
         previous = parse_dt(vpn.get('private_prev_expire'))
 
@@ -770,6 +834,14 @@ class PrivateServerService:
         if previous:
             fields['expireAt'] = previous
         await self.users.set_vpn(user_id, fields)
+
+    async def _elsewhere_on_squad(self, server: dict, user_id: int) -> bool:
+        """Есть ли у человека доступ к этой же машине по другой доле."""
+        squad = server.get('squad_uuid')
+        if not squad or not ps.is_shared(server):
+            return False
+        return any(other['_id'] != server['_id'] and ps.is_member(other, user_id)
+                   for other in await self.servers.on_squad(squad))
 
     async def _extend_everyone(self, server: dict) -> None:
         """После оплаты месяца — продлить срок всем, кто живёт на сервере."""

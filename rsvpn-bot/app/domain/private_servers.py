@@ -24,16 +24,29 @@ class ServerPlan:
     slots: int          # сколько человек всего, включая владельца
     price: int          # ₽ в месяц
     order: int
+    # Сколько таких долей живёт на одной машине. Единица — сервер целиком,
+    # больше — долевой тариф: у каждого своя доля со своими участниками,
+    # и друг о друге они не знают.
+    shares: int = 1
 
     @property
     def guests(self) -> int:
         """Сколько друзей можно позвать: владелец занимает один слот."""
         return max(0, self.slots - 1)
 
+    @property
+    def shared(self) -> bool:
+        return self.shares > 1
+
 
 # Себестоимость VPS — около 630₽/мес. На пятёрке маржа тонкая, но это
 # входной тариф: он существует, чтобы попробовать, а не чтобы зарабатывать.
+#
+# «Доля» дешевле втрое, потому что машина одна на троих. Для человека это
+# тот же личный сервер: своя ссылка, свои приглашения, своя статистика.
+# Соседей он не видит — ни в участниках, ни в цифрах.
 PLANS: tuple[ServerPlan, ...] = (
+    ServerPlan('share', 'Доля', slots=6, price=390, order=5, shares=3),
     ServerPlan('mini', 'Мини', slots=5, price=990, order=10),
     ServerPlan('company', 'Компания', slots=10, price=1500, order=20),
     ServerPlan('team', 'Команда', slots=15, price=2000, order=30),
@@ -156,6 +169,18 @@ def location_title(server: dict | None) -> str:
 def profile_title(server: dict | None) -> str:
     profile = profile_of(server)
     return profile.title if profile else '—'
+
+
+def is_shared(server: dict | None) -> bool:
+    """Долевой сервер: машина одна, владельцев несколько."""
+    plan = plan_of(server)
+    return bool(plan and plan.shared)
+
+
+def shares_of(server: dict | None) -> int:
+    """Сколько долей помещается на машину этого сервера."""
+    plan = plan_of(server)
+    return plan.shares if plan else 1
 
 
 def router_ready(server: dict | None) -> bool:

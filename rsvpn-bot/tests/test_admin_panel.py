@@ -884,6 +884,43 @@ async def test_squad_command_without_a_server_says_so(admin_env):
     assert 'какой сервер' in session.last_text
 
 
+async def test_a_share_request_shows_where_it_fits(admin_env):
+    """Иначе админ поднимает новый VPS там, где хватило бы места на старом."""
+    from app.admin.private_servers import request_card
+
+    dp, bot, session, container = admin_env
+    await _pending_server(container, bot)
+    await container.users.create({'user_data': {'user_id': 555},
+                                  'info': {'balance': 3000},
+                                  'vpn': {'uuid': 'u-555', 'shortUuid': 's-555'}})
+    taken = await container.private.request(555, 'share', location='ams',
+                                            profile='reality')
+    await container.private.activate(taken.server['_id'],
+                                     'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+
+    await container.users.create({'user_data': {'user_id': 556},
+                                  'info': {'balance': 3000},
+                                  'vpn': {'uuid': 'u-556', 'shortUuid': 's-556'}})
+    second = await container.private.request(556, 'share', location='ams',
+                                             profile='reality')
+
+    card = await request_card(container, second.server)
+
+    assert 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' in card
+    assert 'занято 1 из 3' in card
+
+
+async def test_a_whole_server_request_says_to_raise_a_machine(admin_env):
+    from app.admin.private_servers import request_card
+
+    dp, bot, session, container = admin_env
+    server_id = await _pending_server(container, bot)
+
+    card = await request_card(container, await container.private.servers.get(server_id))
+
+    assert 'Поднимите VPS' in card
+
+
 async def test_prompt_in_a_group_asks_for_the_command(admin_env):
     """В личке — «пришлите сообщением», в группе так работать не будет."""
     from app.bot.callbacks import ServerAdmin

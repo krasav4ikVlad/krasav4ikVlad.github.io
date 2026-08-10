@@ -64,9 +64,12 @@ async def shop(event, c, user: dict, settings, note: str = '') -> None:
     kb = InlineKeyboardBuilder()
     lines = []
     for plan, price in await c.private.plans():
+        what = ('машина на троих, места и статистика — только ваши'
+                if plan.shared else 'сервер целиком ваш')
         lines.append(f'<b>{plan.title}</b> — до {plan.slots} человек, '
                      f'<code>{price}₽</code> в месяц '
-                     f'(≈{price // max(1, plan.slots)}₽ с человека)')
+                     f'(≈{price // max(1, plan.slots)}₽ с человека)\n'
+                     f'   <i>{what}</i>')
         kb.row(_btn(f'{plan.title} — {price}₽', 'buy', plan.code))
 
     text = (profile_caption(user, f'{e("servers")} Свой сервер')
@@ -199,6 +202,12 @@ async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user:
               f'(вы и ещё {plan.guests})\n'
             + f'<b>{e("money")} Списание:</b> <code>{price}₽</code> сейчас '
               'и столько же каждый месяц\n\n'
+            + (f'<blockquote>Машину делят {plan.shares} владельца, и это всё, '
+               f'что вас связывает: у каждого свои {plan.guests} мест, своя '
+               f'ссылка и своя статистика. Ни вы их, ни они вас не видят — '
+               f'ни в участниках, ни в цифрах. Общая только скорость канала, '
+               f'поэтому и цена втрое ниже.</blockquote>\n\n'
+               if plan.shared else '')
             + '<blockquote>Оплата помесячная: списываем сейчас за первый месяц '
               'и дальше столько же каждые 30 дней. Отказаться от следующего '
               'списания можно в любой момент — сервер доработает оплаченное.\n\n'
@@ -284,6 +293,9 @@ async def server_screen(event, c, user: dict, settings, server: dict,
             'Продление выключено: сервер доработает оплаченный месяц и '
             'закроется. Передумаете — включите обратно.'
             if owner and not server.get('autorenew', True) else
+            'Ваша доля на машине: приглашайте друзей, места и статистика '
+            'только ваши. Остальных владельцев машины вы не видите, и они '
+            'вас — тоже.' if owner and ps.is_shared(server) else
             'Приглашайте друзей — каждый получит доступ к этому серверу '
             'и только к нему.' if owner else
             'Вы пользуетесь сервером друга. Оплачивает его владелец.')
@@ -488,8 +500,12 @@ async def stats(call: types.CallbackQuery, callback_data: Server, c, user: dict,
     location = ps.location_of(server)
     used = sum(row['traffic'] for row in rows)
     if location and location.limited:
-        share = round(ps.gb(used) / location.traffic_gb * 100, 1)
-        quota = f' из <code>{location.traffic_title}</code> ({share}%)'
+        percent = round(ps.gb(used) / location.traffic_gb * 100, 1)
+        # На долевой машине квота одна на всех, а цифра выше — только по
+        # своим. Выдавать её за расход всей машины нельзя.
+        quota = (f' из <code>{location.traffic_title}</code> общих на машину '
+                 f'(ваши {percent}%)' if ps.is_shared(server) else
+                 f' из <code>{location.traffic_title}</code> ({percent}%)')
     elif location:
         quota = ' (без ограничения)'
     else:

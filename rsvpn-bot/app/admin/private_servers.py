@@ -63,9 +63,36 @@ async def request_card(c, server: dict) -> str:
             f'{e("money")} Оплачено: <b>{server.get("price")}₽</b> в месяц\n'
             f'{e("id")} Сервер: <code>{server["_id"]}</code>\n'
             f'{e("calendar")} Создана: {fmt(server.get("created_at"))}\n\n'
-            f'<blockquote>Поднимите VPS в указанной локации с указанным '
-            f'протоколом, заведите под него внутренний сквад в панели и '
-            f'нажмите «Выдать сервер» — бот попросит UUID сквада.</blockquote>')
+            + await _how_to_give(c, server))
+
+
+async def _how_to_give(c, server: dict) -> str:
+    """Что делать админу. Для доли — куда её можно подсадить.
+
+    Долевой сервер поднимать заново не надо, если машина уже есть и на ней
+    осталось место. Держать в голове, какой сквад чем занят, невозможно,
+    поэтому свободные машины бот показывает прямо в заявке.
+    """
+    plan = ps.plan_of(server)
+    if not plan or not plan.shared:
+        return ('<blockquote>Поднимите VPS в указанной локации с указанным '
+                'протоколом, заведите под него внутренний сквад в панели и '
+                'нажмите «Выдать сервер» — бот попросит UUID сквада.</blockquote>')
+
+    free = await c.private.free_squads(server.get('location') or '',
+                                       server.get('profile') or '')
+    if not free:
+        limit = await c.private.shares_limit(plan)
+        return (f'<blockquote>Долевой тариф: на машину сажаем {limit} доли. '
+                f'Свободных машин в этой локации с этим протоколом нет — '
+                f'поднимите новую и выдайте её сквад. Следующие две доли '
+                f'сядут на неё же.</blockquote>')
+
+    rows = '\n'.join(f'<code>{row["squad"]}</code> — занято '
+                     f'{row["used"]} из {row["limit"]}' for row in free)
+    return (f'<blockquote>Долевой тариф: есть машина со свободным местом, '
+            f'новую поднимать не нужно — выдайте тот же сквад.\n\n{rows}'
+            f'</blockquote>')
 
 
 async def give(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
@@ -139,12 +166,27 @@ async def squad_command(message: types.Message, command, state: FSMContext,
     await provision(message, c, server_id, squad)
 
 
+# Почему выдача не прошла. Код ошибки сам по себе ничего не объясняет, а
+# ошибиться здесь легко: сквад один на несколько долей, и перепутать его с
+# соседним — обычное дело.
+GIVE_ERRORS = {
+    'not_found': 'заявка не найдена — проверьте id',
+    'wrong_status': 'заявка уже обработана',
+    'squad_busy': 'этот сквад уже отдан другому серверу. Обычный тариф '
+                  'занимает машину целиком — проверьте UUID',
+    'squad_full': 'на этой машине уже все доли заняты — нужна новая',
+    'squad_mismatch': 'на этой машине другой тариф или другая локация. '
+                      'Соседи по машине должны совпадать',
+}
+
+
 async def provision(message: types.Message, c, server_id: str, squad: str) -> None:
     # Локацию не спрашиваем: её выбрал покупатель на витрине, и переспросить
     # значит дать возможность молча выдать не то, за что заплатили.
     result = await c.private.activate(server_id, squad)
     if not result.ok:
-        await message.answer(f'{e("cross")} Не вышло: {result.reason}')
+        await message.answer(
+            f'{e("cross")} Не вышло: {GIVE_ERRORS.get(result.reason, result.reason)}')
         return
 
     server = result.server
@@ -160,7 +202,10 @@ async def provision(message: types.Message, c, server_id: str, squad: str) -> No
             f'протокол: {ps.profile_title(server)}.\n'
             + f'Мест: {server.get("slots")}, оплачен до '
               f'{fmt(server.get("paid_until"))}.\n\n'
-              f'Откройте профиль → «Свой сервер», чтобы позвать друзей.')
+            + ('Места и статистика — только ваши: остальных владельцев '
+               'машины вы не видите, и они вас тоже.\n\n'
+               if ps.is_shared(server) else '')
+            + 'Откройте профиль → «Свой сервер», чтобы позвать друзей.')
     except Exception as exc:
         log.warning('владелец %s не уведомлён о выдаче: %s', server['owner_id'], exc)
 
@@ -197,11 +242,21 @@ async def listing(message: types.Message, c, settings) -> None:
         await message.answer(f'{e("servers")} Личных серверов пока нет.')
         return
 
+    # Сколько долей на каждой машине — чтобы было видно, куда сядет
+    # следующая заявка и какие машины пора освобождать.
+    on_squad: dict[str, int] = {}
+    for server in servers:
+        if server.get('squad_uuid'):
+            on_squad[server['squad_uuid']] = on_squad.get(server['squad_uuid'], 0) + 1
+
     lines = [f'{e("servers")} <b>Личные серверы</b>\n']
     total = 0
     for server in servers:
         if server.get('status') == ps.ACTIVE:
             total += int(server.get('price') or 0)
+        squad = server.get('squad_uuid') or ''
+        shared = (f', доля {on_squad.get(squad, 1)}/{ps.shares_of(server)} '
+                  f'на <code>…{squad[-6:]}</code>' if ps.is_shared(server) and squad else '')
         lines.append(
             f'{ps.STATUS_TITLES.get(server.get("status"), "")} '
             f'<code>{server["_id"]}</code> — {server.get("title")}, '
@@ -209,7 +264,8 @@ async def listing(message: types.Message, c, settings) -> None:
             f'{ps.occupied(server)}/{server.get("slots")} мест, '
             f'{ps.location_title(server)}/{ps.profile_title(server)}, '
             f'{server.get("price")}₽'
-            + (f', до {fmt(server.get("paid_until"))}' if server.get('paid_until') else ''))
+            + (f', до {fmt(server.get("paid_until"))}' if server.get('paid_until') else '')
+            + shared)
 
     lines.append(f'\n<b>{e("money")} Выручка в месяц:</b> <code>{total}₽</code>')
     await message.answer('\n'.join(lines))

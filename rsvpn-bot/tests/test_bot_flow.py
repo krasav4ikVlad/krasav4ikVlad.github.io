@@ -1928,6 +1928,32 @@ async def test_confirmation_shows_everything_that_was_chosen(env):
     assert '990₽' in text
 
 
+async def test_the_share_plan_is_offered_first_and_explains_itself(env):
+    """Входная цена — главный аргумент, поэтому доля стоит первой."""
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+
+    labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
+    assert labels[0].startswith('Доля'), labels
+    assert '390₽' in labels[0]
+    assert 'только ваши' in session.last_text
+
+
+async def test_buying_a_share_warns_that_the_machine_is_shared(env):
+    """Умолчать, что машина общая, — это претензия в поддержку через неделю."""
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+
+    await dp.feed_update(bot, callback(
+        Server(action='prof', value='share-ams-reality').pack()))
+
+    text = session.last_text
+    assert '390₽' in text and 'Мест:</b> <code>6</code>' in text
+    assert '3 владельца' in text and 'не видят' in text
+
+
 async def test_full_purchase_saves_the_choice(env):
     from app.bot.callbacks import Server
 
