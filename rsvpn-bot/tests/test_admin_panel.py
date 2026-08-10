@@ -785,11 +785,22 @@ async def test_expiry_test_reports_a_disabled_threshold(admin_env):
 
 # ── личные серверы ──────────────────────────────────────────────────────────
 
-async def test_private_server_button_hidden_from_regular_users(admin_env):
-    """На время тестов раздел виден только админам, и кнопки быть не должно."""
+async def test_private_server_button_is_open_to_everyone_by_default(admin_env):
+    """Раздел обкатали и открыли: по умолчанию его видит любой."""
     from app.bot.handlers.private_servers import visible_for
 
     dp, bot, session, container = admin_env
+
+    assert await visible_for(ADMIN.id, container, container.settings) is True
+    assert await visible_for(999999, container, container.settings) is True
+
+
+async def test_private_server_can_be_hidden_from_regular_users(admin_env):
+    """Обратный переключатель нужен: обкатывать следующее придётся так же."""
+    from app.bot.handlers.private_servers import visible_for
+
+    dp, bot, session, container = admin_env
+    await container.settings.set('private.visibility', 'admins')
 
     assert await visible_for(ADMIN.id, container, container.settings) is True
     assert await visible_for(999999, container, container.settings) is False

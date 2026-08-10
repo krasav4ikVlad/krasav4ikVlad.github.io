@@ -257,9 +257,9 @@ SCHEMA: tuple[Group, ...] = (
     )),
 
     Group('private', f'{e("private")} Личные серверы', (
-        Setting('private.visibility', 'Кому виден раздел', 'str', 'admins',
-                hint='off — выключен совсем; admins — только админам (на время '
-                     'тестов); all — всем. Кнопка у обычного человека при '
+        Setting('private.visibility', 'Кому виден раздел', 'str', 'all',
+                hint='all — всем; admins — только админам (так обкатывали); '
+                     'off — выключен совсем. Кнопка у обычного человека при '
                      '«admins» не показывается вовсе'),
         Setting('private.enabled', 'Приём заявок', 'bool', True,
                 hint='Выключает покупку, не трогая уже работающие серверы'),

@@ -1,8 +1,9 @@
 """Личный сервер: витрина, покупка, участники, статистика.
 
-Пока функция тестируется, раздел виден только админам — настройка
-`private.visibility`. Кнопки в профиле у обычного человека при этом нет
-совсем: показывать её и отвечать «недоступно» хуже, чем не показывать.
+Кому виден раздел — настройка `private.visibility`: всем, только админам
+(так его обкатывали) или никому. Кнопки в профиле у того, кому раздел не
+виден, нет совсем: показывать её и отвечать «недоступно» хуже, чем не
+показывать.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ class ServerTitle(StatesGroup):
 
 async def visible_for(user_id: int, c, settings) -> bool:
     """Кому показывать раздел. На время тестов — только админам."""
-    mode = str(await settings.get('private.visibility') or 'admins')
+    mode = str(await settings.get('private.visibility') or 'all')
     if mode == 'off':
         return False
     if mode == 'admins':
