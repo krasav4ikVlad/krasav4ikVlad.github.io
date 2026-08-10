@@ -482,6 +482,49 @@ class PrivateServerService:
             rows.append(row)
         return rows
 
+    async def router_links(self, server: dict, user_id: int) -> tuple[list[str], str]:
+        """VLESS-ссылки для роутера: (ссылки, заметка).
+
+        Роутеру нужна прямая ссылка, а не подписка: прошивки умеют xray, но
+        не умеют её обновлять. Первой идёт ссылка на ноду этого сервера —
+        отличаем по имени ноды в подписи ссылки.
+        """
+        if not ps.router_ready(server):
+            return [], 'на роутер ставится только TCP Reality и gRPC'
+
+        user = await self.users.get(user_id, {'vpn.uuid': 1})
+        uuid = self.users.pick(user or {}, 'vpn.uuid')
+        if not uuid:
+            return [], 'подписки в панели нет'
+
+        try:
+            keys = await self.vpn.connection_keys(uuid, user_id)
+        except Exception as exc:
+            log.warning('ссылки подключения %s не получены: %s', user_id, exc)
+            return [], str(exc)
+
+        vless = [key for key in keys if key.lower().startswith('vless://')]
+        if not vless:
+            return [], 'панель не отдала ни одной VLESS-ссылки'
+
+        # Имя ноды сервера — по нему узнаём нужную ссылку среди прочих.
+        names = []
+        try:
+            for node in await self.vpn.squad_nodes(server.get('squad_uuid') or ''):
+                name = node.get('nodeName') or node.get('name')
+                if name:
+                    names.append(str(name).lower())
+        except Exception as exc:
+            log.info('имя ноды сервера не получено: %s', exc)
+
+        def mine(link: str) -> bool:
+            tail = link.rsplit('#', 1)[-1].lower()
+            return any(name in tail or tail in name for name in names)
+
+        ours = [link for link in vless if mine(link)]
+        return (ours or vless), ('' if ours else 'ссылку своего сервера '
+                                 'не опознали — выберите по названию')
+
     # ── продление ───────────────────────────────────────────────────────────
     async def set_autorenew(self, server_id: str, owner_id: int, on: bool) -> Result:
         """Владелец решает, списывать ли следующий месяц.

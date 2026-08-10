@@ -274,6 +274,11 @@ async def server_screen(event, c, user: dict, settings, server: dict,
         else:
             kb.row(_btn(f'{e("cross")} Выйти с сервера', 'leave', server['_id']))
 
+        # Роутер — только там, где протокол это позволяет: Hysteria2
+        # прошивки почти не умеют, и кнопка вела бы в тупик.
+        if ps.router_ready(server):
+            kb.row(_btn(f'{e("tools")} Настроить на роутер', 'router', server['_id']))
+
     hint = ('Сервер готовится. Как только он будет поднят, придёт сообщение.'
             if server.get('status') == ps.REQUESTED else
             'Продление выключено: сервер доработает оплаченный месяц и '
@@ -534,6 +539,37 @@ async def link(call: types.CallbackQuery, callback_data: Server, c, user: dict,
               f'приложении: сервер появится в списке.'))
 
 
+async def router_setup(call: types.CallbackQuery, callback_data: Server, c, user: dict,
+                       settings) -> None:
+    """Ссылка для роутера. Подписка роутеру не годится — нужна прямая ссылка."""
+    server = await c.private.servers.get(callback_data.value)
+    if not server or not ps.is_member(server, call.from_user.id):
+        await call.answer(ERRORS['not_owner'], show_alert=True)
+        return
+
+    await call.answer('Спрашиваю панель…')
+    links, note = await c.private.router_links(server, call.from_user.id)
+    if not links:
+        await server_screen(call, c, user, settings, server,
+                            note=f'{e("warning")} Ссылку для роутера получить не '
+                                 f'вышло: {note}. Напишите в поддержку.')
+        return
+
+    # Ссылки — обычным блоком и в <code>: из цитаты роутерную строку не
+    # скопировать, а вручную такое не перенабирают.
+    shown = '\n\n'.join(f'<code>{link}</code>' for link in links[:3])
+    await server_screen(
+        call, c, user, settings, server,
+        note=(f'{e("tools")} <b>Ссылка для роутера</b>'
+              + (f' — {note}' if note else '')
+              + f'\n{shown}\n\n'
+              f'Нажмите на ссылку, чтобы скопировать. В прошивке роутера '
+              f'(Keenetic, OpenWrt с xray, Padavan) добавьте её как VLESS-'
+              f'подключение — поля разберутся сами.\n\n'
+              f'Роутер считается одним устройством из вашего лимита, зато '
+              f'через него работает вся домашняя сеть.'))
+
+
 def create_router() -> Router:
     router = Router(name='private_servers')
 
@@ -553,4 +589,5 @@ def create_router() -> Router:
     router.callback_query.register(toggle_renew, Server.filter(F.action == 'renew'))
     router.callback_query.register(stats, Server.filter(F.action == 'stats'))
     router.callback_query.register(link, Server.filter(F.action == 'link'))
+    router.callback_query.register(router_setup, Server.filter(F.action == 'router'))
     return router

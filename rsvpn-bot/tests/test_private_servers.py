@@ -20,6 +20,7 @@ class FakeVpn:
     def __init__(self):
         self.state: dict[str, dict] = {}
         self.fail = False
+        self.keys: list[str] = []
 
     async def create_subscription(self, user_id: int, days: int) -> dict:
         uuid = f'u-{user_id}'
@@ -60,6 +61,9 @@ class FakeVpn:
 
     async def node_users_raw(self, node_uuid, start, end, top=200):
         return {}
+
+    async def connection_keys(self, uuid, user_id=None) -> list:
+        return list(self.keys)
 
 
 @pytest.fixture
@@ -1095,6 +1099,79 @@ async def test_a_silent_panel_still_falls_back(service):
     rows = await srv.stats(server)
 
     assert rows[0]['source'] == 'user' and rows[0]['traffic'] == 4096
+
+
+# ── ссылка для роутера ──────────────────────────────────────────────────────
+#
+# Роутер не умеет обновлять подписку, ему нужна прямая ссылка. И только там,
+# где протокол это позволяет: Hysteria2 в прошивках почти не встречается.
+
+async def test_router_link_is_only_for_the_right_profiles(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+    vpn.keys = ['vless://key#node-ams']
+
+    links, _ = await srv.router_links(server, 1)
+    assert links == ['vless://key#node-ams'], 'на gRPC ссылка должна быть'
+
+    await srv.servers.set(server['_id'], profile='hysteria2')
+    hysteria = await srv.servers.get(server['_id'])
+
+    links, note = await srv.router_links(hysteria, 1)
+    assert not links and 'TCP Reality' in note
+
+
+async def test_the_link_of_our_own_node_comes_first(service):
+    """Ссылок в подписке много — человеку нужна та, что ведёт на его сервер."""
+    srv, vpn, users = service
+    server = await live_server(service)
+    vpn.keys = ['vless://other#Общий-Франкфурт', 'vless://mine#Node-Ams-1',
+                'ss://mine#Node-Ams-1']
+
+    async def nodes(squad):
+        assert squad == server['squad_uuid']
+        return [{'nodeName': 'Node-Ams-1'}]
+
+    vpn.squad_nodes = nodes
+    links, note = await srv.router_links(server, 1)
+
+    assert links == ['vless://mine#Node-Ams-1'], 'ss:// роутеру не годится'
+    assert not note
+
+
+async def test_unrecognised_node_leaves_all_the_links_with_a_warning(service):
+    """Лучше показать все и предупредить, чем молча дать ссылку не туда."""
+    srv, vpn, users = service
+    server = await live_server(service)
+    vpn.keys = ['vless://a#Один', 'vless://b#Другой']
+
+    links, note = await srv.router_links(server, 1)
+
+    assert links == ['vless://a#Один', 'vless://b#Другой']
+    assert 'не опознали' in note
+
+
+async def test_a_panel_without_vless_says_so(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+    vpn.keys = ['ss://only-this']
+
+    links, note = await srv.router_links(server, 1)
+
+    assert not links and 'VLESS' in note
+
+
+async def test_a_broken_panel_does_not_raise(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    async def broken(uuid, user_id=None):
+        raise RuntimeError('HTTP 500')
+
+    vpn.connection_keys = broken
+    links, note = await srv.router_links(server, 1)
+
+    assert not links and 'HTTP 500' in note
 
 
 # ── участник без своей подписки ─────────────────────────────────────────────

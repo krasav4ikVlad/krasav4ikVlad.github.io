@@ -2068,6 +2068,71 @@ async def test_connect_hint_appears_on_the_same_screen(env):
     assert 'уже в вашей подписке' in session.last_text
 
 
+# ── ссылка для роутера ──────────────────────────────────────────────────────
+#
+# Через роутер работает вся домашняя сеть, но прошивке нужна прямая ссылка,
+# и не на всяком протоколе она вообще есть.
+
+async def test_router_button_is_offered_on_reality(env):
+    from app.bot.callbacks import Menu
+
+    dp, bot, session, c = env
+    server_id = await _own_server(dp, bot, c)
+
+    await dp.feed_update(bot, callback(Menu(screen='private').pack()))
+
+    labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
+    assert any('роутер' in label for label in labels), labels
+
+
+async def test_hysteria_gets_no_router_button(env):
+    """Кнопка вела бы к инструкции, которая на этом протоколе не работает."""
+    from app.bot.callbacks import Menu
+
+    dp, bot, session, c = env
+    server_id = await _own_server(dp, bot, c)
+    await c.private.servers.set(server_id, profile='hysteria2')
+
+    await dp.feed_update(bot, callback(Menu(screen='private').pack()))
+
+    labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
+    assert not any('роутер' in label for label in labels), labels
+
+
+async def test_router_link_is_shown_copyable_on_the_same_screen(env):
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    server_id = await _own_server(dp, bot, c)
+
+    async def keys(uuid, user_id=None):
+        return ['vless://key-for-router#Ams']
+
+    c.vpn.connection_keys = keys
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Server(action='router', value=server_id).pack()))
+
+    assert not [n for n, _ in session.calls if n in ('SendMessage', 'SendPhoto')], \
+        session.calls
+    assert '<code>vless://key-for-router#Ams</code>' in session.last_text
+
+
+async def test_a_panel_without_links_says_what_happened(env):
+    """Молчаливый экран «ничего не произошло» хуже, чем честная причина."""
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    server_id = await _own_server(dp, bot, c)
+
+    async def empty(uuid, user_id=None):
+        return []
+
+    c.vpn.connection_keys = empty
+    await dp.feed_update(bot, callback(Server(action='router', value=server_id).pack()))
+
+    assert 'поддержку' in session.last_text
+
+
 # ── выбор устройств при первой покупке ──────────────────────────────────────
 #
 # Спрашиваем только у того, у кого подписки ещё нет. Сами устройства

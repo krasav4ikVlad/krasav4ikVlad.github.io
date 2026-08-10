@@ -85,6 +85,10 @@ class Profile:
     code: str
     title: str
     hint: str
+    # Ставится ли на роутер. Роутеры умеют VLESS через xray, а Hysteria2
+    # (QUIC поверх UDP) в их прошивках почти не встречается — обещать его
+    # для роутера значит отправить человека к неработающей инструкции.
+    router: bool = False
 
 
 # От профиля зависит скорость и то, как сервер переживает блокировки.
@@ -92,9 +96,11 @@ class Profile:
 # ему нужно, а кто не знает — берёт первый, он же и рекомендованный.
 PROFILES: tuple[Profile, ...] = (
     Profile('reality', 'TCP Reality',
-            'Универсальный. Незаметен для блокировок, стабилен почти везде'),
+            'Универсальный. Незаметен для блокировок, стабилен почти везде. '
+            'Ставится на роутер', router=True),
     Profile('grpc', 'gRPC',
-            'Хорошо проходит там, где режут обычный TCP. Чуть выше задержка'),
+            'Хорошо проходит там, где режут обычный TCP. Чуть выше задержка. '
+            'Ставится на роутер', router=True),
     Profile('hysteria2', 'Hysteria2',
             'Самый быстрый на плохих каналах и мобильном интернете. '
             'Иногда режется провайдером'),
@@ -150,6 +156,11 @@ def location_title(server: dict | None) -> str:
 def profile_title(server: dict | None) -> str:
     profile = profile_of(server)
     return profile.title if profile else '—'
+
+
+def router_ready(server: dict | None) -> bool:
+    profile = profile_of(server)
+    return bool(profile and profile.router)
 
 
 def occupied(server: dict | None) -> int:

@@ -71,6 +71,34 @@ def usage_by_identifier(data) -> dict:
     return usage
 
 
+def _links(data) -> list[str]:
+    """Ссылки из ответа: включённые ключи, а скрытые и выключенные — мимо.
+
+    Часть версий отдаёт их в base64, часть — как есть. Отличаем по схеме:
+    рабочая ссылка начинается с протокола.
+    """
+    import base64
+
+    raw = []
+    if isinstance(data, dict):
+        raw = data.get('enabledKeys') or []
+    elif isinstance(data, list):
+        raw = data
+
+    links = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        value = item.strip()
+        if '://' not in value:
+            try:
+                value = base64.b64decode(value + '=' * (-len(value) % 4)).decode()
+            except Exception:
+                continue
+        links.extend(part for part in value.splitlines() if '://' in part)
+    return links
+
+
 def subscription_token(user_id: int, bypass: bool = False) -> str:
     """Короткий идентификатор подписки. Детерминированный: тот же вход — тот же токен."""
     raw = f'rsvpn-bypass-{user_id}-vpn-core' if bypass else f'rsvpn-{user_id}-vpn-core'
@@ -310,6 +338,29 @@ class RemnawaveClient:
             params={'start': start.strftime('%Y-%m-%d'),
                     'end': end.strftime('%Y-%m-%d'),
                     'topUsersLimit': top})
+
+    async def connection_keys(self, uuid: str, user_id: int | None = None) -> list[str]:
+        """Готовые ссылки подключения: vless://, ss:// и прочие.
+
+        Ручка в разных версиях панели принимает то uuid, то числовой id,
+        поэтому пробуем оба — второй только если первый ответил 404.
+        """
+        attempts = [value for value in (uuid, user_id) if value]
+        last: Exception | None = None
+        for value in attempts:
+            try:
+                data = await self._request(
+                    'GET', f'/api/subscriptions/connection-keys/{value}')
+            except VpnPanelError as exc:
+                last = exc
+                if 'HTTP 404' not in str(exc):
+                    raise
+                continue
+            return _links(data)
+
+        if last:
+            raise last
+        return []
 
     async def devices(self, uuid: str) -> list[dict]:
         if not uuid:

@@ -1,9 +1,11 @@
 """Клиент панели и раскладка сквадов — на поддельном HTTP."""
 
+import base64
+
 import pytest
 
 from app.core.errors import VpnPanelError
-from app.integrations.vpn.remnawave import RemnawaveClient, subscription_token
+from app.integrations.vpn.remnawave import RemnawaveClient, _links, subscription_token
 from app.services.squads import SquadService, build_active_squads, unrank_combination
 from app.settings.service import SettingsService
 from app.core.time import now
@@ -114,6 +116,52 @@ async def test_delete_device_returns_false_instead_of_raising(db):
     http = FakeHttp([FakeResponse(404, {}, text='not found')])
     api = RemnawaveClient('https://panel', 'token', http, SettingsService(db['bot_settings']))
     assert await api.delete_device('u-1', 'hwid-1') is False
+
+
+# ── ссылки подключения ──────────────────────────────────────────────────────
+#
+# Для роутера нужна прямая ссылка, а не подписка: прошивка её не обновляет.
+# Панель отдаёт ключи то списком, то в base64 — разбор должен пережить оба.
+
+def test_only_enabled_keys_are_taken():
+    """Скрытые и выключенные ключи не работают — предлагать их нельзя."""
+    links = _links({'enabledKeys': ['vless://ok#Ams'],
+                    'hiddenKeys': ['vless://hidden#X'],
+                    'disabledKeys': ['vless://off#Y']})
+    assert links == ['vless://ok#Ams']
+
+
+def test_base64_payload_is_decoded():
+    raw = base64.b64encode(b'vless://one#A\nss://two#B').decode().rstrip('=')
+    assert _links({'enabledKeys': [raw]}) == ['vless://one#A', 'ss://two#B']
+
+
+def test_garbage_does_not_break_the_list():
+    assert _links({'enabledKeys': ['', '???', 'vless://ok']}) == ['vless://ok']
+
+
+def test_a_bare_list_is_accepted_too():
+    assert _links(['vless://ok']) == ['vless://ok']
+
+
+async def test_connection_keys_falls_back_to_the_numeric_id(db):
+    """Старые панели знают только числовой id, новые — uuid. Пробуем оба."""
+    http = FakeHttp([FakeResponse(404, {}, text='not found'),
+                     FakeResponse(200, {'response': {'enabledKeys': ['vless://ok']}})])
+    api = RemnawaveClient('https://panel', 'token', http, SettingsService(db['bot_settings']))
+
+    assert await api.connection_keys('u-1', 802421217) == ['vless://ok']
+    assert http.calls[-1][1].endswith('/connection-keys/802421217')
+
+
+async def test_connection_keys_do_not_retry_other_errors(db):
+    """500 — это не «не та ручка», второй заход только скроет проблему."""
+    http = FakeHttp([FakeResponse(500, {}, text='oops')])
+    api = RemnawaveClient('https://panel', 'token', http, SettingsService(db['bot_settings']))
+
+    with pytest.raises(VpnPanelError):
+        await api.connection_keys('u-1', 802421217)
+    assert len(http.calls) == 1
 
 
 # ── сквады ──────────────────────────────────────────────────────────────────
