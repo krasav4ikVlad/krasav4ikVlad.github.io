@@ -175,19 +175,24 @@ async def choose_profile(call: types.CallbackQuery, callback_data: Server, c,
     kb = InlineKeyboardBuilder()
     lines = []
     for profile in ps.PROFILES:
-        # Без пометки на кнопке: галочка во всём остальном боте означает
-        # «выбрано», и здесь она читалась как уже сделанный выбор.
-        lines.append(f'<b>{profile.title}</b> — {profile.hint}')
+        # Роутер — отдельной строкой и жирным, а не хвостом описания: это
+        # единственное различие, которое потом не переиграть, и потерять
+        # его в конце фразы означает продать не то, что человек ждал.
+        # Значка нет нарочно: во всём остальном боте галочка означает
+        # «выбрано», и здесь она читалась бы как сделанный выбор.
+        lines.append(f'<b>{profile.title}</b> — {profile.hint}\n'
+                     f'   <b>{ps.router_hint(profile)}</b>')
         kb.row(_btn(profile.title, 'prof',
                     _pick(plan.code, location.code, profile.code)))
     kb.row(_btn(f'{e("back")} К локациям', 'buy', plan.code))
 
     text = (profile_caption(user, f'{e("tools")} Протокол сервера')
-            + '\n'.join(lines) + '\n\n'
+            + '\n\n'.join(lines) + '\n\n'
             + '<blockquote>От протокола зависит скорость и то, как сервер '
               'переживает блокировки. Не знаете, что выбрать, — берите '
               f'{ps.BY_PROFILE[ps.DEFAULT_PROFILE].title}: он подходит '
-              'большинству. Поменять потом можно через поддержку.</blockquote>')
+              'большинству и ставится на роутер.\n\nПоменять протокол на '
+              'работающем сервере можно только через поддержку.</blockquote>')
 
     await footer(kb, settings, back=None)
     await render(call, Screen(text=text, markup=kb.as_markup(), image=c.media('profile')))
@@ -216,6 +221,9 @@ async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user:
             + f'<b>{e("pin")} Локация:</b> <code>{location.title}</code>\n'
             + f'<b>{e("traffic")} Трафик:</b> <code>{location.traffic_title}</code>\n'
             + f'<b>{e("tools")} Протокол:</b> <code>{profile.title}</code>\n'
+            # Последний экран перед списанием: если человек брал сервер ради
+            # роутера, здесь он ещё может вернуться и поменять протокол.
+            + f'   {ps.router_hint(profile)}\n'
             + f'<b>{e("devices")} Мест:</b> <code>{plan.slots}</code> '
               f'(вы и ещё {plan.guests})\n'
             + f'<b>{e("money")} Списание:</b> <code>{price}₽</code> сейчас '

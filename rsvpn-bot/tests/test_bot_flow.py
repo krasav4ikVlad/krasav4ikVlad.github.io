@@ -1913,6 +1913,32 @@ async def test_location_leads_to_the_protocol_choice(env):
     assert any('Hysteria2' in label for label in labels), labels
 
 
+async def test_the_protocol_screen_says_who_goes_on_a_router(env):
+    """Протокол потом не поменять, и роутер — единственное, что от него ждут."""
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+
+    await dp.feed_update(bot, callback(Server(action='loc', value='mini-ams').pack()))
+
+    text = session.last_text
+    assert text.count('Ставится на роутер') == 2, 'reality и gRPC'
+    assert 'На роутер не ставится' in text, 'про Hysteria2 надо сказать прямо'
+
+
+async def test_the_confirmation_repeats_the_router_verdict(env):
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+
+    await dp.feed_update(bot, callback(
+        Server(action='prof', value='mini-ams-hysteria2').pack()))
+
+    assert 'На роутер не ставится' in session.last_text
+
+
 async def test_confirmation_shows_everything_that_was_chosen(env):
     from app.bot.callbacks import Server
 
