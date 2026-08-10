@@ -181,7 +181,7 @@ async def choose_profile(call: types.CallbackQuery, callback_data: Server, c,
         # Значка нет нарочно: во всём остальном боте галочка означает
         # «выбрано», и здесь она читалась бы как сделанный выбор.
         lines.append(f'<b>{profile.title}</b> — {profile.hint} '
-                     f'{ps.router_hint(profile)}')
+                     f'<u>{ps.router_hint(profile)}</u>')
         kb.row(_btn(profile.title, 'prof',
                     _pick(plan.code, location.code, profile.code)))
     kb.row(_btn(f'{e("back")} К локациям', 'buy', plan.code))
@@ -223,7 +223,7 @@ async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user:
             + f'<b>{e("tools")} Протокол:</b> <code>{profile.title}</code>\n'
             # Последний экран перед списанием: если человек брал сервер ради
             # роутера, здесь он ещё может вернуться и поменять протокол.
-            + f'   {ps.router_hint(profile)}\n'
+            + f'   <u>{ps.router_hint(profile)}</u>\n'
             + f'<b>{e("devices")} Мест:</b> <code>{plan.slots}</code> '
               f'(вы и ещё {plan.guests})\n'
             + f'<b>{e("money")} Списание:</b> <code>{price}₽</code> сейчас '
