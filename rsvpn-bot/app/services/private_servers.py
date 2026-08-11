@@ -182,12 +182,32 @@ NAME_KEYS = ('username', 'userName', 'name')
 TOTAL_KEYS = ('total', 'totalBytes', 'usedBytes', 'usedTrafficBytes', 'bytes')
 
 
+def describe(servers: list[dict]) -> str:
+    """Чем занята машина — строкой на каждого соседа.
+
+    Сквад в сообщении есть, а что за ним стоит — нет, и выяснять это
+    приходилось перебором /srvdiag по всем серверам подряд.
+    """
+    rows = []
+    for server in servers:
+        plan = ps.plan_of(server)
+        rows.append(f'{server["_id"]} — {plan.title if plan else server.get("plan")}, '
+                    f'{ps.location_title(server)}, '
+                    f'владелец {server.get("owner_id")}, '
+                    f'{ps.STATUS_TITLES.get(server.get("status"), server.get("status"))}')
+    return '\n'.join(rows)
+
+
 @dataclass(frozen=True)
 class Result:
     ok: bool
     reason: str = ''
     server: dict | None = None
     amount: int = 0
+    # Подробности отказа для человека: код ошибки говорит, что не так, а
+    # note — с чем именно. Без него «на машине другой тариф» не отвечает на
+    # единственный нужный вопрос: какой сервер её занял.
+    note: str = ''
 
 
 class PrivateServerService:
@@ -304,13 +324,14 @@ class PrivateServerService:
         limit = await self.shares_limit(plan) if plan else 1
         if len(neighbours) >= limit:
             return Result(False, 'squad_full' if limit > 1 else 'squad_busy',
-                          server=server)
+                          server=server, note=describe(neighbours))
         # Смешивать тарифы на одной машине нельзя: у соседей общие локация,
         # протокол и квота трафика, а мест продано было бы разное.
         if neighbours and any(n.get('plan') != server.get('plan')
                               or n.get('location') != server.get('location')
                               for n in neighbours):
-            return Result(False, 'squad_mismatch', server=server)
+            return Result(False, 'squad_mismatch', server=server,
+                          note=describe(neighbours))
 
         paid_until = now() + timedelta(days=ps.CHARGE_PERIOD_DAYS)
         await self.servers.set(server_id, status=ps.ACTIVE, squad_uuid=squad_uuid,

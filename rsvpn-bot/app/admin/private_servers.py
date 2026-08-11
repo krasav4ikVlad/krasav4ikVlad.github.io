@@ -185,8 +185,16 @@ async def provision(message: types.Message, c, server_id: str, squad: str) -> No
     # значит дать возможность молча выдать не то, за что заплатили.
     result = await c.private.activate(server_id, squad)
     if not result.ok:
+        # С чем именно конфликт — списком. Иначе на руках остаётся сквад,
+        # который «чем-то занят», и что это, приходится искать перебором.
         await message.answer(
-            f'{e("cross")} Не вышло: {GIVE_ERRORS.get(result.reason, result.reason)}')
+            f'{e("cross")} Не вышло: {GIVE_ERRORS.get(result.reason, result.reason)}'
+            + (f'\n\n<b>На этой машине уже:</b>\n<code>{result.note}</code>\n\n'
+               f'<blockquote>Если это старый тестовый сервер — уберите его '
+               f'(<code>/srvdel {result.note.split(" ")[0]}</code>). Если он '
+               f'настоящий, а разошлась только локация — поправьте её '
+               f'(<code>/srvloc</code>) или выдайте этой заявке другой сквад.'
+               f'</blockquote>' if result.note else ''))
         return
 
     server = result.server
@@ -255,8 +263,12 @@ async def listing(message: types.Message, c, settings) -> None:
         if server.get('status') == ps.ACTIVE:
             total += int(server.get('price') or 0)
         squad = server.get('squad_uuid') or ''
-        shared = (f', доля {on_squad.get(squad, 1)}/{ps.shares_of(server)} '
-                  f'на <code>…{squad[-6:]}</code>' if ps.is_shared(server) and squad else '')
+        # Хвост сквада — у всех, а не только у долей: по нему видно, какие
+        # серверы стоят на одной машине, и кто занял тот UUID, который бот
+        # только что отказался принять.
+        machine = (f', доля {on_squad.get(squad, 1)}/{ps.shares_of(server)}'
+                   if ps.is_shared(server) else '')
+        machine += f' на <code>…{squad[-6:]}</code>' if squad else ''
         lines.append(
             f'{ps.STATUS_TITLES.get(server.get("status"), "")} '
             f'<code>{server["_id"]}</code> — {server.get("title")}, '
@@ -265,7 +277,7 @@ async def listing(message: types.Message, c, settings) -> None:
             f'{ps.location_title(server)}/{ps.profile_title(server)}, '
             f'{server.get("price")}₽'
             + (f', до {fmt(server.get("paid_until"))}' if server.get('paid_until') else '')
-            + shared)
+            + machine)
 
     lines.append(f'\n<b>{e("money")} Выручка в месяц:</b> <code>{total}₽</code>')
     await message.answer('\n'.join(lines))

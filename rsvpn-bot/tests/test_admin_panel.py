@@ -945,6 +945,27 @@ async def test_squad_command_without_a_server_says_so(admin_env):
     assert 'какой сервер' in session.last_text
 
 
+async def test_a_busy_squad_error_names_the_occupant(admin_env):
+    """«Машина занята» без имени занявшего ищется перебором /srvdiag."""
+    from app.bot.callbacks import ServerAdmin
+
+    dp, bot, session, container = admin_env
+    squad = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    taken = await _pending_server(container, bot)
+    await container.private.activate(taken, squad)
+
+    await container.users.create({'user_data': {'user_id': 557},
+                                  'info': {'balance': 3000},
+                                  'vpn': {'uuid': 'u-557', 'shortUuid': 's-557'}})
+    second = await container.private.request(557, 'company', location='tyo')
+
+    await dp.feed_update(bot, message(f'/squad {second.server["_id"]} {squad}'))
+
+    assert taken in session.last_text, session.last_text
+    assert 'Мини' in session.last_text and 'Амстердам' in session.last_text
+    assert '/srvdel' in session.last_text, 'что делать дальше — не сказано'
+
+
 async def test_srvdel_removes_the_server_by_owner(admin_env):
     """Своего же сервера мешает завести второй — команда нужна для тестов."""
     dp, bot, session, container = admin_env
