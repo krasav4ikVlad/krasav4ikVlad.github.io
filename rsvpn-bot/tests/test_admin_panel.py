@@ -701,6 +701,88 @@ async def test_reject_keeps_the_money(admin_env):
     assert any('отклонена' in text for _, text in session.calls)
 
 
+# ── карточки, оставшиеся от старого бота ────────────────────────────────────
+#
+# Заявку бот присылает один раз, в момент нажатия человеком. Если её кнопки
+# перестали работать после переезда, закрыть заявку нечем: новой карточки
+# не будет, а человек ждёт деньги.
+
+async def test_a_legacy_to_balance_button_still_works(admin_env):
+    dp, bot, session, container = admin_env
+    await applicant(container, balance=50, ref=540)
+
+    await dp.feed_update(bot, callback('po:tobalance:700'))
+
+    info = (await container.users.get(700))['info']
+    assert info['balance'] == 590 and info['ref_stats']['withdrawable'] == 0
+
+
+async def test_a_legacy_done_button_still_works(admin_env):
+    dp, bot, session, container = admin_env
+    await applicant(container, to_bot=False, ref=540)
+
+    await dp.feed_update(bot, callback('po:done:700'))
+
+    info = (await container.users.get(700))['info']
+    assert info['ref_stats']['withdrawable'] == 0 and info['balance'] == 50
+    assert any('в течение пары часов' in text for _, text in session.calls)
+
+
+async def test_a_legacy_refresh_redraws_with_the_new_buttons(admin_env):
+    """После обновления карточка становится обычной, и дальше всё как всегда."""
+    dp, bot, session, container = admin_env
+    await applicant(container)
+
+    await dp.feed_update(bot, callback('po:refresh:700'))
+
+    targets = [b.callback_data for row in session.markups[-1].inline_keyboard
+               for b in row]
+    assert targets and all(t.startswith('poa:') for t in targets), targets
+
+
+async def test_a_legacy_reject_asks_for_a_reason_and_keeps_the_money(admin_env):
+    dp, bot, session, container = admin_env
+    await applicant(container)
+
+    await dp.feed_update(bot, callback('po:reject:700'))
+    labels = [b.text for row in session.markups[-1].inline_keyboard for b in row]
+    assert any('Назад' in label for label in labels), labels
+
+    await dp.feed_update(bot, callback('po:rej:data:700'))
+
+    assert (await container.users.get(700))['info']['ref_stats']['withdrawable'] == 540
+    assert any('отклонена' in text for _, text in session.calls)
+
+
+def test_the_users_own_payout_buttons_are_not_intercepted():
+    """У пользовательских кнопок вывода тот же префикс «po:». Владелец —
+    админ, и широкий фильтр отобрал бы у него собственное меню вывода."""
+    import re
+
+    from app.admin.payouts import LEGACY_PATTERN
+    from app.bot.callbacks import Payout
+
+    for data in (Payout(action='order').pack(), Payout(action='menu').pack(),
+                 Payout(action='pick', value='m1').pack(),
+                 Payout(action='confirm').pack()):
+        assert not re.match(LEGACY_PATTERN, data), data
+
+    assert re.match(LEGACY_PATTERN, 'po:done:700')
+    assert re.match(LEGACY_PATTERN, 'po:rej:data:700')
+
+
+def test_legacy_callbacks_are_parsed():
+    from app.admin.payouts import parse_legacy
+
+    assert parse_legacy('po:tobalance:700') == Pay(action='balance', user_id=700)
+    assert parse_legacy('po:rej:min:700') == Pay(action='reject', user_id=700,
+                                                 reason='min')
+    assert parse_legacy('po:done:not-a-number') is None
+    assert parse_legacy('po:unknown:700') is None
+    # новые кнопки этим путём не ходят: у них другой префикс
+    assert parse_legacy(Pay(action='balance', user_id=700).pack()) is None
+
+
 async def test_refresh_shows_fresh_numbers(admin_env):
     """Между заявкой и решением человек мог пополнить баланс — на старых
     цифрах решение принимать нельзя."""

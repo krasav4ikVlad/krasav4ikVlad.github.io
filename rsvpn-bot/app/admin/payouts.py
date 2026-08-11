@@ -150,6 +150,82 @@ async def reject(call: types.CallbackQuery, callback_data: PayoutAdmin, c) -> No
     await call.answer('Отказано')
 
 
+# ── карточки старого бота ───────────────────────────────────────────────────
+#
+# Заявки, отправленные до переезда, лежат в теме админ-чата с кнопками
+# старого формата (`po:done:123456789`). Новый бот их не слушал, и нажатие
+# не давало ничего: заявка висит, человек ждёт, а закрыть её нечем —
+# карточку заново бот не пришлёт, она рождается в момент заявки.
+#
+# Поэтому старые кнопки разбираются здесь и ведут в те же обработчики.
+# Заодно карточка перерисовывается новой клавиатурой: следующее нажатие
+# пойдёт уже обычным путём.
+# Фильтр по точному списку действий, а не по префиксу: у пользовательских
+# кнопок вывода префикс тот же самый («po:order», «po:pick:m1»), и широкий
+# фильтр на админском роутере съедал бы их у самого владельца — он тоже админ.
+LEGACY_PATTERN = (r'^po:(refresh|tobalance|done|reset|resetref|reject):-?\d+$'
+                  r'|^po:rej:[a-z_]+:-?\d+$')
+
+# старое действие → новое
+LEGACY_ACTIONS = {
+    'refresh': 'refresh',
+    'tobalance': 'balance',
+    'done': 'paid',
+    'reject': 'reject_ask',
+    'rej': 'reject',            # po:rej:<причина>:<id>
+    # «Обнулить реф» из самой первой версии: обнуляла реф-баланс без
+    # сообщения человеку. Ближайшее по смыслу — «выведено вручную», и оно
+    # хотя бы уведомляет.
+    'resetref': 'paid',
+    'reset': 'paid',
+}
+
+
+def parse_legacy(data: str) -> PayoutAdmin | None:
+    """`po:действие:id` или `po:rej:причина:id` → тот же вызов, что у новых."""
+    parts = (data or '').split(':')
+    if len(parts) < 3 or parts[0] != 'po':
+        return None
+
+    action = LEGACY_ACTIONS.get(parts[1])
+    if not action:
+        return None
+
+    reason = ''
+    if parts[1] == 'rej':
+        if len(parts) < 4:
+            return None
+        reason, user_id_raw = parts[2], parts[3]
+    else:
+        user_id_raw = parts[2]
+
+    try:
+        user_id = int(user_id_raw)
+    except (TypeError, ValueError):
+        return None
+    return PayoutAdmin(action=action, user_id=user_id, reason=reason)
+
+
+async def legacy(call: types.CallbackQuery, c) -> None:
+    callback_data = parse_legacy(call.data or '')
+    if not callback_data:
+        await call.answer('Кнопка из старой версии, действие не распознано. '
+                          'Баланс можно перевести командой.', show_alert=True)
+        return
+
+    log.info('старая кнопка выплаты %s от %s', call.data, call.from_user.id)
+    if callback_data.action == 'refresh':
+        await refresh(call, callback_data, c)
+    elif callback_data.action == 'balance':
+        await to_balance(call, callback_data, c)
+    elif callback_data.action == 'paid':
+        await paid_externally(call, callback_data, c)
+    elif callback_data.action == 'reject_ask':
+        await ask_reason(call, callback_data)
+    else:
+        await reject(call, callback_data, c)
+
+
 def register(router: Router) -> None:
     """Подключается к админскому роутеру: фильтр «только админ» уже стоит там."""
     router.callback_query.register(refresh, PayoutAdmin.filter(F.action == 'refresh'))
@@ -157,3 +233,4 @@ def register(router: Router) -> None:
     router.callback_query.register(paid_externally, PayoutAdmin.filter(F.action == 'paid'))
     router.callback_query.register(ask_reason, PayoutAdmin.filter(F.action == 'reject_ask'))
     router.callback_query.register(reject, PayoutAdmin.filter(F.action == 'reject'))
+    router.callback_query.register(legacy, F.data.regexp(LEGACY_PATTERN))
