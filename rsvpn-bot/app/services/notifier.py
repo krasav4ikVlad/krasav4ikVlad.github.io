@@ -39,26 +39,34 @@ class Notifier:
     # ── отправка ────────────────────────────────────────────────────────────
     async def send(self, topic: str, text: str, markup=None) -> bool:
         """Сообщение в тему админ-чата. Возвращает, дошло ли."""
+        return await self.post(topic, text, markup) is not None
+
+    async def post(self, topic: str, text: str, markup=None):
+        """То же, но возвращает само сообщение — карточки правятся на месте.
+
+        Заявку на сервер потом дополняют («выдан», «ошибка»), а для правки
+        нужны chat_id и message_id: без них в теме копятся ответы бота вместо
+        одной живой карточки.
+        """
         if not await self.settings.flag('notify.enabled'):
-            return False
+            return None
 
         chat_id = await self.settings.int('notify.chat_id')
         if not chat_id:
-            return False
+            return None
 
         try:
             # адресат — админ-чат, а он живёт на обычных значках: см.
             # PlainEmojiMiddleware. Заявку на вывод нельзя терять из-за
             # оформления, а кастомные эмодзи Telegram иногда отклоняет
             with plain():
-                await self.bot.send_message(
+                return await self.bot.send_message(
                     chat_id=chat_id,
                     message_thread_id=await self.settings.int(f'notify.topic_{topic}') or None,
                     text=text, reply_markup=markup)
-            return True
         except Exception as exc:
             log.warning('уведомление «%s» не отправлено: %s', topic, exc)
-            return False
+            return None
 
     async def _who(self, user_id: int, username: str | None = None) -> str:
         """Подпись пользователя. Юзернейм берём из базы, если не передали."""

@@ -45,7 +45,13 @@ def request_markup(server_id: str) -> types.InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-async def request_card(c, server: dict) -> str:
+async def request_card(c, server: dict, note: str = '') -> str:
+    """Карточка заявки. `note` заменяет инструкцию «как выдать».
+
+    Ход работы по заявке — это правки одной карточки, а не переписка с
+    ботом в теме: «пришлите UUID», «выдан», «не вышло» приходят на место
+    инструкции. Так в теме остаются только сами заявки.
+    """
     owner = await c.users.get(server['owner_id'], {'user_data': 1, 'info.balance': 1})
     username = c.users.pick(owner or {}, 'user_data.username')
     plan = ps.plan_of(server)
@@ -63,7 +69,41 @@ async def request_card(c, server: dict) -> str:
             f'{e("money")} Оплачено: <b>{server.get("price")}₽</b> в месяц\n'
             f'{e("id")} Сервер: <code>{server["_id"]}</code>\n'
             f'{e("calendar")} Создана: {fmt(server.get("created_at"))}\n\n'
-            + await _how_to_give(c, server))
+            + (f'<blockquote>{note}</blockquote>' if note
+               else await _how_to_give(c, server)))
+
+
+async def edit_card(bot, c, server: dict, note: str, markup=None) -> bool:
+    """Переписать карточку заявки на месте. False — карточки не нашли."""
+    chat_id = server.get('card_chat_id')
+    message_id = server.get('card_message_id')
+    if not chat_id or not message_id:
+        return False
+
+    from app.content.emoji import plain
+
+    try:
+        # админ-чат живёт на обычных значках — как и при отправке карточки
+        with plain():
+            await bot.edit_message_text(chat_id=chat_id, message_id=message_id,
+                                        text=await request_card(c, server, note),
+                                        reply_markup=markup)
+        return True
+    except Exception as exc:      # карточку удалили или она слишком старая
+        log.info('карточка заявки %s не обновлена: %s', server.get('_id'), exc)
+        return False
+
+
+async def drop_command(message: types.Message) -> None:
+    """Убрать команду админа: в теме должны остаться только заявки.
+
+    Право удалять чужие сообщения есть не всегда, поэтому неудача — не
+    ошибка: команда просто останется висеть.
+    """
+    try:
+        await message.delete()
+    except Exception as exc:
+        log.info('команда не удалена: %s', exc)
 
 
 async def _how_to_give(c, server: dict) -> str:
@@ -108,19 +148,31 @@ async def give(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
     await state.set_state(Provision.squad)
     await state.update_data(server_id=server['_id'])
 
+    # Кнопку жмут под самой карточкой — значит, координаты карточки известны
+    # даже у заявок, созданных до того, как их начали запоминать.
+    if (server.get('card_message_id') != call.message.message_id
+            or server.get('card_chat_id') != call.message.chat.id):
+        await c.private.servers.set(server['_id'],
+                                    card_chat_id=call.message.chat.id,
+                                    card_message_id=call.message.message_id)
+        server = await c.private.servers.get(server['_id'])
+
     # В группе обычный текст до бота не доходит: у ботов включён privacy mode,
     # и Telegram отдаёт им только команды, реплаи и упоминания. Поэтому в
     # чате-группе просим командой, а «пришлите сообщением» оставляем личке —
     # иначе кнопка выглядит сломанной, хотя дело в настройке Telegram.
     in_group = getattr(call.message.chat, 'type', 'private') != 'private'
-    how = (f'Пришлите командой:\n<code>/squad {server["_id"]} UUID</code>'
+    how = (f'Пришлите командой: <code>/squad {server["_id"]} UUID</code>'
            if in_group else 'Пришлите UUID сообщением.')
 
-    await call.message.answer(
-        f'{e("edit")} <b>UUID внутреннего сквада</b> для сервера '
-        f'<code>{server["_id"]}</code>.\n\n{how}\n\n'
-        f'<blockquote>Это тот сквад, в котором стоит только новая нода. '
-        f'Участники сервера получат его и ничего больше.</blockquote>')
+    # Просьба — на месте инструкции в той же карточке, а не отдельным
+    # сообщением: иначе тема превращается в переписку с ботом.
+    note = (f'{e("edit")} <b>Жду UUID внутреннего сквада.</b> {how}\n\n'
+            f'Это тот сквад, в котором стоит только новая нода: участники '
+            f'сервера получат его и ничего больше.')
+    if not await edit_card(call.bot, c, server, note, request_markup(server['_id'])):
+        await call.message.answer(
+            f'{e("edit")} UUID сквада для <code>{server["_id"]}</code>. {how}')
     await call.answer()
 
 
@@ -153,9 +205,16 @@ async def squad_command(message: types.Message, command, state: FSMContext,
         server_id = (await state.get_data()).get('server_id', '')
 
     if not looks_like_uuid(squad):
-        await message.answer(
-            f'{e("cross")} Нужен UUID сквада.\n'
-            f'<code>/squad srv_xxxxxxxx 00000000-0000-0000-0000-000000000000</code>')
+        # Опечатку тоже убираем из темы, а жалобу пишем в карточку заявки,
+        # если знаем, о какой из них речь.
+        await drop_command(message)
+        note = (f'{e("cross")} <b>Это не похоже на UUID сквада.</b>\n'
+                f'<code>/squad srv_xxxxxxxx '
+                f'00000000-0000-0000-0000-000000000000</code>')
+        server = await c.private.servers.get(server_id) if server_id else None
+        if not server or not await edit_card(message.bot, c, server, note,
+                                             request_markup(server_id)):
+            await message.answer(note)
         return
     if not server_id:
         await message.answer(f'{e("cross")} Не понял, какой сервер. Укажите его id: '
@@ -181,25 +240,37 @@ GIVE_ERRORS = {
 
 
 async def provision(message: types.Message, c, server_id: str, squad: str) -> None:
+    # Команда админа уходит сразу: в теме должны остаться только заявки, а
+    # результат всё равно приедет в саму карточку.
+    await drop_command(message)
+
     # Локацию не спрашиваем: её выбрал покупатель на витрине, и переспросить
     # значит дать возможность молча выдать не то, за что заплатили.
     result = await c.private.activate(server_id, squad)
     if not result.ok:
         # С чем именно конфликт — списком. Иначе на руках остаётся сквад,
         # который «чем-то занят», и что это, приходится искать перебором.
-        await message.answer(
-            f'{e("cross")} Не вышло: {GIVE_ERRORS.get(result.reason, result.reason)}'
-            + (f'\n\n<b>На этой машине уже:</b>\n<code>{result.note}</code>\n\n'
-               f'<blockquote>Если это старый тестовый сервер — уберите его '
-               f'(<code>/srvdel {result.note.split(" ")[0]}</code>). Если он '
-               f'настоящий, а разошлась только локация — поправьте её '
-               f'(<code>/srvloc</code>) или выдайте этой заявке другой сквад.'
-               f'</blockquote>' if result.note else ''))
+        trouble = (f'{e("cross")} <b>Не вышло:</b> '
+                   f'{GIVE_ERRORS.get(result.reason, result.reason)}'
+                   + (f'\n\nНа этой машине уже:\n<code>{result.note}</code>\n\n'
+                      f'Если это старый тестовый сервер — уберите его '
+                      f'(<code>/srvdel {result.note.split(" ")[0]}</code>). Если он '
+                      f'настоящий, а разошлась только локация — поправьте её '
+                      f'(<code>/srvloc</code>) или выдайте этой заявке другой сквад.'
+                      if result.note else ''))
+        # Кнопки оставляем: заявка жива, выдачу надо повторить.
+        card = result.server or await c.private.servers.get(server_id)
+        if not card or not await edit_card(message.bot, c, card, trouble,
+                                           request_markup(server_id)):
+            await message.answer(trouble)
         return
 
     server = result.server
-    await message.answer(f'{e("ok")} Сервер <code>{server["_id"]}</code> выдан. '
-                         f'Владелец уведомлён.')
+    done = (f'{e("ok")} <b>Сервер выдан.</b> Сквад <code>{squad}</code>, '
+            f'владелец уведомлён.')
+    if not await edit_card(message.bot, c, server, done):
+        await message.answer(f'{e("ok")} Сервер <code>{server["_id"]}</code> выдан. '
+                             f'Владелец уведомлён.')
 
     try:
         await message.bot.send_message(
@@ -225,12 +296,16 @@ async def reject(call: types.CallbackQuery, callback_data: Adm, c, settings) -> 
         return
 
     await call.answer(f'Отказано, {result.amount}₽ возвращены', show_alert=True)
-    try:
-        await call.message.edit_text(
-            f'{e("cross")} Заявка <code>{callback_data.server_id}</code> отклонена, '
-            f'{result.amount}₽ возвращены на баланс.')
-    except Exception:
-        pass
+    # Той же карточкой: в теме остаётся одна заявка с итогом, а не заявка
+    # плюс сообщение о ней.
+    note = f'{e("cross")} <b>Отказано</b>, {result.amount}₽ возвращены на баланс.'
+    if not await edit_card(call.bot, c, result.server, note):
+        try:
+            await call.message.edit_text(
+                f'{e("cross")} Заявка <code>{callback_data.server_id}</code> отклонена, '
+                f'{result.amount}₽ возвращены на баланс.')
+        except Exception:
+            pass
 
     try:
         await call.bot.send_message(

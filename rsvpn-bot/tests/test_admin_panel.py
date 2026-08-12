@@ -1141,6 +1141,77 @@ async def test_prompt_in_a_group_asks_for_the_command(admin_env):
     assert '/squad' in session.last_text
 
 
+# ── чистая тема: работа идёт правками одной карточки ────────────────────────
+#
+# Тема с заявками — рабочий список, а не переписка с ботом. Каждое «пришлите
+# UUID», «выдан», «не вышло» отдельным сообщением превращало её в ленту, где
+# заявки теряются среди ответов.
+
+def give_press(server_id: str, message_id: int = 13) -> Update:
+    from app.bot.callbacks import ServerAdmin
+
+    return Update(update_id=8, callback_query=CallbackQuery(
+        id='1', from_user=ADMIN, chat_instance='1',
+        data=ServerAdmin(action='give', server_id=server_id).pack(),
+        message=Message(message_id=message_id, date=datetime.now(), chat=GROUP,
+                        text='карточка', from_user=ADMIN)))
+
+
+async def test_the_prompt_replaces_the_card_instead_of_a_new_message(admin_env):
+    dp, bot, session, container = admin_env
+    server_id = await _pending_server(container, bot)
+
+    session.calls.clear()
+    await dp.feed_update(bot, give_press(server_id))
+
+    assert not [t for name, t in session.calls if name == 'SendMessage'], session.calls
+    assert any(name == 'EditMessageText' for name, _ in session.calls), session.calls
+    assert 'Жду UUID' in session.last_text
+
+    server = await container.private.servers.get(server_id)
+    assert server['card_message_id'] == 13, 'карточку не запомнили'
+
+
+async def test_the_squad_command_edits_the_card_and_removes_itself(admin_env):
+    dp, bot, session, container = admin_env
+    server_id = await _pending_server(container, bot)
+    await dp.feed_update(bot, give_press(server_id))
+
+    session.calls.clear()
+    await dp.feed_update(bot, group_message(
+        f'/squad {server_id} aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'))
+
+    assert (await container.private.servers.get(server_id))['status'] == 'active'
+    assert any(name == 'DeleteMessage' for name, _ in session.calls), \
+        f'команда осталась в теме: {session.calls}'
+    assert any('Сервер выдан' in text for name, text in session.calls
+               if name == 'EditMessageText'), session.calls
+    # владельцу сообщение уходит, а в тему — нет
+    assert not [t for name, t in session.calls
+                if name == 'SendMessage' and 'выдан' in t], session.calls
+
+
+async def test_a_failed_handover_writes_into_the_card_too(admin_env):
+    dp, bot, session, container = admin_env
+    squad = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    taken = await _pending_server(container, bot)
+    await container.private.activate(taken, squad)
+
+    await container.users.create({'user_data': {'user_id': 558},
+                                  'info': {'balance': 3000},
+                                  'vpn': {'uuid': 'u-558', 'shortUuid': 's-558'}})
+    second = (await container.private.request(558, 'company', location='tyo')).server
+    await dp.feed_update(bot, give_press(second['_id'], message_id=14))
+
+    session.calls.clear()
+    await dp.feed_update(bot, group_message(f'/squad {second["_id"]} {squad}'))
+
+    edits = [text for name, text in session.calls if name == 'EditMessageText']
+    assert edits and 'Не вышло' in edits[-1], session.calls
+    assert taken in edits[-1], 'кто занял машину — не написано'
+    assert not [t for name, t in session.calls if name == 'SendMessage'], session.calls
+
+
 # ── справочник команд ───────────────────────────────────────────────────────
 
 async def test_command_reference_lists_every_registered_command(admin_env):

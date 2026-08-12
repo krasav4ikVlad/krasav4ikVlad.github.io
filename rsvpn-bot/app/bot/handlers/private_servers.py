@@ -262,8 +262,14 @@ async def order(call: types.CallbackQuery, callback_data: Server, c, user: dict,
     if c.notifier:
         from app.admin.private_servers import request_card, request_markup
 
-        await c.notifier.send('servers', await request_card(c, result.server),
-                              markup=request_markup(result.server['_id']))
+        # Запоминаем, где легла карточка: выдача и ошибки правят её на месте,
+        # чтобы в теме была одна живая заявка, а не переписка с ботом.
+        card = await c.notifier.post('servers', await request_card(c, result.server),
+                                     markup=request_markup(result.server['_id']))
+        if card is not None:
+            await c.private.servers.set(result.server['_id'],
+                                        card_chat_id=card.chat.id,
+                                        card_message_id=card.message_id)
 
     await call.answer('Заявка принята', show_alert=True)
     await server_screen(call, c, await c.users.get(call.from_user.id), settings,
