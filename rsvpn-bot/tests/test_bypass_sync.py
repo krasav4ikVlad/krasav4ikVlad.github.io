@@ -95,6 +95,23 @@ async def test_drift_is_found_and_fixed(db, users, user_factory):
     assert not await bypass.find_drift(users)
 
 
+async def test_everyone_is_checked_not_just_the_first_page(db, users, user_factory):
+    """Раньше сверка брала первую тысячу и отчитывалась «расхождений нет».
+
+    Mongo отдаёт одну и ту же первую тысячу, поэтому все, кто дальше по
+    коллекции, не проверялись никогда: у них ByPass отключался посреди
+    оплаченного месяца, а в логах было чисто.
+    """
+    later = now() + timedelta(days=30)
+    for number in range(1200):
+        await subscriber(user_factory, main=later, theirs=now(),
+                         uuid=f'bp-{number}')
+
+    drift = await bypass.find_drift(users)
+
+    assert len(drift) == 1200, f'проверено только {len(drift)}'
+
+
 async def test_a_dry_run_changes_nothing(db, users, user_factory):
     await subscriber(user_factory, main=now() + timedelta(days=30), theirs=now())
     vpn = FakeVpn()

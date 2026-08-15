@@ -104,8 +104,10 @@ async def sync_bypass(container) -> None:
     if report['checked']:
         log.warning('ByPass: расхождений %s, выровнено %s, не вышло %s',
                     report['checked'], report['fixed'], report['failed'])
-        await container.health.mark(health.BYPASS_SYNC, **{
-            key: report[key] for key in ('checked', 'fixed', 'failed')})
+    # Отметку ставим всегда, даже когда всё сошлось: иначе «не запускалась»
+    # и «запускалась, расхождений нет» в /diag неразличимы.
+    await container.health.mark(health.BYPASS_SYNC, **{
+        key: report[key] for key in ('checked', 'fixed', 'failed')})
 
 
 async def update_segments(container) -> None:

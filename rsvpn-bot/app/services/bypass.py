@@ -69,20 +69,27 @@ async def sync_expiry(users, panel, user_id: int, expire_at, vpn: dict | None = 
     return 'synced'
 
 
-async def find_drift(users, limit: int = 1000) -> list[dict]:
+async def find_drift(users, limit: int = 0) -> list[dict]:
     """У кого даты разъехались. Сравниваем в питоне, а не запросом.
 
     В базе даты лежат то datetime, то строкой (наследство старого бота), и
     запрос с $expr на таких полях сравнивает типы, а не моменты времени.
+
+    Идём курсором по всем, у кого есть ByPass. Раньше здесь стоял
+    `to_list(length=1000)`, и это было хуже, чем кажется: Mongo отдаёт одну
+    и ту же первую тысячу, поэтому все, кто дальше по коллекции, не
+    проверялись никогда — сверка «отработала без расхождений», а у людей
+    ByPass отключался посреди оплаченного месяца.
+
+    limit — только предохранитель на случай, если проверять окажется нечего
+    (0 — без ограничения).
     """
-    rows = await users.col.find(
+    drift = []
+    async for row in users.iterate(
         {'vpn.bypass_uuid': {'$nin': ['', None]}},
         {'user_data.user_id': 1, 'vpn.expireAt': 1,
          'vpn.bypass_expireAt': 1, 'vpn.bypass_uuid': 1},
-    ).to_list(length=limit)
-
-    drift = []
-    for row in rows:
+    ):
         vpn = row.get('vpn') or {}
         main = parse_dt(vpn.get('expireAt'))
         theirs = parse_dt(vpn.get('bypass_expireAt'))
@@ -92,10 +99,12 @@ async def find_drift(users, limit: int = 1000) -> list[dict]:
             continue
         drift.append({'user_id': (row.get('user_data') or {}).get('user_id'),
                       'main': main, 'bypass': theirs})
+        if limit and len(drift) >= limit:
+            break
     return drift
 
 
-async def repair(users, panel, apply: bool = False, limit: int = 1000) -> dict:
+async def repair(users, panel, apply: bool = False, limit: int = 0) -> dict:
     """Починить расхождения. Без apply — только посчитать.
 
     Разделение нарочное: правка трогает панель по одному запросу на человека,

@@ -110,6 +110,19 @@ async def text(c, settings) -> str:
                  + (f' <code>{numbers(campaigns.get("info"))}</code>'
                     if campaigns.get('at') else ''))
 
+    # ── сверка ByPass ───────────────────────────────────────────────────────
+    #
+    # Задача тихая: чинит даты и молчит. Без строки здесь «не отработала ни
+    # разу» и «отработала, расхождений нет» выглядят одинаково, а разница
+    # между ними — отключённый посреди месяца ByPass.
+    sync = marks.get(health.BYPASS_SYNC) or {}
+    lines.append(f'\n<b>{e("renew")} Сверка дат ByPass</b>: {ago(sync.get("at"))}'
+                 + (f' <code>{numbers(sync.get("info"))}</code>'
+                    if sync.get('at') else ''))
+    if not sync.get('at') and scheduler:
+        lines.append('<blockquote>Задача идёт раз в шесть часов. Проверить '
+                     'вручную: <code>/bypasssync</code>.</blockquote>')
+
     # ── что сейчас раздаётся бесплатно ──────────────────────────────────────
     # Скидка и бонус живут в настройках и не напоминают о себе: включили на
     # выходные, забыли выключить — и каждое продление уходит дешевле. Вопрос
