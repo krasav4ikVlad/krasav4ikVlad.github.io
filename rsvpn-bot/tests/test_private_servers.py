@@ -68,11 +68,14 @@ class FakeVpn:
 
 @pytest.fixture
 async def service(db):
+    from app.repositories.server_pool import ServerPoolRepository
+
     users = UsersRepository(db['users'])
     settings = SettingsService(db['bot_settings'])
     vpn = FakeVpn()
     servers = PrivateServersRepository(db['private_servers'])
-    return PrivateServerService(users, servers, settings, vpn), vpn, users
+    pool = ServerPoolRepository(db['private_pool'])
+    return PrivateServerService(users, servers, settings, vpn, pool=pool), vpn, users
 
 
 async def owner_with_money(users, user_id=1, balance=3000):
@@ -1360,6 +1363,135 @@ async def test_the_number_of_shares_comes_from_settings(service):
     result = await srv.activate(third.server['_id'], SQUAD)
 
     assert not result.ok and result.reason == 'squad_full'
+
+
+# ── запас машин и очередь заявок ────────────────────────────────────────────
+#
+# Провижининг ручной, и это узкое место: заявка ждёт человека. Машины,
+# поднятые заранее, снимают ожидание — заявка садится на готовый сквад сразу.
+
+SPARE = 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee'
+
+
+async def test_a_spare_machine_is_handed_out_at_once(service):
+    srv, vpn, users = service
+    await owner_with_money(users, 1)
+    await srv.pool_add(SPARE, 'ams', 'reality')
+    result = await srv.request(1, 'mini', location='ams', profile='reality')
+
+    given = await srv.give_from_pool(result.server['_id'])
+
+    assert given.ok
+    server = await srv.servers.get(result.server['_id'])
+    assert server['status'] == ps.ACTIVE and server['squad_uuid'] == SPARE
+    assert SPARE in vpn.state['u-1']['squads'], 'доступ владельцу не выдан'
+
+
+async def test_a_machine_of_another_location_does_not_fit(service):
+    srv, vpn, users = service
+    await owner_with_money(users, 1)
+    await srv.pool_add(SPARE, 'tyo', 'reality')
+    result = await srv.request(1, 'mini', location='ams', profile='reality')
+
+    given = await srv.give_from_pool(result.server['_id'])
+
+    assert not given.ok and given.reason == 'no_free_machine'
+
+
+async def test_a_protocol_mismatch_does_not_fit_either(service):
+    """Протокол потом не поменять — выдать «почти то же» нельзя."""
+    srv, vpn, users = service
+    await owner_with_money(users, 1)
+    await srv.pool_add(SPARE, 'ams', 'grpc')
+    result = await srv.request(1, 'mini', location='ams', profile='reality')
+
+    assert not (await srv.give_from_pool(result.server['_id'])).ok
+
+
+async def test_a_taken_machine_is_not_offered_twice(service):
+    srv, vpn, users = service
+    await srv.pool_add(SPARE, 'ams', 'reality')
+    for owner in (1, 2):
+        await owner_with_money(users, owner)
+
+    first = await srv.request(1, 'mini', location='ams', profile='reality')
+    assert (await srv.give_from_pool(first.server['_id'])).ok
+
+    second = await srv.request(2, 'mini', location='ams', profile='reality')
+    assert not (await srv.give_from_pool(second.server['_id'])).ok, 'машину выдали дважды'
+
+
+async def test_shares_land_on_the_same_machine(service):
+    """Три доли — это один VPS, а не три: сначала досаживаем к своим."""
+    srv, vpn, users = service
+    await srv.pool_add(SPARE, 'nl', 'reality')
+    for owner in (1, 2, 3):
+        await owner_with_money(users, owner)
+        result = await srv.request(owner, 'share', location='nl', profile='reality')
+        assert (await srv.give_from_pool(result.server['_id'])).ok
+
+    assert len(await srv.servers.on_squad(SPARE)) == 3
+    assert len(await srv.pool_rows()) == 1, 'машина в запасе должна быть одна'
+
+
+async def test_a_busy_squad_is_not_taken_into_the_pool(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    result = await srv.pool_add(server['squad_uuid'], 'ams', 'reality')
+
+    assert not result.ok and result.reason == 'squad_busy'
+    assert server['_id'] in result.note
+
+
+async def test_the_same_machine_is_not_added_twice(service):
+    srv, vpn, users = service
+    assert (await srv.pool_add(SPARE, 'ams', 'reality')).ok
+
+    again = await srv.pool_add(SPARE, 'ams', 'reality')
+
+    assert not again.ok and again.reason == 'already_in_pool'
+
+
+async def test_the_queue_counts_machines_not_requests(service):
+    """Три доли в одной локации — один VPS. Список из трёх строк заставил бы
+    поднять три."""
+    srv, vpn, users = service
+    for owner in (1, 2, 3):
+        await owner_with_money(users, owner)
+        await srv.request(owner, 'share', location='nl', profile='reality')
+
+    queue = await srv.queue()
+
+    assert len(queue) == 1
+    assert queue[0]['count'] == 3 and queue[0]['machines'] == 1
+    assert queue[0]['ready'] == 0
+
+
+async def test_the_queue_separates_locations_and_protocols(service):
+    srv, vpn, users = service
+    await owner_with_money(users, 1)
+    await owner_with_money(users, 2)
+    await srv.request(1, 'mini', location='ams', profile='reality')
+    await srv.request(2, 'mini', location='tyo', profile='grpc')
+
+    queue = await srv.queue()
+
+    assert len(queue) == 2
+    assert all(group['machines'] == 1 for group in queue)
+
+
+async def test_the_queue_marks_what_the_spare_covers(service):
+    srv, vpn, users = service
+    await srv.pool_add(SPARE, 'ams', 'reality')
+    for owner in (1, 2):
+        await owner_with_money(users, owner)
+        await srv.request(owner, 'mini', location='ams', profile='reality')
+
+    group = (await srv.queue())[0]
+
+    assert group['count'] == 2 and group['ready'] == 1
+    assert group['machines'] == 1, 'вторая заявка требует ещё одну машину'
 
 
 # ── ссылка для роутера ──────────────────────────────────────────────────────

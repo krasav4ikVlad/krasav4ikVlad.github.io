@@ -2009,6 +2009,38 @@ async def test_buying_a_share_warns_that_the_machine_is_shared(env):
     assert 'ещё двое покупателей' in text and 'не видят' in text
 
 
+async def test_a_purchase_takes_a_spare_machine_at_once(env):
+    """Ради этого запас и держат: человек не ждёт, заявка не копится."""
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+    await c.users.credit(5, 3000, 'тест')
+    c.private.vpn = c.vpn
+    await c.private.pool_add('bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee', 'tyo', 'grpc')
+
+    await dp.feed_update(bot, callback(
+        Server(action='order', value='mini-tyo-grpc').pack()))
+
+    server = await c.private.servers.of_owner(5)
+    assert server['status'] == 'active'
+    assert server['squad_uuid'] == 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee'
+    assert any('Ваш сервер готов' in text for _, text in session.calls), session.calls
+
+
+async def test_without_a_spare_the_purchase_becomes_a_request(env):
+    from app.bot.callbacks import Server
+
+    dp, bot, session, c = env
+    await _open_servers(dp, bot, c)
+    await c.users.credit(5, 3000, 'тест')
+
+    await dp.feed_update(bot, callback(
+        Server(action='order', value='mini-tyo-grpc').pack()))
+
+    assert (await c.private.servers.of_owner(5))['status'] == 'requested'
+
+
 async def test_full_purchase_saves_the_choice(env):
     from app.bot.callbacks import Server
 

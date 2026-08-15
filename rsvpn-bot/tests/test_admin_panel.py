@@ -1110,8 +1110,10 @@ async def test_a_share_request_shows_where_it_fits(admin_env):
 
     card = await request_card(container, second.server)
 
+    # Место на машине уже есть — заявка выдаётся одним нажатием, поднимать
+    # ничего не нужно, и карточка говорит именно это.
     assert 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' in card
-    assert 'занято 1 из 3' in card
+    assert 'Выдать из запаса' in card
 
 
 async def test_a_whole_server_request_says_to_raise_a_machine(admin_env):
@@ -1210,6 +1212,92 @@ async def test_a_failed_handover_writes_into_the_card_too(admin_env):
     assert edits and 'Не вышло' in edits[-1], session.calls
     assert taken in edits[-1], 'кто занял машину — не написано'
     assert not [t for name, t in session.calls if name == 'SendMessage'], session.calls
+
+
+# ── очередь и запас ─────────────────────────────────────────────────────────
+
+async def test_the_queue_screen_says_what_to_raise(admin_env):
+    dp, bot, session, container = admin_env
+    await _pending_server(container, bot)
+
+    await dp.feed_update(bot, callback(Adm(act='srvq').pack()))
+
+    text = session.last_text
+    assert 'Заявок ждёт: 1' in text
+    assert 'Мини' in text and 'Амстердам' in text
+    assert 'поднять машин: 1' in text
+
+
+async def test_the_queue_screen_is_calm_when_there_is_nothing_to_do(admin_env):
+    dp, bot, session, container = admin_env
+
+    await dp.feed_update(bot, callback(Adm(act='srvq').pack()))
+
+    assert 'Заявок в работе нет' in session.last_text
+
+
+async def test_a_spare_machine_is_added_and_listed(admin_env):
+    dp, bot, session, container = admin_env
+    container.attach_bot(bot)
+    container.private.vpn = FakePanel()
+
+    await dp.feed_update(bot, message(
+        '/pooladd bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee tyo grpc'))
+    assert 'в запасе' in session.last_text
+
+    await dp.feed_update(bot, callback(Adm(act='srvq').pack()))
+    assert 'Токио' in session.last_text and 'свободна' in session.last_text
+
+
+async def test_adding_a_machine_serves_the_waiting_request(admin_env):
+    """Заявка пришла раньше машины — выдаём в момент, когда машина появилась."""
+    dp, bot, session, container = admin_env
+    server_id = await _pending_server(container, bot)
+
+    await dp.feed_update(bot, message(
+        '/pooladd bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee ams reality'))
+
+    server = await container.private.servers.get(server_id)
+    assert server['status'] == 'active'
+    assert server['squad_uuid'] == 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee'
+    assert 'Сразу выдана' in session.last_text
+
+
+async def test_a_bad_location_is_refused(admin_env):
+    dp, bot, session, container = admin_env
+
+    await dp.feed_update(bot, message(
+        '/pooladd bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee луна reality'))
+
+    assert 'локации нет' in session.last_text
+    assert not await container.private.pool_rows()
+
+
+async def test_a_spare_machine_can_be_removed(admin_env):
+    dp, bot, session, container = admin_env
+    await dp.feed_update(bot, message(
+        '/pooladd bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee tyo grpc'))
+
+    await dp.feed_update(bot, message(
+        '/pooldel bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee'))
+
+    assert not await container.private.pool_rows()
+
+
+async def test_the_card_offers_one_tap_handover_when_a_spare_fits(admin_env):
+    from app.admin.private_servers import card_markup
+
+    dp, bot, session, container = admin_env
+    server_id = await _pending_server(container, bot)
+    server = await container.private.servers.get(server_id)
+
+    markup = await card_markup(container, server)
+    assert not any('запаса' in b.text for row in markup.inline_keyboard for b in row)
+
+    await container.private.pool_add('bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee',
+                                     'ams', 'reality')
+    markup = await card_markup(container, server)
+    assert any('запаса' in b.text for row in markup.inline_keyboard for b in row)
 
 
 # ── справочник команд ───────────────────────────────────────────────────────

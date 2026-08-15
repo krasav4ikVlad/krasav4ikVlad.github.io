@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from app.content.emoji import e
-from app.core.time import now, parse_dt
+from app.core.time import fmt, now, parse_dt
 from app.domain import private_servers as ps
 from app.services import bypass
 
@@ -211,13 +211,15 @@ class Result:
 
 
 class PrivateServerService:
-    def __init__(self, users, servers, settings, vpn, notifier=None, bot=None):
+    def __init__(self, users, servers, settings, vpn, notifier=None, bot=None,
+                 pool=None):
         self.users = users
         self.servers = servers
         self.settings = settings
         self.vpn = vpn
         self.notifier = notifier
         self.bot = bot
+        self.pool = pool
 
     # ── тарифы ──────────────────────────────────────────────────────────────
     async def price(self, plan: ps.ServerPlan) -> int:
@@ -307,6 +309,160 @@ class PrivateServerService:
                              'location': servers[0].get('location') or '',
                              'profile': servers[0].get('profile') or ''})
         return rows
+
+    # ── запас поднятых машин ────────────────────────────────────────────────
+    #
+    # Провижининг ручной, и заявка ждёт человека. Машины, поднятые заранее,
+    # снимают это ожидание: заявка садится на готовый сквад в тот же миг.
+
+    async def pool_add(self, squad_uuid: str, location: str, profile: str,
+                       admin_id: int = 0, note: str = '') -> Result:
+        if self.pool is None:
+            return Result(False, 'no_pool')
+        if location not in ps.BY_LOCATION:
+            return Result(False, 'unknown_location')
+        if profile not in ps.BY_PROFILE:
+            return Result(False, 'unknown_profile')
+        if await self.servers.on_squad(squad_uuid):
+            # Сквад уже под живым сервером: в запасе ему делать нечего.
+            return Result(False, 'squad_busy', note=describe(
+                await self.servers.on_squad(squad_uuid)))
+        if not await self.pool.add(squad_uuid, location, profile, admin_id, note):
+            return Result(False, 'already_in_pool')
+
+        log.info('в запас добавлена машина %s (%s, %s)', squad_uuid, location, profile)
+        return Result(True)
+
+    async def pool_remove(self, squad_uuid: str) -> Result:
+        if self.pool is None:
+            return Result(False, 'no_pool')
+        return Result(await self.pool.remove(squad_uuid), 'not_found')
+
+    async def pool_rows(self) -> list[dict]:
+        """Запас с пометкой, кто на какой машине уже сидит.
+
+        Свободна машина или нет, считается по серверам, а не по полю в
+        записи: два источника правды однажды разойдутся, и выдастся занятое.
+        """
+        if self.pool is None:
+            return []
+
+        rows = []
+        for entry in await self.pool.all():
+            live = await self.servers.on_squad(entry['squad_uuid'])
+            plan = ps.plan_of(live[0]) if live else None
+            limit = await self.shares_limit(plan) if plan else 0
+            rows.append({**entry, 'used': len(live), 'limit': limit or 1,
+                         'free': (len(live) < limit) if limit else not live,
+                         'servers': live})
+        return rows
+
+    async def pick_squad(self, server: dict) -> str:
+        """Готовая машина под эту заявку. Пусто — поднимать руками.
+
+        Сначала досаживаем к своим же долям: место там уже оплачено железом,
+        и тратить на заявку целую машину незачем.
+        """
+        plan = ps.plan_of(server)
+        if not plan:
+            return ''
+
+        location = server.get('location') or ''
+        profile = server.get('profile') or ''
+
+        if plan.shared:
+            for row in await self.free_squads(location, profile):
+                return row['squad']
+
+        if self.pool is None:
+            return ''
+        for entry in await self.pool.all():
+            if entry.get('location') != location or entry.get('profile') != profile:
+                continue
+            if await self.servers.on_squad(entry['squad_uuid']):
+                continue          # машину уже разобрали
+            return entry['squad_uuid']
+        return ''
+
+    async def give_from_pool(self, server_id: str) -> Result:
+        """Выдать заявке готовую машину. Ошибка — если готовой нет."""
+        server = await self.servers.get(server_id)
+        if not server:
+            return Result(False, 'not_found')
+        if server.get('status') != ps.REQUESTED:
+            return Result(False, 'wrong_status', server=server)
+
+        squad = await self.pick_squad(server)
+        if not squad:
+            return Result(False, 'no_free_machine', server=server)
+
+        result = await self.activate(server_id, squad)
+        if result.ok:
+            await self.tell_ready(result.server)
+        return result
+
+    async def tell_ready(self, server: dict) -> None:
+        """Сказать владельцу, что сервер работает. Текст один на все пути:
+        и на ручную выдачу, и на выдачу из запаса."""
+        await self._tell(
+            server['owner_id'],
+            f'{e("private")} <b>Ваш сервер готов</b>\n\n'
+            f'«{server.get("title")}» уже работает.\n'
+            f'Локация: {ps.location_title(server)}, '
+            f'протокол: {ps.profile_title(server)}.\n'
+            f'Мест: {server.get("slots")}, оплачен до '
+            f'{fmt(server.get("paid_until"))}.\n\n'
+            + (f'Эту же машину купили {ps.others_on_machine(ps.shares_of(server))}, '
+               f'но места и статистика у вас свои: их и их гостей вы не видите, '
+               f'они вас тоже.\n\n' if ps.is_shared(server) else '')
+            + 'Откройте профиль → «Свой сервер», чтобы позвать друзей.')
+
+    async def queue(self) -> list[dict]:
+        """Что осталось поднять: заявки, сгруппированные по «машине».
+
+        Считаем не заявки, а машины: три доли в Токио — это один VPS, а
+        список из трёх строк заставляет поднять три.
+        """
+        pending = await self.servers.pending()
+        groups: dict[tuple, dict] = {}
+        for server in pending:
+            plan = ps.plan_of(server)
+            key = (server.get('plan'), server.get('location'), server.get('profile'))
+            group = groups.setdefault(key, {
+                'plan': plan, 'plan_code': server.get('plan'),
+                'location': ps.BY_LOCATION.get(server.get('location') or ''),
+                'profile': ps.BY_PROFILE.get(server.get('profile') or ''),
+                'servers': [], 'ready': 0})
+            group['servers'].append(server)
+
+        for group in groups.values():
+            per_machine = (await self.shares_limit(group['plan'])
+                           if group['plan'] else 1)
+
+            # Сколько заявок закроет имеющееся железо. Считаем с местами:
+            # первая заявка занимает машину целиком, а первая доля — только
+            # одно место из трёх, и остальные две ещё поместятся.
+            ready = 0
+            rooms: dict[str, int] = {}
+            for server in group['servers']:
+                squad = await self.pick_squad(server)
+                if not squad:
+                    continue
+                if squad not in rooms:
+                    live = len(await self.servers.on_squad(squad))
+                    rooms[squad] = max(0, per_machine - live)
+                if rooms[squad] <= 0:
+                    continue
+                rooms[squad] -= 1
+                ready += 1
+
+            group['ready'] = ready
+            group['count'] = len(group['servers'])
+            # сколько машин надо поднять: доли делят одну, остальные — по одной
+            left = max(0, group['count'] - group['ready'])
+            group['machines'] = -(-left // max(1, per_machine))
+
+        return sorted(groups.values(), key=lambda g: -g['count'])
 
     async def activate(self, server_id: str, squad_uuid: str) -> Result:
         """Админ поднял VPS и привязал сквад — сервер начинает работать."""

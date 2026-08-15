@@ -38,11 +38,21 @@ def _btn(text: str, action: str, server_id: str) -> types.InlineKeyboardButton:
         text=text, callback_data=Adm(action=action, server_id=server_id).pack())
 
 
-def request_markup(server_id: str) -> types.InlineKeyboardMarkup:
+def request_markup(server_id: str, from_pool: bool = False) -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    if from_pool:
+        # Первой — потому что это одно нажатие вместо «поднять VPS, завести
+        # сквад, прислать UUID».
+        kb.row(_btn(f'{e("rocket")} Выдать из запаса', 'pool', server_id))
     kb.row(_btn(f'{e("ok")} Выдать сервер', 'give', server_id))
     kb.row(_btn(f'{e("cross")} Отказать и вернуть деньги', 'reject', server_id))
     return kb.as_markup()
+
+
+async def card_markup(c, server: dict) -> types.InlineKeyboardMarkup:
+    """Кнопки заявки. «Из запаса» появляется, только если запас подходит."""
+    ready = bool(await c.private.pick_squad(server))
+    return request_markup(server['_id'], from_pool=ready)
 
 
 async def request_card(c, server: dict, note: str = '') -> str:
@@ -113,11 +123,19 @@ async def _how_to_give(c, server: dict) -> str:
     осталось место. Держать в голове, какой сквад чем занят, невозможно,
     поэтому свободные машины бот показывает прямо в заявке.
     """
+    squad = await c.private.pick_squad(server)
+    if squad:
+        return (f'<blockquote>Готовая машина есть: '
+                f'<code>{squad}</code>. Нажмите «Выдать из запаса» — '
+                f'поднимать ничего не нужно.</blockquote>')
+
     plan = ps.plan_of(server)
     if not plan or not plan.shared:
         return ('<blockquote>Поднимите VPS в указанной локации с указанным '
                 'протоколом, заведите под него внутренний сквад в панели и '
-                'нажмите «Выдать сервер» — бот попросит UUID сквада.</blockquote>')
+                'нажмите «Выдать сервер» — бот попросит UUID сквада.\n\n'
+                'Чтобы такие заявки уходили сразу, держите машины в запасе: '
+                '<code>/pooladd UUID локация протокол</code>.</blockquote>')
 
     free = await c.private.free_squads(server.get('location') or '',
                                        server.get('profile') or '')
@@ -272,21 +290,34 @@ async def provision(message: types.Message, c, server_id: str, squad: str) -> No
         await message.answer(f'{e("ok")} Сервер <code>{server["_id"]}</code> выдан. '
                              f'Владелец уведомлён.')
 
-    try:
-        await message.bot.send_message(
-            server['owner_id'],
-            f'{e("private")} <b>Ваш сервер готов</b>\n\n'
-            f'«{server.get("title")}» уже работает.\n'
-            f'Локация: {ps.location_title(server)}, '
-            f'протокол: {ps.profile_title(server)}.\n'
-            + f'Мест: {server.get("slots")}, оплачен до '
-              f'{fmt(server.get("paid_until"))}.\n\n'
-            + (f'Эту же машину купили {ps.others_on_machine(ps.shares_of(server))}, '
-               f'но места и статистика у вас свои: их и их гостей вы не видите, '
-               f'они вас тоже.\n\n' if ps.is_shared(server) else '')
-            + 'Откройте профиль → «Свой сервер», чтобы позвать друзей.')
-    except Exception as exc:
-        log.warning('владелец %s не уведомлён о выдаче: %s', server['owner_id'], exc)
+    # Текст владельцу живёт в сервисе: выдач стало три (руками, кнопкой из
+    # запаса, автоматически при покупке), и три копии одного письма разошлись
+    # бы на первой же правке.
+    await c.private.tell_ready(server)
+
+
+async def from_pool(call: types.CallbackQuery, callback_data: Adm, c,
+                    settings) -> None:
+    """Выдать заявке машину из запаса — одним нажатием."""
+    server = await c.private.servers.get(callback_data.server_id)
+    if server and (server.get('card_message_id') != call.message.message_id):
+        await c.private.servers.set(server['_id'],
+                                    card_chat_id=call.message.chat.id,
+                                    card_message_id=call.message.message_id)
+
+    result = await c.private.give_from_pool(callback_data.server_id)
+    if not result.ok:
+        await call.answer(
+            'Свободной машины под эту заявку нет — поднимите новую'
+            if result.reason == 'no_free_machine'
+            else GIVE_ERRORS.get(result.reason, result.reason), show_alert=True)
+        return
+
+    server = result.server
+    await edit_card(call.bot, c, server,
+                    f'{e("ok")} <b>Выдан из запаса.</b> Сквад '
+                    f'<code>{server.get("squad_uuid")}</code>, владелец уведомлён.')
+    await call.answer(f'Выдан {e("ok")}')
 
 
 async def reject(call: types.CallbackQuery, callback_data: Adm, c, settings) -> None:
@@ -506,14 +537,156 @@ async def delete_server(message: types.Message, command, c, settings) -> None:
            f'не нужен, погасите его руками.</blockquote>'))
 
 
+# ── очередь и запас ─────────────────────────────────────────────────────────
+#
+# Заявок бывает больше, чем помнит голова, и главный вопрос по утрам один:
+# сколько машин поднять и каких. Ответ считается из самих заявок, а не
+# ведётся руками.
+
+async def queue_text(c) -> str:
+    queue = await c.private.queue()
+    pool = await c.private.pool_rows()
+    free = [row for row in pool if row['free']]
+
+    lines = [f'{e("private")} <b>Серверы: очередь и запас</b>', '']
+
+    if not queue:
+        lines.append(f'{e("ok")} Заявок в работе нет.')
+    else:
+        waiting = sum(group['count'] for group in queue)
+        ready = sum(group['ready'] for group in queue)
+        lines.append(f'<b>Заявок ждёт: {waiting}</b>'
+                     + (f', из них {ready} можно выдать прямо сейчас' if ready else ''))
+        lines.append('')
+        for group in queue:
+            plan = group['plan']
+            location = group['location']
+            profile = group['profile']
+            head = (f'{plan.title if plan else group["plan_code"]} — '
+                    f'{location.title if location else "локация не указана"}, '
+                    f'{profile.title if profile else "протокол не указан"}')
+            lines.append(f'<b>{head}</b>')
+            lines.append(f'   заявок: {group["count"]}'
+                         + (f', готовы к выдаче: {group["ready"]}'
+                            if group['ready'] else '')
+                         + (f', <b>поднять машин: {group["machines"]}</b>'
+                            if group['machines'] else ''))
+            lines.append('   ' + ', '.join(f'<code>{server["_id"]}</code>'
+                                           for server in group['servers'][:10]))
+        lines.append('')
+
+    lines.append(f'{e("rocket")} <b>Запас: {len(free)} свободных из {len(pool)}</b>')
+    for row in pool:
+        location = ps.BY_LOCATION.get(row.get('location') or '')
+        profile = ps.BY_PROFILE.get(row.get('profile') or '')
+        state = ('свободна' if row['free'] and not row['used'] else
+                 f'занято {row["used"]} из {row["limit"]}' if row['free'] else 'занята')
+        lines.append(f'<code>{row["squad_uuid"]}</code>\n'
+                     f'   {location.title if location else row.get("location")}, '
+                     f'{profile.title if profile else row.get("profile")} — {state}')
+
+    lines.append('')
+    lines.append('<blockquote>Поднимайте машины заранее и добавляйте их сюда: '
+                 '<code>/pooladd UUID локация протокол</code>. Заявка на такую '
+                 'машину выдаётся сама в момент покупки — человек получает '
+                 'сервер сразу, а вам не приходит заявка.\n\n'
+                 'Коды локаций: <code>ams fra sto bud mia nyc hkg</code> (1 ТБ), '
+                 '<code>nl fra2 mil tyo</code> (безлимит). '
+                 'Протоколы: <code>reality grpc hysteria2</code>.</blockquote>')
+    return '\n'.join(lines)
+
+
+async def queue_screen(call: types.CallbackQuery, c, settings) -> None:
+    from app.admin.panel import edit
+    from app.bot.callbacks import Admin as PanelAdm
+
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(
+        text=f'{e("refresh")} Обновить', callback_data=PanelAdm(act='srvq').pack()))
+    kb.row(types.InlineKeyboardButton(
+        text=f'{e("back")} Назад', callback_data=PanelAdm(act='main').pack()))
+    await edit(call, await queue_text(c), kb)
+
+
+async def queue_command(message: types.Message, c, settings) -> None:
+    await message.answer(await queue_text(c))
+
+
+async def pool_add(message: types.Message, command, c, settings) -> None:
+    """`/pooladd UUID локация протокол` — записать поднятую машину в запас."""
+    parts = (command.args or '').split()
+    if len(parts) < 3:
+        await message.answer(
+            f'{e("cross")} <code>/pooladd UUID локация протокол</code>\n\n'
+            f'Локации: <code>{", ".join(ps.BY_LOCATION)}</code>\n'
+            f'Протоколы: <code>{", ".join(ps.BY_PROFILE)}</code>')
+        return
+
+    squad, location, profile = parts[0], parts[1], parts[2]
+    if not looks_like_uuid(squad):
+        await message.answer(f'{e("cross")} Это не похоже на UUID сквада.')
+        return
+
+    result = await c.private.pool_add(squad, location, profile, message.from_user.id)
+    if not result.ok:
+        await message.answer(
+            f'{e("cross")} '
+            + {'unknown_location': 'такой локации нет',
+               'unknown_profile': 'такого протокола нет',
+               'already_in_pool': 'эта машина уже в запасе',
+               'squad_busy': 'на этом скваде уже стоит сервер',
+               'no_pool': 'запас не подключён'}.get(result.reason, result.reason)
+            + (f'\n\n<code>{result.note}</code>' if result.note else ''))
+        return
+
+    # Заявка могла прийти раньше машины — тогда выдаём её сразу же.
+    given = []
+    for server in await c.private.servers.pending():
+        if (await c.private.pick_squad(server)) != squad:
+            continue
+        handed = await c.private.give_from_pool(server['_id'])
+        if handed.ok:
+            given.append(handed.server)
+            await edit_card(message.bot, c, handed.server,
+                            f'{e("rocket")} <b>Выдан из запаса</b> — машина '
+                            f'появилась после заявки. Сквад <code>{squad}</code>.')
+
+    await message.answer(
+        f'{e("ok")} Машина <code>{squad}</code> в запасе '
+        f'({ps.location_title({"location": location})}, '
+        f'{ps.profile_title({"profile": profile})}).'
+        + (f'\n\n{e("rocket")} Сразу выдана ждавшим заявкам: '
+           + ', '.join(f'<code>{server["_id"]}</code>' for server in given)
+           if given else ''))
+
+
+async def pool_remove(message: types.Message, command, c, settings) -> None:
+    """`/pooldel UUID` — убрать машину из запаса."""
+    squad = (command.args or '').strip()
+    if not squad:
+        await message.answer(f'{e("cross")} <code>/pooldel UUID</code>')
+        return
+
+    result = await c.private.pool_remove(squad)
+    await message.answer(f'{e("ok")} Убрана из запаса.' if result.ok
+                         else f'{e("cross")} Такой машины в запасе нет.')
+
+
 def register(router: Router) -> None:
     from aiogram.filters import Command
 
     router.message.register(listing, Command('servers'))
+    router.message.register(queue_command, Command('queue'))
+    router.message.register(pool_add, Command('pooladd'))
+    router.message.register(pool_remove, Command('pooldel'))
     router.message.register(delete_server, Command('srvdel'))
     router.message.register(squad_command, Command('squad'))
     router.message.register(diagnose, Command('srvdiag'))
     router.message.register(set_location, Command('srvloc'))
     router.callback_query.register(give, Adm.filter(F.action == 'give'))
+    router.callback_query.register(from_pool, Adm.filter(F.action == 'pool'))
     router.callback_query.register(reject, Adm.filter(F.action == 'reject'))
     router.message.register(take_squad, Provision.squad)
+
+    from app.bot.callbacks import Admin as PanelAdm
+    router.callback_query.register(queue_screen, PanelAdm.filter(F.act == 'srvq'))

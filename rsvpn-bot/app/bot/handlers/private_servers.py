@@ -259,21 +259,33 @@ async def order(call: types.CallbackQuery, callback_data: Server, c, user: dict,
             amount=result.amount), show_alert=True)
         return
 
-    if c.notifier:
-        from app.admin.private_servers import request_card, request_markup
+    # Машина из запаса — сервер начинает работать сразу, без ожидания
+    # человека. Ради этого запас и держат.
+    server = result.server
+    given = False
+    if await settings.flag('private.auto_give'):
+        from_pool = await c.private.give_from_pool(server['_id'])
+        if from_pool.ok:
+            server, given = from_pool.server, True
 
+    if c.notifier:
+        from app.admin.private_servers import card_markup, request_card
+
+        note = (f'{e("rocket")} <b>Выдан из запаса</b> сразу при покупке. '
+                f'Сквад <code>{server.get("squad_uuid")}</code>.' if given else '')
         # Запоминаем, где легла карточка: выдача и ошибки правят её на месте,
         # чтобы в теме была одна живая заявка, а не переписка с ботом.
-        card = await c.notifier.post('servers', await request_card(c, result.server),
-                                     markup=request_markup(result.server['_id']))
+        card = await c.notifier.post(
+            'servers', await request_card(c, server, note),
+            markup=None if given else await card_markup(c, server))
         if card is not None:
-            await c.private.servers.set(result.server['_id'],
+            await c.private.servers.set(server['_id'],
                                         card_chat_id=card.chat.id,
                                         card_message_id=card.message_id)
 
-    await call.answer('Заявка принята', show_alert=True)
+    await call.answer('Сервер готов' if given else 'Заявка принята', show_alert=True)
     await server_screen(call, c, await c.users.get(call.from_user.id), settings,
-                        result.server)
+                        await c.private.servers.get(server['_id']) or server)
 
 
 # ── экран сервера ───────────────────────────────────────────────────────────

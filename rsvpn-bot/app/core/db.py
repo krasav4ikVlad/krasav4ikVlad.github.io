@@ -35,6 +35,8 @@ JOB_RUNS = 'job_runs'
 BROADCASTS = 'broadcasts'
 # личные серверы: см. app/services/private_servers.py
 PRIVATE_SERVERS = 'private_servers'
+# заранее поднятые машины, ждущие заявки
+SERVER_POOL = 'private_pool'
 
 PAYMENTS = 'payments'
 PAYMENT_WEBHOOKS = 'payments_webhooks'

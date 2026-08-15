@@ -60,6 +60,7 @@ def main_kb(c) -> InlineKeyboardBuilder:
     kb.row(btn(f'{e("settings")} Настройки бота', 'sets'))
     for entity in c.entities.values():
         kb.row(btn(entity.title, 'elist', entity.code))
+    kb.row(btn(f'{e("private")} Серверы: очередь и запас', 'srvq'))
     kb.row(btn(f'{e("broadcast")} Рассылка', 'broadcast'))
     kb.row(btn(f'{e("trial")} Сброс бесплатного периода', 'trial'))
     kb.row(btn(f'{e("cross")} Заблокировали бота', 'blocked'))

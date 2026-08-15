@@ -105,9 +105,11 @@ class Container:
         from app.services.private_servers import PrivateServerService
         # vpn и bot проставляются позже: покупка сервера возможна и без них,
         # а выдача доступа — нет
+        from app.repositories.server_pool import ServerPoolRepository
         self.private = PrivateServerService(
             self.users, PrivateServersRepository(self.db[names.PRIVATE_SERVERS]),
-            self.settings, vpn=None)
+            self.settings, vpn=None,
+            pool=ServerPoolRepository(self.db[names.SERVER_POOL]))
 
         from app.services.wipe import WipeService
         # vpn проставляется в build(): без панели чистится только база
@@ -279,7 +281,7 @@ class Container:
         поэтому у него strict=False.
         """
         for repo in (self.users, self.plans, self.payments_repo,
-                     self.private.servers):
+                     self.private.servers, self.private.pool):
             await repo.ensure_indexes()
         for service in (self.promo, self.survey):
             await service.ensure_indexes()
@@ -295,7 +297,7 @@ class Container:
         await self.warn_about_squads()
 
         failed = [name for repo in (self.users, self.plans, self.payments_repo,
-                                    self.private.servers)
+                                    self.private.servers, self.private.pool)
                   for name in repo.failed_indexes]
         if failed and strict:
             raise RuntimeError('не созданы индексы: ' + ', '.join(failed))
