@@ -169,7 +169,10 @@ async def command(message: types.Message, c, settings) -> None:
 
 
 async def bypass_sync(message: types.Message, command, c, settings) -> None:
-    """`/bypasssync [fix]` — у кого ByPass кончается не тогда, когда подписка.
+    """`/bypasssync [fix]` — у кого ByPass разошёлся с подпиской.
+
+    Сверяются срок и лимит устройств: и то и другое у ByPass своё, и любое
+    расхождение человек видит как «купил, а не работает».
 
     Без аргумента только показывает: правка ходит в панель по запросу на
     человека, и запускать её вслепую, не увидев масштаба, незачем.
@@ -189,10 +192,19 @@ async def bypass_sync(message: types.Message, command, c, settings) -> None:
         await message.answer(f'{e("ok")} Даты ByPass и подписок совпадают у всех.')
         return
 
-    rows = '\n'.join(
-        f'<code>{row["user_id"]}</code>: подписка {fmt(row["main"])}, '
-        f'ByPass {fmt(row["bypass"]) if row["bypass"] else "нет даты"}'
-        for row in report['rows'])
+    def what(row: dict) -> str:
+        parts = []
+        if row.get('dates'):
+            parts.append(f'срок: подписка {fmt(row["main"])}, ByPass '
+                         + (fmt(row['bypass']) if row['bypass'] else 'неизвестен'))
+        if row.get('device_limit'):
+            parts.append(f'устройства: {row.get("devices")} против '
+                         + (str(row['bypass_devices'])
+                            if row.get('bypass_devices') else 'неизвестно'))
+        return '; '.join(parts)
+
+    rows = '\n'.join(f'<code>{row["user_id"]}</code>: {what(row)}'
+                     for row in report['rows'])
 
     await message.answer(
         f'{e("warning")} <b>Расхождений: {report["checked"]}</b>\n\n{rows}'

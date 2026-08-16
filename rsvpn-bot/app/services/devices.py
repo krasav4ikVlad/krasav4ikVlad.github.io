@@ -27,6 +27,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 from app.core.errors import NotEnoughBalance, VpnPanelError
+from app.services import bypass
 from app.core.time import now, parse_dt
 
 log = logging.getLogger(__name__)
@@ -113,6 +114,10 @@ class DeviceBillingService:
             {'$push': {'vpn.extraDevices': package},
              '$set': {'vpn.hwidDeviceLimit': new_limit}},
         )
+        # ByPass — отдельная подписка в панели со своим лимитом. Без этого
+        # человек покупает устройства, а подключить их может только к
+        # основной, хотя платит за обе.
+        await bypass.sync_devices(self.users, self.vpn, user_id, new_limit)
         log.info('%s купил %s доп. устройств за %s₽', user_id, amount, total)
         return new_limit
 
@@ -151,6 +156,7 @@ class DeviceBillingService:
         await self.users.col.update_one(
             {'user_data.user_id': user_id},
             {'$set': {'vpn.extraDevices': updated, 'vpn.hwidDeviceLimit': new_limit}})
+        await bypass.sync_devices(self.users, self.vpn, user_id, new_limit)
 
         log.info('%s уменьшил лимит на %s, стало %s', user_id, amount, new_limit)
         return new_limit
@@ -307,6 +313,7 @@ class DeviceBillingService:
             {'_id': user['_id']},
             {'$set': {'vpn.extraDevices': updated, 'vpn.hwidDeviceLimit': new_limit}},
         )
+        await bypass.sync_devices(self.users, self.vpn, user_id, new_limit)
         report.deactivated += 1
 
         if self.notifier:

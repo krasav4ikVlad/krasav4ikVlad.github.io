@@ -32,10 +32,13 @@ def users(db):
     return UsersRepository(db['users'])
 
 
-async def subscriber(user_factory, main, theirs=None, uuid='bp-1'):
+async def subscriber(user_factory, main, theirs=None, uuid='bp-1',
+                     devices=2, bypass_devices=2):
     return await user_factory(**{
         'vpn.uuid': 'u-1', 'vpn.shortUuid': 's-1', 'vpn.expireAt': main,
+        'vpn.hwidDeviceLimit': devices,
         'vpn.bypass_uuid': uuid, 'vpn.bypass_expireAt': theirs,
+        'vpn.bypass_hwidDeviceLimit': bypass_devices,
     })
 
 
@@ -110,6 +113,64 @@ async def test_everyone_is_checked_not_just_the_first_page(db, users, user_facto
     drift = await bypass.find_drift(users)
 
     assert len(drift) == 1200, f'проверено только {len(drift)}'
+
+
+# ── лимит устройств ─────────────────────────────────────────────────────────
+#
+# У ByPass он свой. Пока его не двигали, человек покупал устройства и мог
+# подключить их только к основной подписке — за то же самое.
+
+async def test_buying_devices_raises_the_bypass_limit_too(db, users, user_factory):
+    from app.services.devices import DeviceBillingService
+    from app.settings.service import SettingsService
+
+    vpn = FakeVpn()
+    repo = UsersRepository(db['users'])
+    service = DeviceBillingService(repo, SettingsService(db['bot_settings']), vpn)
+    await subscriber(user_factory, main=now() + timedelta(days=30),
+                     theirs=now() + timedelta(days=30))
+    await repo.credit(1, 1000, 'тест')
+
+    await service.add(1, 3)
+
+    limits = {call['uuid']: call.get('device_limit') for call in vpn.calls}
+    assert limits == {'u-1': 5, 'bp-1': 5}, vpn.calls
+    user = await repo.get(1)
+    assert user['vpn']['bypass_hwidDeviceLimit'] == 5
+
+
+async def test_a_device_limit_mismatch_is_drift(db, users, user_factory):
+    same = now() + timedelta(days=30)
+    await subscriber(user_factory, main=same, theirs=same, devices=5,
+                     bypass_devices=2)
+
+    drift = await bypass.find_drift(users)
+
+    assert len(drift) == 1 and drift[0]['device_limit'] is True
+    assert drift[0]['dates'] is False, 'даты-то как раз совпадают'
+
+
+async def test_repair_pushes_the_device_limit(db, users, user_factory):
+    same = now() + timedelta(days=30)
+    await subscriber(user_factory, main=same, theirs=same, devices=5,
+                     bypass_devices=2)
+    vpn = FakeVpn()
+
+    await bypass.repair(users, vpn, apply=True)
+
+    assert vpn.calls == [{'uuid': 'bp-1', 'expire_at': None, 'device_limit': 5}]
+    assert not await bypass.find_drift(users)
+
+
+async def test_an_unknown_bypass_limit_is_pushed_once(db, users, user_factory):
+    """Пустое значение — это «мы не знаем, что в панели», а не «совпадает»."""
+    same = now() + timedelta(days=30)
+    await subscriber(user_factory, main=same, theirs=same, bypass_devices=None)
+    vpn = FakeVpn()
+
+    assert len(await bypass.find_drift(users)) == 1
+    await bypass.repair(users, vpn, apply=True)
+    assert not await bypass.find_drift(users), 'второй проход снова нашёл то же'
 
 
 async def test_a_dry_run_changes_nothing(db, users, user_factory):
