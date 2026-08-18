@@ -123,6 +123,7 @@ EMOJI: dict[str, tuple[str, str]] = {
     'lock':           ('🔒', ''),
     'envelope':       ('📨', ''),
     'rocket':         ('🚀', ''),
+    'cart':           ('🛒', ''),
     'wave':           ('👋', ''),
     'smile':          ('😊', ''),
     'receipt':        ('🧾', ''),

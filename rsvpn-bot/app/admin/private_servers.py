@@ -553,6 +553,23 @@ async def queue_text(c) -> str:
     if not queue:
         lines.append(f'{e("ok")} Заявок в работе нет.')
     else:
+        # Первым — список покупок. Машины покупаются по странам, и это
+        # первое действие дня: купить, потом настраивать.
+        need = await c.private.needed_locations()
+        if need:
+            lines.append(f'{e("cart")} <b>Купить машин</b>')
+            for row in need:
+                location = row['location']
+                title = location.title if location else 'локация не указана'
+                traffic = f', {location.traffic_title}' if location else ''
+                how = ', '.join(
+                    f'{ps.BY_PROFILE[code].title} × {count}'
+                    for code, count in row['profiles'].items() if code in ps.BY_PROFILE)
+                lines.append(f'<b>{title}</b>{traffic} — <b>{row["machines"]}</b> '
+                             + ('шт.' if row['machines'] > 1 else 'шт.')
+                             + (f' ({how})' if how else ''))
+            lines.append('')
+
         waiting = sum(group['count'] for group in queue)
         ready = sum(group['ready'] for group in queue)
         lines.append(f'<b>Заявок ждёт: {waiting}</b>'
@@ -613,19 +630,37 @@ async def queue_command(message: types.Message, c, settings) -> None:
 
 
 async def pool_add(message: types.Message, command, c, settings) -> None:
-    """`/pooladd UUID локация протокол` — записать поднятую машину в запас."""
+    """`/pooladd UUID [локация] [протокол]` — записать поднятую машину в запас.
+
+    Локацию и протокол бот выясняет у панели: набирать их руками при каждом
+    добавлении — лишний повод ошибиться, а ошибка здесь продаёт не ту
+    страну. Спрашиваем, только если панель ответила неоднозначно.
+    """
     parts = (command.args or '').split()
-    if len(parts) < 3:
+    if not parts:
         await message.answer(
-            f'{e("cross")} <code>/pooladd UUID локация протокол</code>\n\n'
+            f'{e("cross")} <code>/pooladd UUID</code> — локацию и протокол бот '
+            f'определит сам по панели.\n'
+            f'Не вышло — укажите явно: <code>/pooladd UUID локация протокол</code>\n\n'
             f'Локации: <code>{", ".join(ps.BY_LOCATION)}</code>\n'
             f'Протоколы: <code>{", ".join(ps.BY_PROFILE)}</code>')
         return
 
-    squad, location, profile = parts[0], parts[1], parts[2]
+    squad = parts[0]
     if not looks_like_uuid(squad):
         await message.answer(f'{e("cross")} Это не похоже на UUID сквада.')
         return
+
+    location = parts[1] if len(parts) > 1 else ''
+    profile = parts[2] if len(parts) > 2 else ''
+    detected = ''
+    if not location or not profile:
+        found = await c.private.detect_machine(squad)
+        location, profile, trouble = _guess(found, location, profile)
+        if trouble:
+            await message.answer(trouble)
+            return
+        detected = _detected_note(found, location, profile)
 
     result = await c.private.pool_add(squad, location, profile, message.from_user.id)
     if not result.ok:
@@ -655,9 +690,54 @@ async def pool_add(message: types.Message, command, c, settings) -> None:
         f'{e("ok")} Машина <code>{squad}</code> в запасе '
         f'({ps.location_title({"location": location})}, '
         f'{ps.profile_title({"profile": profile})}).'
+        + (f'\n{detected}' if detected else '')
         + (f'\n\n{e("rocket")} Сразу выдана ждавшим заявкам: '
            + ', '.join(f'<code>{server["_id"]}</code>' for server in given)
            if given else ''))
+
+
+def _guess(found: dict, location: str, profile: str) -> tuple[str, str, str]:
+    """Дополнить недостающее тем, что увидела панель.
+
+    Третье значение — текст отказа: пусто, если всё сошлось. Гадать между
+    двумя площадками одной страны бот не имеет права, поэтому в спорном
+    случае просит уточнить, а не выбирает сам.
+    """
+    if not location:
+        options = found.get('locations') or ()
+        if len(options) == 1:
+            location = options[0].code
+        else:
+            what = (', '.join(f'{loc.code} ({loc.title}, {loc.traffic_title})'
+                              for loc in options)
+                    if options else 'ничего похожего')
+            return '', '', (
+                f'{e("cross")} Не понял площадку по панели: {what}.\n\n'
+                f'Укажите явно: <code>/pooladd UUID локация протокол</code>\n'
+                f'Локации: <code>{", ".join(ps.BY_LOCATION)}</code>')
+
+    if not profile:
+        options = found.get('profiles') or ()
+        if len(options) == 1:
+            profile = options[0].code
+        else:
+            what = ', '.join(p.title for p in options) if options else 'ничего похожего'
+            return '', '', (
+                f'{e("cross")} Не понял протокол по панели: {what}.\n\n'
+                f'Укажите явно: <code>/pooladd UUID {location or "локация"} '
+                f'протокол</code>\n'
+                f'Протоколы: <code>{", ".join(ps.BY_PROFILE)}</code>')
+
+    return location, profile, ''
+
+
+def _detected_note(found: dict, location: str, profile: str) -> str:
+    """Что именно бот прочитал в панели — чтобы ошибку было видно сразу."""
+    source = found.get('name') or found.get('country') or 'ответ панели'
+    return (f'<i>Определено по панели ({source}): '
+            f'{ps.location_title({"location": location})}, '
+            f'{ps.profile_title({"profile": profile})}. Не то — '
+            f'<code>/pooldel</code> и добавьте с явными аргументами.</i>')
 
 
 async def pool_remove(message: types.Message, command, c, settings) -> None:

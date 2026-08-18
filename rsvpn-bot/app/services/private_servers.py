@@ -315,6 +315,69 @@ class PrivateServerService:
     # Провижининг ручной, и заявка ждёт человека. Машины, поднятые заранее,
     # снимают это ожидание: заявка садится на готовый сквад в тот же миг.
 
+    async def detect_machine(self, squad_uuid: str) -> dict:
+        """Что за машина стоит за сквадом: площадка и транспорт.
+
+        Спрашиваем панель, а не человека: набирать локацию и протокол руками
+        при каждом добавлении — лишний повод ошибиться, а ошибка здесь
+        продаёт не ту страну. Но если панель отвечает неоднозначно (в одной
+        стране у нас две площадки), решаем не сами: возвращаем варианты.
+        """
+        text_parts: list[str] = []
+        countries: list[str] = []
+
+        try:
+            for node in await self.vpn.squad_nodes(squad_uuid):
+                text_parts.append(str(node.get('nodeName') or node.get('name') or ''))
+                text_parts.append(str(node.get('address') or ''))
+                code = node.get('countryCode') or node.get('country')
+                if code:
+                    countries.append(str(code))
+        except Exception as exc:
+            log.info('ноды сквада %s не получены: %s', squad_uuid, exc)
+
+        squad_info: dict = {}
+        try:
+            squad_info = await self.vpn.squad(squad_uuid)
+        except Exception as exc:
+            log.info('сквад %s не прочитан: %s', squad_uuid, exc)
+
+        # Имя сквада и его инбаунды — второй источник: там обычно и город,
+        # и транспорт. Разбираем всё скопом, а не по конкретным полям:
+        # раскладка ответа у разных версий панели своя.
+        text_parts.append(str(squad_info.get('name') or ''))
+        text_parts.append(str(squad_info.get('inbounds') or ''))
+        blob = ' '.join(part for part in text_parts if part)
+
+        locations = ps.match_locations(blob, countries[0] if countries else '')
+        profiles = ps.match_profiles(blob)
+        return {'locations': locations, 'profiles': profiles,
+                'country': countries[0] if countries else '',
+                'name': str(squad_info.get('name') or ''), 'seen': bool(blob.strip())}
+
+    async def needed_locations(self) -> list[dict]:
+        """Что купить: список площадок с числом машин под ждущие заявки.
+
+        Считается из очереди, но развёрнуто по площадкам: покупать VPS
+        приходится по одной стране за раз, и «Токио — 2» полезнее, чем
+        разбор по тарифам.
+        """
+        need: dict[str, dict] = {}
+        for group in await self.queue():
+            if not group['machines']:
+                continue
+            location = group['location']
+            code = location.code if location else (group.get('location_code') or '?')
+            row = need.setdefault(code, {'location': location, 'machines': 0,
+                                         'profiles': {}, 'requests': 0})
+            row['machines'] += group['machines']
+            row['requests'] += group['count'] - group['ready']
+            profile = group['profile']
+            if profile:
+                row['profiles'][profile.code] = (row['profiles'].get(profile.code, 0)
+                                                 + group['machines'])
+        return sorted(need.values(), key=lambda row: -row['machines'])
+
     async def pool_add(self, squad_uuid: str, location: str, profile: str,
                        admin_id: int = 0, note: str = '') -> Result:
         if self.pool is None:
@@ -430,6 +493,7 @@ class PrivateServerService:
             key = (server.get('plan'), server.get('location'), server.get('profile'))
             group = groups.setdefault(key, {
                 'plan': plan, 'plan_code': server.get('plan'),
+                'location_code': server.get('location') or '',
                 'location': ps.BY_LOCATION.get(server.get('location') or ''),
                 'profile': ps.BY_PROFILE.get(server.get('profile') or ''),
                 'servers': [], 'ready': 0})

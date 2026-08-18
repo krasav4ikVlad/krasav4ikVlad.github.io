@@ -21,6 +21,7 @@ class FakeVpn:
         self.state: dict[str, dict] = {}
         self.fail = False
         self.keys: list[str] = []
+        self.squad_info: dict = {}
 
     async def create_subscription(self, user_id: int, days: int) -> dict:
         uuid = f'u-{user_id}'
@@ -64,6 +65,9 @@ class FakeVpn:
 
     async def connection_keys(self, uuid, user_id=None) -> list:
         return list(self.keys)
+
+    async def squad(self, squad_uuid) -> dict:
+        return dict(self.squad_info)
 
 
 @pytest.fixture
@@ -1492,6 +1496,86 @@ async def test_the_queue_marks_what_the_spare_covers(service):
 
     assert group['count'] == 2 and group['ready'] == 1
     assert group['machines'] == 1, 'вторая заявка требует ещё одну машину'
+
+
+# ── что купить и что бот сам узнаёт про машину ───────────────────────────────
+
+async def test_the_shopping_list_counts_machines_by_location(service):
+    """Машины покупаются по странам, а не по тарифам: «Токио — 2» полезнее."""
+    srv, vpn, users = service
+    for owner in (1, 2):
+        await owner_with_money(users, owner)
+        await srv.request(owner, 'mini', location='tyo', profile='grpc')
+    await owner_with_money(users, 3)
+    await srv.request(3, 'company', location='ams', profile='reality')
+
+    need = await srv.needed_locations()
+
+    assert [row['location'].code for row in need] == ['tyo', 'ams']
+    assert need[0]['machines'] == 2 and need[1]['machines'] == 1
+    assert need[0]['profiles'] == {'grpc': 2}
+
+
+async def test_the_shopping_list_ignores_what_the_spare_covers(service):
+    srv, vpn, users = service
+    await srv.pool_add(SPARE, 'tyo', 'grpc')
+    await owner_with_money(users, 1)
+    await srv.request(1, 'mini', location='tyo', profile='grpc')
+
+    assert await srv.needed_locations() == []
+
+
+async def test_three_shares_are_one_machine_in_the_shopping_list(service):
+    srv, vpn, users = service
+    for owner in (1, 2, 3):
+        await owner_with_money(users, owner)
+        await srv.request(owner, 'share', location='nl', profile='reality')
+
+    need = await srv.needed_locations()
+
+    assert len(need) == 1 and need[0]['machines'] == 1
+    assert need[0]['requests'] == 3
+
+
+async def test_the_machine_is_recognised_by_the_node_name(service):
+    srv, vpn, users = service
+
+    async def nodes(squad):
+        return [{'nodeName': 'RS Tokyo-1', 'countryCode': 'JP'}]
+
+    vpn.squad_nodes = nodes
+    vpn.squad_info = {'name': 'tokyo grpc', 'inbounds': [{'tag': 'grpc-in'}]}
+
+    found = await srv.detect_machine(SPARE)
+
+    assert [loc.code for loc in found['locations']] == ['tyo']
+    assert [p.code for p in found['profiles']] == ['grpc']
+
+
+async def test_two_sites_in_one_country_stay_ambiguous(service):
+    """Во Франкфурте у нас две площадки: с лимитом и без. Выбрать за
+    человека нельзя — от этого зависит, что он продаёт."""
+    srv, vpn, users = service
+
+    async def nodes(squad):
+        return [{'nodeName': 'node-de-1', 'countryCode': 'DE'}]
+
+    vpn.squad_nodes = nodes
+    found = await srv.detect_machine(SPARE)
+
+    assert {loc.code for loc in found['locations']} == {'fra', 'fra2'}
+
+
+async def test_a_silent_panel_recognises_nothing(service):
+    srv, vpn, users = service
+
+    async def broken(squad):
+        raise RuntimeError('HTTP 500')
+
+    vpn.squad_nodes = broken
+    found = await srv.detect_machine(SPARE)
+
+    assert not found['locations'] and not found['profiles']
 
 
 # ── ссылка для роутера ──────────────────────────────────────────────────────

@@ -60,6 +60,11 @@ class Location:
     code: str
     title: str
     traffic_gb: int = 0          # 0 — безлимит
+    # Код страны и как эту площадку называют в панели. Нужно, чтобы бот сам
+    # узнавал площадку по ноде: набирать её руками при каждом добавлении в
+    # запас — лишний повод ошибиться, а ошибка тут продаёт не ту страну.
+    country: str = ''
+    aliases: tuple[str, ...] = ()
 
     @property
     def limited(self) -> bool:
@@ -73,19 +78,19 @@ class Location:
 # Коды короткие: они едут в callback_data вместе с тарифом и профилем, а
 # там всего 64 байта на всё.
 LOCATIONS: tuple[Location, ...] = (
-    Location('ams', 'Амстердам', 1024),
-    Location('fra', 'Франкфурт', 1024),
-    Location('sto', 'Стокгольм', 1024),
-    Location('bud', 'Будапешт', 1024),
-    Location('mia', 'Майами', 1024),
-    Location('nyc', 'Нью-Йорк', 1024),
-    Location('hkg', 'Гонконг', 1024),
+    Location('ams', 'Амстердам', 1024, 'NL', ('амстердам', 'amsterdam', 'ams')),
+    Location('fra', 'Франкфурт', 1024, 'DE', ('франкфурт', 'frankfurt', 'fra')),
+    Location('sto', 'Стокгольм', 1024, 'SE', ('стокгольм', 'stockholm', 'sto')),
+    Location('bud', 'Будапешт', 1024, 'HU', ('будапешт', 'budapest', 'bud')),
+    Location('mia', 'Майами', 1024, 'US', ('майами', 'miami', 'mia')),
+    Location('nyc', 'Нью-Йорк', 1024, 'US', ('нью-йорк', 'нью йорк', 'new york', 'nyc')),
+    Location('hkg', 'Гонконг', 1024, 'HK', ('гонконг', 'hong kong', 'hongkong', 'hkg')),
     # Безлимитные — отдельные площадки, поэтому Франкфурт встречается дважды
     # и это не опечатка: там другой провайдер и другой тариф по трафику.
-    Location('nl', 'Нидерланды'),
-    Location('fra2', 'Франкфурт'),
-    Location('mil', 'Милан'),
-    Location('tyo', 'Токио'),
+    Location('nl', 'Нидерланды', 0, 'NL', ('нидерланды', 'netherlands', 'holland')),
+    Location('fra2', 'Франкфурт', 0, 'DE', ('франкфурт', 'frankfurt', 'fra')),
+    Location('mil', 'Милан', 0, 'IT', ('милан', 'milan', 'milano', 'mil')),
+    Location('tyo', 'Токио', 0, 'JP', ('токио', 'tokyo', 'tyo')),
 )
 
 BY_LOCATION: dict[str, Location] = {loc.code: loc for loc in LOCATIONS}
@@ -193,6 +198,42 @@ def others_on_machine(shares: int) -> str:
     if not others:
         return ''
     return OTHERS_WORDS.get(others, f'ещё {others} покупателей')
+
+
+def match_locations(text: str, country: str = '') -> tuple[Location, ...]:
+    """Какие площадки подходят под описание ноды из панели.
+
+    Возвращает сразу все подходящие: одной страны у нас бывает две площадки
+    (Франкфурт с лимитом и Франкфурт безлимитный), и выбрать за человека тут
+    нельзя — от этого зависит, что он продаёт.
+    """
+    haystack = (text or '').lower()
+    by_name = tuple(loc for loc in LOCATIONS
+                    if any(alias in haystack for alias in loc.aliases))
+    if by_name:
+        return by_name
+
+    code = (country or '').strip().upper()
+    return tuple(loc for loc in LOCATIONS if code and loc.country == code)
+
+
+# Как транспорт называют в конфигах панели. Порядок важен: hysteria2 в
+# описании инбаунда встречается вместе со словом «udp», а reality — вместе
+# с «tcp», поэтому ищем по самому характерному слову.
+PROFILE_MARKS: tuple[tuple[str, str], ...] = (
+    ('hysteria', 'hysteria2'),
+    ('reality', 'reality'),
+    ('grpc', 'grpc'),
+)
+
+
+def match_profiles(text: str) -> tuple[Profile, ...]:
+    haystack = (text or '').lower()
+    found = []
+    for mark, code in PROFILE_MARKS:
+        if mark in haystack and BY_PROFILE.get(code) not in found:
+            found.append(BY_PROFILE[code])
+    return tuple(found)
 
 
 def locations_for(plan: ServerPlan | None) -> tuple[Location, ...]:

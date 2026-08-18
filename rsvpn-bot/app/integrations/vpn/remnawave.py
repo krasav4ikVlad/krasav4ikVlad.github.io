@@ -318,6 +318,13 @@ class RemnawaveClient:
                 nodes.extend(item for item in value if isinstance(item, dict))
         return nodes
 
+    async def squad(self, squad_uuid: str) -> dict:
+        """Сам сквад: имя и его инбаунды. По ним видно транспорт машины."""
+        if not squad_uuid:
+            return {}
+        data = await self._request('GET', f'/api/internal-squads/{squad_uuid}')
+        return data if isinstance(data, dict) else {}
+
     async def node_users_usage(self, node_uuid: str, start: datetime, end: datetime,
                                top: int = 200) -> dict[str, int]:
         """Расход по нодам для панелей без ручки сквада: {username: байты}.

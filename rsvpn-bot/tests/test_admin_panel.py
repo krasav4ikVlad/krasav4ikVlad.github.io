@@ -1263,6 +1263,63 @@ async def test_adding_a_machine_serves_the_waiting_request(admin_env):
     assert 'Сразу выдана' in session.last_text
 
 
+async def test_the_queue_screen_says_what_to_buy(admin_env):
+    """Первое действие дня — купить машины, и это список по странам."""
+    dp, bot, session, container = admin_env
+    await _pending_server(container, bot)
+
+    await dp.feed_update(bot, callback(Adm(act='srvq').pack()))
+
+    text = session.last_text
+    assert 'Купить машин' in text
+    assert 'Амстердам' in text and '1 ТБ' in text
+    assert 'TCP Reality' in text
+
+
+async def test_a_machine_is_added_without_naming_the_country(admin_env):
+    """Локацию и протокол бот берёт из панели: набирать их каждый раз —
+    лишний повод ошибиться."""
+    dp, bot, session, container = admin_env
+    container.attach_bot(bot)
+
+    class Panel(FakePanel):
+        async def squad_nodes(self, squad_uuid):
+            return [{'nodeName': 'RS Tokyo-1', 'countryCode': 'JP'}]
+
+        async def squad(self, squad_uuid):
+            return {'name': 'tokyo grpc'}
+
+    container.private.vpn = Panel()
+
+    await dp.feed_update(bot, message(
+        '/pooladd bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee'))
+
+    rows = await container.private.pool_rows()
+    assert [(row['location'], row['profile']) for row in rows] == [('tyo', 'grpc')]
+    assert 'Определено по панели' in session.last_text
+
+
+async def test_an_ambiguous_country_asks_instead_of_guessing(admin_env):
+    dp, bot, session, container = admin_env
+    container.attach_bot(bot)
+
+    class Panel(FakePanel):
+        async def squad_nodes(self, squad_uuid):
+            return [{'nodeName': 'node-de-1', 'countryCode': 'DE'}]
+
+        async def squad(self, squad_uuid):
+            return {'name': 'reality'}
+
+    container.private.vpn = Panel()
+
+    await dp.feed_update(bot, message(
+        '/pooladd bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee'))
+
+    assert not await container.private.pool_rows(), 'угадал вместо того, чтобы спросить'
+    assert 'Не понял площадку' in session.last_text
+    assert 'fra' in session.last_text
+
+
 async def test_a_bad_location_is_refused(admin_env):
     dp, bot, session, container = admin_env
 
