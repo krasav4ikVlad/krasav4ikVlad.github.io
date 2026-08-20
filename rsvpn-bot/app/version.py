@@ -11,11 +11,11 @@
 
 from __future__ import annotations
 
-VERSION = '102'
+VERSION = '103'
 
 # Что появилось в этой сборке — короткой строкой, чтобы по логу было понятно
 # не только «другая», но и «та ли самая».
-BUILD = 'отказ панели не помечает сервер выданным; /squadcheck'
+BUILD = 'отказ панели не ломает выдачу; /squadcheck и /srvfix'
 
 
 def version_line() -> str:

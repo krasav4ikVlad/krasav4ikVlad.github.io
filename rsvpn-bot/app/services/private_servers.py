@@ -378,6 +378,59 @@ class PrivateServerService:
                                                  + group['machines'])
         return sorted(need.values(), key=lambda row: -row['machines'])
 
+    async def regrant(self, server_id: str) -> Result:
+        """Выдать доступ заново — владельцу и всем участникам.
+
+        Отдельно от activate: тот работает только с заявкой и статуса не
+        меняет дважды. Здесь сервер уже активен, и чинится ровно одно —
+        доступ в панели, потерянный из-за её отказа или правки руками.
+        """
+        server = await self.servers.get(server_id)
+        if not server:
+            return Result(False, 'not_found')
+        if not server.get('squad_uuid'):
+            return Result(False, 'no_squad', server=server)
+
+        failed = []
+        for user_id in self._everyone(server):
+            try:
+                await self._grant(server, user_id)
+            except Exception as exc:
+                log.warning('доступ %s к серверу %s не восстановлен: %s',
+                            user_id, server_id, exc)
+                failed.append(f'{user_id}: {exc}')
+
+        if failed:
+            return Result(False, 'panel', server=server, note='\n'.join(failed))
+        return Result(True, server=server, amount=len(self._everyone(server)))
+
+    async def granted_check(self) -> list[dict]:
+        """Серверы, помеченные выданными, но без доступа у владельца.
+
+        Такое состояние оставляла ошибка в порядке действий: статус ставился
+        до обращения к панели, и её отказ давал «выдан» без доступа. Заявка
+        при этом уходила из очереди, поэтому найти пострадавших можно только
+        так — сверкой сквада сервера со сквадами владельца.
+
+        Проверка идёт по базе, без запросов в панель: сквады владельца бот
+        и так хранит у себя.
+        """
+        broken = []
+        for server in await self.servers.col.find(
+                {'status': ps.ACTIVE}).to_list(length=500):
+            squad = server.get('squad_uuid')
+            if not squad:
+                broken.append({'server': server, 'why': 'сквад не задан'})
+                continue
+
+            owner = await self.users.get(server['owner_id'],
+                                         {'vpn.activeInternalSquads': 1})
+            squads = self.users.pick(owner or {}, 'vpn.activeInternalSquads') or []
+            if squad not in squads:
+                broken.append({'server': server,
+                               'why': 'у владельца нет этого сквада'})
+        return broken
+
     async def pool_add(self, squad_uuid: str, location: str, profile: str,
                        admin_id: int = 0, note: str = '') -> Result:
         if self.pool is None:

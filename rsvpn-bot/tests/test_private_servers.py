@@ -1395,6 +1395,49 @@ async def test_a_refusing_panel_leaves_the_request_in_the_queue(service):
     assert [row['_id'] for row in await srv.servers.pending()] == [server['_id']]
 
 
+async def test_a_server_without_access_is_found_and_fixed(service):
+    """След старой ошибки: сервер «выдан», доступа нет, из очереди ушёл —
+    найти его можно только сверкой сквадов владельца."""
+    srv, vpn, users = service
+    server = await live_server(service)
+
+    # панель «потеряла» сквад: так же выглядит и правка руками
+    vpn.state['u-1']['squads'] = []
+    await users.set_vpn(1, {'activeInternalSquads': []})
+
+    broken = await srv.granted_check()
+    assert [row['server']['_id'] for row in broken] == [server['_id']]
+
+    result = await srv.regrant(server['_id'])
+
+    assert result.ok
+    assert SQUAD in vpn.state['u-1']['squads']
+    assert not await srv.granted_check()
+
+
+async def test_a_healthy_server_is_not_reported_as_broken(service):
+    srv, vpn, users = service
+    await live_server(service)
+
+    assert not await srv.granted_check()
+
+
+async def test_regrant_covers_members_too(service):
+    srv, vpn, users = service
+    server = await live_server(service)
+    await users.create({'user_data': {'user_id': 2}, 'info': {'balance': 0},
+                        'vpn': {'uuid': 'u-2', 'shortUuid': 's-2',
+                                'activeInternalSquads': []}})
+    invite = await srv.invite(server['_id'], 1)
+    await srv.join(invite.reason, 2)
+    vpn.state['u-2']['squads'] = []
+
+    result = await srv.regrant(server['_id'])
+
+    assert result.ok and result.amount == 2
+    assert SQUAD in vpn.state['u-2']['squads']
+
+
 async def test_a_squad_the_panel_does_not_know_is_refused(service):
     """Опечатка в UUID кладёт в запас машину, которой нет: заявка закроется,
     а доступ не появится."""

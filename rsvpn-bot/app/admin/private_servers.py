@@ -606,6 +606,22 @@ async def queue_text(c) -> str:
                      f'   {location.title if location else row.get("location")}, '
                      f'{profile.title if profile else row.get("profile")} — {state}')
 
+    # Сервер «выдан», а доступа нет — след старой ошибки в порядке действий
+    # (статус ставился до обращения к панели). Из очереди такие ушли, и
+    # увидеть их можно только этой сверкой.
+    broken = await c.private.granted_check()
+    if broken:
+        lines.append('')
+        lines.append(f'{e("warning")} <b>Выданы, но доступа у владельца нет: '
+                     f'{len(broken)}</b>')
+        for row in broken[:10]:
+            server = row['server']
+            lines.append(f'<code>{server["_id"]}</code> — владелец '
+                         f'<code>{server.get("owner_id")}</code>, {row["why"]}')
+        lines.append('<i>Лечится командой <code>/srvfix srv_xxxxxxxx</code>: '
+                     'бот заново выдаст доступ владельцу и участникам, '
+                     'ничего больше не трогая.</i>')
+
     lines.append('')
     lines.append('<blockquote>Поднимайте машины заранее и добавляйте их сюда: '
                  '<code>/pooladd UUID локация протокол</code>. Заявка на такую '
@@ -758,6 +774,30 @@ def _detected_note(found: dict, location: str, profile: str) -> str:
             f'<code>/pooldel</code> и добавьте с явными аргументами.</i>')
 
 
+async def server_fix(message: types.Message, command, c, settings) -> None:
+    """`/srvfix srv_xxxxxxxx` — выдать доступ заново, ничего больше не трогая."""
+    server_id = (command.args or '').strip()
+    if not server_id:
+        await message.answer(f'{e("cross")} <code>/srvfix srv_xxxxxxxx</code>\n\n'
+                             f'<blockquote>Заново выдаёт доступ владельцу и '
+                             f'участникам активного сервера. Нужна, когда '
+                             f'сервер числится выданным, а доступа нет.</blockquote>')
+        return
+
+    result = await c.private.regrant(server_id)
+    if not result.ok:
+        await message.answer(
+            f'{e("cross")} '
+            + {'not_found': 'сервер не найден',
+               'no_squad': 'у сервера не задан сквад — выдайте его через /squad',
+               'panel': 'панель не приняла'}.get(result.reason, result.reason)
+            + (f'\n\n<code>{result.note}</code>' if result.note else ''))
+        return
+
+    await message.answer(f'{e("ok")} Доступ выдан заново: {result.amount} чел. '
+                         f'(владелец и участники).')
+
+
 async def squad_check(message: types.Message, command, c, settings) -> None:
     """`/squadcheck UUID` — что панель отвечает про этот сквад.
 
@@ -825,6 +865,7 @@ def register(router: Router) -> None:
     router.message.register(pool_add, Command('pooladd'))
     router.message.register(pool_remove, Command('pooldel'))
     router.message.register(squad_check, Command('squadcheck'))
+    router.message.register(server_fix, Command('srvfix'))
     router.message.register(delete_server, Command('srvdel'))
     router.message.register(squad_command, Command('squad'))
     router.message.register(diagnose, Command('srvdiag'))
