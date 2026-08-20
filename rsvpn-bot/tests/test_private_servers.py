@@ -1377,6 +1377,51 @@ async def test_the_number_of_shares_comes_from_settings(service):
 SPARE = 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee'
 
 
+async def test_a_refusing_panel_leaves_the_request_in_the_queue(service):
+    """Худшее состояние — «выдан» без доступа: заявка ушла из очереди, а у
+    человека ничего нет, и никто об этом не знает."""
+    srv, vpn, users = service
+    await owner_with_money(users, 1)
+    await srv.pool_add(SPARE, 'ams', 'reality')
+    result = await srv.request(1, 'mini', location='ams', profile='reality')
+    vpn.fail = True
+
+    given = await srv.give_from_pool(result.server['_id'])
+
+    assert not given.ok and given.reason == 'panel'
+    server = await srv.servers.get(result.server['_id'])
+    assert server['status'] == ps.REQUESTED, 'заявка помечена выданной'
+    assert not server['squad_uuid']
+    assert [row['_id'] for row in await srv.servers.pending()] == [server['_id']]
+
+
+async def test_a_squad_the_panel_does_not_know_is_refused(service):
+    """Опечатка в UUID кладёт в запас машину, которой нет: заявка закроется,
+    а доступ не появится."""
+    srv, vpn, users = service
+
+    async def missing(squad_uuid):
+        raise RuntimeError('GET /api/internal-squads: HTTP 404 not found')
+
+    vpn.squad = missing
+    result = await srv.pool_add(SPARE, 'ams', 'reality')
+
+    assert not result.ok and result.reason == 'unknown_squad'
+    assert not await srv.pool_rows()
+
+
+async def test_a_panel_that_only_stumbles_does_not_block_the_pool(service):
+    """Молчание панели — не доказательство, что сквада нет."""
+    srv, vpn, users = service
+
+    async def broken(squad_uuid):
+        raise RuntimeError('HTTP 500')
+
+    vpn.squad = broken
+
+    assert (await srv.pool_add(SPARE, 'ams', 'reality')).ok
+
+
 async def test_a_spare_machine_is_handed_out_at_once(service):
     srv, vpn, users = service
     await owner_with_money(users, 1)

@@ -390,11 +390,45 @@ class PrivateServerService:
             # Сквад уже под живым сервером: в запасе ему делать нечего.
             return Result(False, 'squad_busy', note=describe(
                 await self.servers.on_squad(squad_uuid)))
+
+        # Сквад, которого нет в панели, — это опечатка в UUID. Положить его
+        # в запас значит выдать людям машину, которой не существует: заявка
+        # закроется, а доступ не появится.
+        known, why = await self.squad_exists(squad_uuid)
+        if not known:
+            return Result(False, 'unknown_squad', note=why)
         if not await self.pool.add(squad_uuid, location, profile, admin_id, note):
             return Result(False, 'already_in_pool')
 
         log.info('в запас добавлена машина %s (%s, %s)', squad_uuid, location, profile)
         return Result(True)
+
+    async def squad_exists(self, squad_uuid: str) -> tuple[bool, str]:
+        """Знает ли панель такой сквад: (да/нет, чем ответила).
+
+        Без панели (в тестах и при её недоступности) не мешаем работать:
+        отсутствие ответа — не доказательство, что сквада нет.
+        """
+        if self.vpn is None:
+            return True, 'панель не подключена — проверить нечем'
+        try:
+            info = await self.vpn.squad(squad_uuid)
+            if info:
+                return True, str(info.get('name') or '')
+        except Exception as exc:
+            if 'HTTP 404' in str(exc) or '404' in str(exc):
+                return False, 'панель не знает такого сквада (404)'
+            log.info('сквад %s не проверен: %s', squad_uuid, exc)
+            return True, f'проверить не вышло: {exc}'
+
+        try:
+            if await self.vpn.squad_nodes(squad_uuid):
+                return True, 'сквад есть, ноды на месте'
+        except Exception as exc:
+            if 'HTTP 404' in str(exc) or '404' in str(exc):
+                return False, 'панель не знает такого сквада (404)'
+            return True, f'проверить не вышло: {exc}'
+        return True, 'панель ответила пусто — считаем, что сквад есть'
 
     async def pool_remove(self, squad_uuid: str) -> Result:
         if self.pool is None:
@@ -553,14 +587,23 @@ class PrivateServerService:
             return Result(False, 'squad_mismatch', server=server,
                           note=describe(neighbours))
 
+        # Сначала панель, потом база — как везде, где эти двое расходятся.
+        # Раньше статус ставился первым, и отказ панели давал худшее из
+        # состояний: заявка «выдана» и ушла из очереди, а доступа у человека
+        # нет и никто об этом не знает.
         paid_until = now() + timedelta(days=ps.CHARGE_PERIOD_DAYS)
+        candidate = dict(server, squad_uuid=squad_uuid, paid_until=paid_until)
+        try:
+            await self._grant(candidate, server['owner_id'])
+        except Exception as exc:
+            log.exception('доступ к серверу %s не выдан, заявка осталась в очереди',
+                          server_id)
+            return Result(False, 'panel', server=server, note=str(exc))
+
         await self.servers.set(server_id, status=ps.ACTIVE, squad_uuid=squad_uuid,
                                activated_at=now(),
                                paid_until=paid_until, next_charge_at=paid_until)
-
-        server = await self.servers.get(server_id)
-        await self._grant(server, server['owner_id'])
-        return Result(True, server=server)
+        return Result(True, server=await self.servers.get(server_id))
 
     async def reject(self, server_id: str, reason: str = '') -> Result:
         """Отказ до запуска: деньги возвращаются целиком."""

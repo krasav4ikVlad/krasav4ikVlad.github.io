@@ -247,6 +247,8 @@ async def squad_command(message: types.Message, command, state: FSMContext,
 # ошибиться здесь легко: сквад один на несколько долей, и перепутать его с
 # соседним — обычное дело.
 GIVE_ERRORS = {
+    'panel': 'панель не приняла выдачу — заявка осталась в очереди',
+    'no_free_machine': 'свободной машины под эту заявку нет',
     'not_found': 'заявка не найдена — проверьте id',
     'wrong_status': 'заявка уже обработана',
     'squad_busy': 'этот сквад уже отдан другому серверу. Обычный тариф '
@@ -270,12 +272,14 @@ async def provision(message: types.Message, c, server_id: str, squad: str) -> No
         # который «чем-то занят», и что это, приходится искать перебором.
         trouble = (f'{e("cross")} <b>Не вышло:</b> '
                    f'{GIVE_ERRORS.get(result.reason, result.reason)}'
+                   + (f'\n\n<code>{result.note}</code>' if result.reason == 'panel'
+                      and result.note else '')
                    + (f'\n\nНа этой машине уже:\n<code>{result.note}</code>\n\n'
                       f'Если это старый тестовый сервер — уберите его '
                       f'(<code>/srvdel {result.note.split(" ")[0]}</code>). Если он '
                       f'настоящий, а разошлась только локация — поправьте её '
                       f'(<code>/srvloc</code>) или выдайте этой заявке другой сквад.'
-                      if result.note else ''))
+                      if result.note and result.reason != 'panel' else ''))
         # Кнопки оставляем: заявка жива, выдачу надо повторить.
         card = result.server or await c.private.servers.get(server_id)
         if not card or not await edit_card(message.bot, c, card, trouble,
@@ -675,16 +679,28 @@ async def pool_add(message: types.Message, command, c, settings) -> None:
         return
 
     # Заявка могла прийти раньше машины — тогда выдаём её сразу же.
-    given = []
+    # Каждую отдельно: одна упавшая выдача не должна ронять остальные и
+    # превращаться в общее «сервис не отвечает» без единого имени.
+    given, failed = [], []
     for server in await c.private.servers.pending():
         if (await c.private.pick_squad(server)) != squad:
             continue
-        handed = await c.private.give_from_pool(server['_id'])
+        try:
+            handed = await c.private.give_from_pool(server['_id'])
+        except Exception as exc:
+            log.exception('выдача %s из запаса не удалась', server['_id'])
+            failed.append(f'{server["_id"]}: {exc}')
+            continue
+
         if handed.ok:
             given.append(handed.server)
             await edit_card(message.bot, c, handed.server,
                             f'{e("rocket")} <b>Выдан из запаса</b> — машина '
                             f'появилась после заявки. Сквад <code>{squad}</code>.')
+        else:
+            failed.append(f'{server["_id"]}: '
+                          + GIVE_ERRORS.get(handed.reason, handed.reason)
+                          + (f' ({handed.note})' if handed.note else ''))
 
     await message.answer(
         f'{e("ok")} Машина <code>{squad}</code> в запасе '
@@ -693,7 +709,9 @@ async def pool_add(message: types.Message, command, c, settings) -> None:
         + (f'\n{detected}' if detected else '')
         + (f'\n\n{e("rocket")} Сразу выдана ждавшим заявкам: '
            + ', '.join(f'<code>{server["_id"]}</code>' for server in given)
-           if given else ''))
+           if given else '')
+        + (f'\n\n{e("cross")} <b>Не вышло выдать:</b>\n<code>'
+           + '\n'.join(failed) + '</code>' if failed else ''))
 
 
 def _guess(found: dict, location: str, profile: str) -> tuple[str, str, str]:
@@ -740,6 +758,53 @@ def _detected_note(found: dict, location: str, profile: str) -> str:
             f'<code>/pooldel</code> и добавьте с явными аргументами.</i>')
 
 
+async def squad_check(message: types.Message, command, c, settings) -> None:
+    """`/squadcheck UUID` — что панель отвечает про этот сквад.
+
+    Отдельная команда, потому что вопрос «почему не выдаётся» почти всегда
+    сводится к одному: знает ли панель такой сквад и что она про него
+    говорит. Ответ показывается как есть, без пересказа.
+    """
+    squad = (command.args or '').strip()
+    if not squad:
+        await message.answer(f'{e("cross")} <code>/squadcheck UUID</code>')
+        return
+
+    lines = [f'{e("tools")} <b>Сквад</b> <code>{squad}</code>', '']
+
+    known, why = await c.private.squad_exists(squad)
+    lines.append(f'{e("ok") if known else e("cross")} {why}')
+
+    try:
+        info = await c.private.vpn.squad(squad)
+        lines.append(f'<code>{str(info)[:600]}</code>')
+    except Exception as exc:
+        lines.append(f'GET /api/internal-squads/UUID: <code>{exc}</code>')
+
+    try:
+        nodes = await c.private.vpn.squad_nodes(squad)
+        lines.append(f'нод: {len(nodes)}')
+        lines.append(f'<code>{str(nodes)[:600]}</code>')
+    except Exception as exc:
+        lines.append(f'accessible-nodes: <code>{exc}</code>')
+
+    found = await c.private.detect_machine(squad)
+    lines.append('')
+    lines.append('распознано: '
+                 + (', '.join(loc.code for loc in found['locations']) or '—')
+                 + ' / '
+                 + (', '.join(p.code for p in found['profiles']) or '—'))
+
+    live = await c.private.servers.on_squad(squad)
+    lines.append(f'серверов на скваде: {len(live)}')
+    if live:
+        from app.services.private_servers import describe
+
+        lines.append(f'<code>{describe(live)}</code>')
+
+    await message.answer('\n'.join(lines))
+
+
 async def pool_remove(message: types.Message, command, c, settings) -> None:
     """`/pooldel UUID` — убрать машину из запаса."""
     squad = (command.args or '').strip()
@@ -759,6 +824,7 @@ def register(router: Router) -> None:
     router.message.register(queue_command, Command('queue'))
     router.message.register(pool_add, Command('pooladd'))
     router.message.register(pool_remove, Command('pooldel'))
+    router.message.register(squad_check, Command('squadcheck'))
     router.message.register(delete_server, Command('srvdel'))
     router.message.register(squad_command, Command('squad'))
     router.message.register(diagnose, Command('srvdiag'))
