@@ -658,3 +658,8 @@ tr.tk-unanswered:hover td { background: var(--danger-hover); }
 .notif-item:hover { background: var(--card-2); }
 .notif-stars { color: var(--yellow); font-weight: 700; letter-spacing: .05em; }
 .notif-stars.low { color: var(--red); }
+
+/* ---- проверка качества («Проверка» / «Разборы») ---- */
+.msg-qa-target { outline: 2px solid #e67e22; outline-offset: 1px; }
+.qa-row:hover { background: var(--card-2); }
+.qa-mistake { margin-top: 10px; }

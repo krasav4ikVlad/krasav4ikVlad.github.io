@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     operators_collection: str = "operators"
     audit_collection: str = "operator_logs"
     support_messages_collection: str = "support_messages"
+    reviews_collection: str = "ticket_reviews"  # вердикты «Проверки» (своя коллекция панели)
 
     # --- Быстрые ответы (общая с ботом коллекция) ---
     # По умолчанию — та же база; если бот держит их в другом месте, задайте свои.

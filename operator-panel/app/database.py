@@ -121,6 +121,10 @@ async def ensure_indexes() -> None:
     # текстовый индекс — поиск похожих случаев для ИИ-помощника
     await _safe_create_index(messages, [("text", "text")])
 
+    reviews = db[settings.reviews_collection]
+    await _safe_create_index(reviews, [("operator_login", 1), ("user_id", 1)], unique=True)
+    await _safe_create_index(reviews, [("operator_login", 1), ("acked", 1), ("created_at", -1)])
+
     log.info("MongoDB indexes ensured")
 
 

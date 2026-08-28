@@ -221,6 +221,9 @@ function showConfirmStep(cfg, req, remnaError = null) {
 function logout(redirect = true) {
   S.token = null;
   S.me = null;
+  S.mistakes = undefined;
+  S.mistakesPending = undefined;
+  S.qaOps = null;
   localStorage.removeItem('op_token');
   if (redirect) location.hash = '#/login';
   render();
@@ -960,6 +963,7 @@ async function pollAlerts() {
   alertPrevWaiting = n;
   setAlertBadge(n);
   pollRatings();
+  pollMistakes();
 }
 setInterval(pollAlerts, 15000);
 setTimeout(pollAlerts, 3000);
@@ -3210,6 +3214,298 @@ function viewBotHelp() {
     </div>`;
 }
 
+// ================================================================ проверка качества («Проверка» у владельца, «Разборы» у оператора)
+
+function qaNormTag(s) { return String(s || '').trim().replace(/^@/, '').toLowerCase(); }
+
+function qaUserLabel(i) {
+  const who = `${esc(i.first_name || '')}${i.username ? ' @' + esc(i.username) : ''}`.trim();
+  return who ? `${who} <span class="muted">#${i.user_id}</span>` : '#' + i.user_id;
+}
+
+function qaVerdictBadge(r) {
+  if (!r) return '<span class="badge badge-gray">не проверен</span>';
+  if (r.verdict === 'ok') return '<span class="badge badge-green">✓ правильно</span>';
+  return `<span class="badge badge-red">✗ ошибки</span> <span class="muted" style="font-size:11.5px">${r.acked ? 'отработано' : 'ждёт оператора'}</span>`;
+}
+
+function qaChatHtml(messages, targetSet) {
+  if (!messages.length) return '<div class="center">Сообщений нет</div>';
+  return messages.map(m => {
+    const cls = m.direction === 'operator' ? 'msg-operator' : m.direction === 'system' ? 'msg-system' : 'msg-user';
+    const mine = m.direction === 'operator' && targetSet && targetSet.has(qaNormTag(m.operator_login));
+    const who = m.direction === 'operator'
+      ? (m.operator_login ? esc(m.operator_login) + (m.source === 'tg' ? ' (TG)' : ' (сайт)') : 'оператор')
+      : m.direction === 'system' ? '' : 'пользователь';
+    const text = m.text ? `<div class="msg-text">${tgHtml(m.text)}</div>` : '';
+    return `<div class="msg ${cls}${mine ? ' msg-qa-target' : ''}">${text}${attachmentHtml(m)}<div class="msg-meta">${who ? who + ' · ' : ''}${fmtDate(m.timestamp)}</div></div>`;
+  }).join('');
+}
+
+async function viewQA() {
+  if (!S.me || S.me.role !== 'owner') { location.hash = '#/search'; return; }
+  if (!S.qaOps) {
+    try { S.qaOps = await api('/api/operators'); } catch (e) { toast(e.message, 'err'); return; }
+  }
+  if (!S.qaOpLogin && S.qaOps.length) {
+    const firstOp = S.qaOps.find(o => o.role !== 'owner') || S.qaOps[0];
+    S.qaOpLogin = firstOp.login;
+  }
+  S.qaFilter = S.qaFilter || 'all';
+  S.qaPage = S.qaPage || 1;
+
+  $view.innerHTML = `
+    <div class="card">
+      <h2>Проверка качества</h2>
+      <div class="muted" style="margin:4px 0 12px; font-size:13px">Выберите оператора — ниже все тикеты,
+        где он отвечал. Откройте тикет, прочитайте переписку и отметьте: решено правильно или есть ошибки.
+        Ошибки оператор обязан разобрать при следующем входе в панель.</div>
+      <div class="filters" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center">
+        <select id="qa-op">${S.qaOps.map(o =>
+          `<option value="${esc(o.login)}" ${S.qaOpLogin === o.login ? 'selected' : ''}>${esc(o.name || o.login)} (${esc(o.login)})</option>`).join('')}</select>
+        <select id="qa-filter">
+          <option value="all" ${S.qaFilter === 'all' ? 'selected' : ''}>Все тикеты</option>
+          <option value="unreviewed" ${S.qaFilter === 'unreviewed' ? 'selected' : ''}>Непроверенные</option>
+          <option value="reviewed" ${S.qaFilter === 'reviewed' ? 'selected' : ''}>Проверенные</option>
+        </select>
+      </div>
+    </div>
+    <div class="card" id="qa-list"><div class="center"><span class="spinner"></span></div></div>`;
+
+  const $op = document.getElementById('qa-op');
+  const $f = document.getElementById('qa-filter');
+  $op.onchange = () => { S.qaOpLogin = $op.value; S.qaPage = 1; loadList(); };
+  $f.onchange = () => { S.qaFilter = $f.value; S.qaPage = 1; loadList(); };
+
+  async function loadList() {
+    const $list = document.getElementById('qa-list');
+    if (!$list) return;
+    if (!S.qaOpLogin) { $list.innerHTML = '<div class="center">Операторов нет</div>'; return; }
+    let data;
+    try {
+      data = await api(`/api/reviews/tickets?operator=${encodeURIComponent(S.qaOpLogin)}` +
+        `&filter=${S.qaFilter}&page=${S.qaPage}&page_size=30`);
+    } catch (e) { $list.innerHTML = `<div class="error-note">${esc(e.message)}</div>`; return; }
+    const pages = Math.max(1, Math.ceil(data.total / data.page_size));
+    if (data.page > pages) { S.qaPage = pages; return loadList(); }
+    $list.innerHTML = (data.items.length ? `<div class="table-wrap"><table>
+      <tr><th>Пользователь</th><th>Ответов</th><th>Последний ответ</th><th>Тикет</th><th>Вердикт</th><th></th></tr>
+      ${data.items.map(i => `
+        <tr class="qa-row" data-uid="${i.user_id}" style="cursor:pointer">
+          <td>${qaUserLabel(i)}</td>
+          <td>${i.replies}</td>
+          <td>${fmtDate(i.last_reply_at)}</td>
+          <td>${i.ticket_status === 'closed'
+            ? '<span class="badge badge-gray">закрыт</span>'
+            : i.ticket_status ? `<span class="badge badge-yellow">${esc(i.ticket_status)}</span>` : '—'}</td>
+          <td>${qaVerdictBadge(i.review)}</td>
+          <td><button class="btn btn-ghost btn-sm" data-uid="${i.user_id}">Разобрать</button></td>
+        </tr>`).join('')}
+    </table></div>` : '<div class="center">Тикетов с ответами этого оператора нет</div>') + `
+    <div class="pager" style="display:flex; gap:8px; align-items:center; margin-top:10px">
+      <button class="btn btn-ghost btn-sm" id="qa-prev" ${data.page <= 1 ? 'disabled' : ''}>←</button>
+      <span class="muted" style="font-size:13px">стр. ${data.page} из ${pages} · всего ${data.total}</span>
+      <button class="btn btn-ghost btn-sm" id="qa-next" ${data.page >= pages ? 'disabled' : ''}>→</button>
+    </div>`;
+    $list.querySelectorAll('[data-uid]').forEach(el => el.onclick = (e) => {
+      e.stopPropagation();
+      location.hash = `#/qa/${encodeURIComponent(S.qaOpLogin)}/${el.dataset.uid}`;
+    });
+    const prev = document.getElementById('qa-prev'), next = document.getElementById('qa-next');
+    if (prev) prev.onclick = () => { S.qaPage = Math.max(1, S.qaPage - 1); loadList(); };
+    if (next) next.onclick = () => { S.qaPage = S.qaPage + 1; loadList(); };
+  }
+  loadList();
+}
+
+async function viewQAReview(login, userId) {
+  if (!S.me || S.me.role !== 'owner') { location.hash = '#/search'; return; }
+  $view.innerHTML = '<div class="center" style="padding:40px 0"><span class="spinner"></span></div>';
+  let t, ops;
+  try {
+    [t, ops] = await Promise.all([
+      api(`/api/tickets/${userId}`),
+      S.qaOps ? Promise.resolve(S.qaOps) : api('/api/operators'),
+    ]);
+  } catch (e) {
+    $view.innerHTML = `<div class="card"><div class="error-note">${esc(e.message)}</div>
+      <div style="margin-top:12px"><a href="#/qa" class="btn btn-ghost">← К проверке</a></div></div>`;
+    return;
+  }
+  S.qaOps = ops;
+  const op = ops.find(o => o.login === login);
+  const targetSet = new Set([login.toLowerCase()]);
+  if (op) {
+    (op.tg_usernames || []).concat(op.tg_username ? [op.tg_username] : [])
+      .forEach(tag => { const n = qaNormTag(tag); if (n) targetSet.add(n); });
+  }
+
+  let review = null;
+  try {
+    const rd = await api(`/api/reviews/tickets?operator=${encodeURIComponent(login)}&filter=reviewed&page=1&page_size=100`);
+    const hit = rd.items.find(i => i.user_id === userId);
+    if (hit) review = hit.review;
+  } catch (e) { /* не критично */ }
+
+  const u = t.ticket || {};
+  $view.innerHTML = `
+    <div class="card">
+      <div class="ticket-head" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center">
+        <h2 style="margin:0">Разбор: ${esc(op ? (op.name || op.login) : login)}</h2>
+        <span class="muted">тикет #${userId}${u.username ? ' · @' + esc(u.username) : ''}${u.first_name ? ' · ' + esc(u.first_name) : ''}</span>
+        <span style="flex:1"></span>
+        <a class="btn btn-ghost btn-sm" href="#/ticket/${userId}">Открыть как тикет</a>
+        <a class="btn btn-ghost btn-sm" href="#/qa">← К проверке</a>
+      </div>
+      <div class="muted" style="font-size:12.5px; margin-top:6px">Сообщения проверяемого оператора подсвечены рамкой.</div>
+    </div>
+    <div class="card">
+      <div class="chat" id="qa-chat" style="max-height:52vh; overflow-y:auto; display:flex; flex-direction:column; gap:8px"></div>
+    </div>
+    <div class="card" id="qa-verdict">
+      <h3 style="margin-top:0">Вердикт</h3>
+      ${review ? `<div class="muted" style="font-size:13px; margin-bottom:8px">Текущий: ${qaVerdictBadge(review)}
+        · проверил ${esc(review.reviewed_by || '')} ${fmtDate(review.created_at)}</div>` : ''}
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px">
+        <button class="btn" id="qa-ok">✓ Решено правильно</button>
+        <button class="btn btn-danger" id="qa-bad">✗ Есть ошибки</button>
+      </div>
+      <div id="qa-bad-form" class="${review && review.verdict === 'bad' ? '' : 'hidden'}">
+        <label style="font-size:13px">Конкретные ошибки — оператор увидит этот текст и обязан его отработать</label>
+        <textarea id="qa-mistakes" rows="4" style="width:100%; margin-top:6px"
+          placeholder="Например: не поздоровался; дал неверную инструкцию по продлению; закрыл тикет без ответа на второй вопрос">${esc(review ? review.mistakes : '')}</textarea>
+        <div style="margin-top:8px"><button class="btn btn-danger" id="qa-bad-save">Сохранить разбор ошибок</button></div>
+      </div>
+    </div>`;
+
+  const $chat = document.getElementById('qa-chat');
+  $chat.innerHTML = qaChatHtml(t.messages || [], targetSet);
+  hydrateAttachments($chat);
+  $chat.scrollTop = $chat.scrollHeight;
+
+  async function save(verdict) {
+    const mistakes = verdict === 'bad' ? document.getElementById('qa-mistakes').value.trim() : '';
+    if (verdict === 'bad' && mistakes.length < 3) {
+      toast('Опишите конкретные ошибки', 'err');
+      document.getElementById('qa-mistakes').focus();
+      return;
+    }
+    try {
+      await api('/api/reviews', { method: 'POST',
+        body: { operator_login: login, user_id: userId, verdict, mistakes } });
+    } catch (e) { toast(e.message, 'err'); return; }
+    toast(verdict === 'ok' ? 'Отмечено: решено правильно' : 'Разбор ошибок отправлен оператору');
+    location.hash = '#/qa';
+  }
+  document.getElementById('qa-ok').onclick = () => save('ok');
+  document.getElementById('qa-bad').onclick = () => {
+    document.getElementById('qa-bad-form').classList.remove('hidden');
+    document.getElementById('qa-mistakes').focus();
+  };
+  document.getElementById('qa-bad-save').onclick = () => save('bad');
+}
+
+// ---- «Разборы» у оператора + обязательная работа над ошибками ----
+
+function updateMistakesBadge() {
+  const b = document.getElementById('mistakes-badge');
+  if (!b) return;
+  const n = S.mistakesPending || 0;
+  b.textContent = n > 9 ? '9+' : String(n);
+  b.classList.toggle('hidden', n === 0);
+}
+
+async function pollMistakes() {
+  if (!S.me || S.me.role === 'owner') return;
+  let r;
+  try { r = await api('/api/reviews/my'); } catch (e) { return; }
+  const prev = S.mistakesPending;
+  S.mistakes = r.items;
+  S.mistakesPending = r.pending;
+  updateMistakesBadge();
+  if (r.pending > 0 && prev !== undefined && r.pending > prev
+      && !location.hash.startsWith('#/mistakes')) {
+    toast('Владелец назначил вам работу над ошибками', 'err');
+    location.hash = '#/mistakes';
+  }
+}
+
+async function viewMistakes() {
+  let r;
+  try { r = await api('/api/reviews/my'); } catch (e) {
+    $view.innerHTML = `<div class="card"><div class="error-note">${esc(e.message)}</div></div>`;
+    return;
+  }
+  S.mistakes = r.items;
+  S.mistakesPending = r.pending;
+  updateMistakesBadge();
+
+  const pending = r.items.filter(i => i.verdict === 'bad' && !i.acked);
+  const history = r.items.filter(i => !(i.verdict === 'bad' && !i.acked));
+
+  const cardHtml = (i, isPending) => `
+    <div class="qa-mistake card" data-id="${esc(i.id)}" style="border:1px solid ${isPending ? 'var(--red, #c0392b)' : 'var(--border)'}">
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+        ${qaVerdictBadge(i)}
+        <b>${qaUserLabel(i)}</b>
+        <span class="muted" style="font-size:12.5px">проверил ${esc(i.reviewed_by || '')} · ${fmtDate(i.created_at)}</span>
+      </div>
+      ${i.mistakes ? `<div class="qa-mistake-text" style="white-space:pre-wrap; margin-top:8px; padding:10px 12px; background:var(--card-2); border-radius:8px">${esc(i.mistakes)}</div>` : ''}
+      <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap">
+        <button class="btn btn-ghost btn-sm" data-show="${i.user_id}">Показать переписку</button>
+        ${isPending ? `<button class="btn btn-sm" data-ack="${esc(i.id)}">Ознакомился, ошибки учту</button>` : ''}
+      </div>
+      <div class="chat qa-mistake-chat hidden" data-chat="${i.user_id}"
+        style="max-height:40vh; overflow-y:auto; display:flex; flex-direction:column; gap:8px; margin-top:10px"></div>
+    </div>`;
+
+  $view.innerHTML = `
+    ${pending.length ? `<div class="card" style="border:1px solid var(--red, #c0392b)">
+      <h2 style="margin:0">Работа над ошибками</h2>
+      <div style="margin-top:6px; font-size:13.5px">Владелец разобрал ваши тикеты и нашёл ошибки —
+        <b>пока вы не подтвердите каждый разбор, остальные разделы панели недоступны</b>.
+        Прочитайте замечания, при необходимости откройте переписку и нажмите «Ознакомился».</div>
+    </div>` : `<div class="card"><h2 style="margin:0">Разборы</h2>
+      <div class="muted" style="margin-top:6px; font-size:13px">Здесь видны итоги проверки ваших тикетов владельцем.</div>
+    </div>`}
+    ${pending.map(i => cardHtml(i, true)).join('')}
+    ${history.length ? `<h3 style="margin:18px 0 8px">История проверок</h3>
+      ${history.map(i => cardHtml(i, false)).join('')}` : ''}
+    ${!r.items.length ? '<div class="card"><div class="center">Проверок пока не было</div></div>' : ''}`;
+
+  $view.querySelectorAll('[data-show]').forEach(btn => btn.onclick = async () => {
+    const uid = btn.dataset.show;
+    const $chat = btn.closest('.qa-mistake').querySelector(`[data-chat="${uid}"]`);
+    if (!$chat.classList.contains('hidden')) { $chat.classList.add('hidden'); btn.textContent = 'Показать переписку'; return; }
+    $chat.classList.remove('hidden');
+    btn.textContent = 'Скрыть переписку';
+    if (!$chat.dataset.loaded) {
+      $chat.innerHTML = '<div class="center"><span class="spinner"></span></div>';
+      try {
+        const t = await api(`/api/tickets/${uid}`);
+        $chat.innerHTML = qaChatHtml(t.messages || [], new Set([S.me.login.toLowerCase()]
+          .concat((S.me.tg_usernames || []).map(qaNormTag))));
+        hydrateAttachments($chat);
+        $chat.scrollTop = $chat.scrollHeight;
+        $chat.dataset.loaded = '1';
+      } catch (e) { $chat.innerHTML = `<div class="error-note">${esc(e.message)}</div>`; }
+    }
+  });
+  $view.querySelectorAll('[data-ack]').forEach(btn => btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const res = await api(`/api/reviews/${btn.dataset.ack}/ack`, { method: 'POST' });
+      S.mistakesPending = res.pending;
+      if (res.pending === 0) {
+        toast('Все ошибки отработаны — панель разблокирована');
+      } else {
+        toast(`Принято. Осталось разборов: ${res.pending}`);
+      }
+      viewMistakes();
+    } catch (e) { btn.disabled = false; toast(e.message, 'err'); }
+  });
+}
+
 // ================================================================ router
 
 function setNav(active) {
@@ -3218,6 +3514,9 @@ function setNav(active) {
     S.me ? `${S.me.name} (${S.me.role})` : '';
   document.querySelectorAll('.owner-only').forEach(el =>
     el.classList.toggle('hidden', !S.me || S.me.role !== 'owner'));
+  document.querySelectorAll('.op-only').forEach(el =>
+    el.classList.toggle('hidden', !S.me || S.me.role === 'owner'));
+  updateMistakesBadge();
   document.querySelectorAll('#topbar nav a').forEach(a =>
     a.classList.toggle('active', a.dataset.nav === active));
 }
@@ -3243,6 +3542,22 @@ async function render() {
 
   if (S.me && S.me.must_change_password) { viewForcePassword(); return; }
 
+  // обязательная работа над ошибками: оператор с неотработанными разборами
+  // не попадает никуда, кроме страницы «Разборы»
+  if (S.me && S.me.role !== 'owner') {
+    if (S.mistakesPending === undefined) {
+      try {
+        const r = await api('/api/reviews/my');
+        S.mistakes = r.items;
+        S.mistakesPending = r.pending;
+      } catch (e) { S.mistakesPending = 0; }
+    }
+    if (S.mistakesPending > 0 && !hash.startsWith('#/mistakes')) {
+      location.hash = '#/mistakes';
+      return;
+    }
+  }
+
   const userMatch = hash.match(/^#\/user\/(\d+)$/);
   if (userMatch) { setNav('search'); viewUser(parseInt(userMatch[1], 10)); return; }
   const ticketMatch = hash.match(/^#\/ticket\/(\d+)$/);
@@ -3250,6 +3565,10 @@ async function render() {
   if (hash.startsWith('#/tickets')) { setNav('tickets'); viewTickets(); return; }
   if (hash.startsWith('#/stats')) { setNav('stats'); viewStats(); return; }
   if (hash.startsWith('#/tstats')) { setNav('tstats'); viewTicketStats(); return; }
+  const qaMatch = hash.match(/^#\/qa\/([A-Za-z0-9_.-]+)\/(\d+)$/);
+  if (qaMatch) { setNav('qa'); viewQAReview(decodeURIComponent(qaMatch[1]), parseInt(qaMatch[2], 10)); return; }
+  if (hash.startsWith('#/qa')) { setNav('qa'); viewQA(); return; }
+  if (hash.startsWith('#/mistakes')) { setNav('mistakes'); viewMistakes(); return; }
   if (hash.startsWith('#/help')) { setNav('help'); viewHelp(); return; }
   if (hash.startsWith('#/bot')) { setNav('bot'); viewBotHelp(); return; }
   if (hash.startsWith('#/audit')) { setNav('audit'); viewAudit(); return; }
