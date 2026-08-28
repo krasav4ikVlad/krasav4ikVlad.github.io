@@ -3260,10 +3260,13 @@ async function viewQA() {
       <div class="muted" style="margin:4px 0 12px; font-size:13px">Выберите оператора — ниже все тикеты,
         где он отвечал. Откройте тикет, прочитайте переписку и отметьте: решено правильно или есть ошибки.
         Ошибки оператор обязан разобрать при следующем входе в панель.</div>
+      <div id="qa-ops" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px">
+        ${S.qaOps.map(o => `<button class="btn btn-sm ${S.qaOpLogin === o.login ? '' : 'btn-ghost'}"
+          data-qa-op="${esc(o.login)}" title="${esc(o.login)}">${esc(o.name || o.login)}
+          <span style="opacity:.65; font-size:11.5px">${esc(o.login)}</span></button>`).join('')}
+      </div>
       <div class="filters" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center">
-        <select id="qa-op">${S.qaOps.map(o =>
-          `<option value="${esc(o.login)}" ${S.qaOpLogin === o.login ? 'selected' : ''}>${esc(o.name || o.login)} (${esc(o.login)})</option>`).join('')}</select>
-        <select id="qa-filter">
+        <select id="qa-filter" style="width:auto">
           <option value="all" ${S.qaFilter === 'all' ? 'selected' : ''}>Все тикеты</option>
           <option value="unreviewed" ${S.qaFilter === 'unreviewed' ? 'selected' : ''}>Непроверенные</option>
           <option value="reviewed" ${S.qaFilter === 'reviewed' ? 'selected' : ''}>Проверенные</option>
@@ -3272,9 +3275,14 @@ async function viewQA() {
     </div>
     <div class="card" id="qa-list"><div class="center"><span class="spinner"></span></div></div>`;
 
-  const $op = document.getElementById('qa-op');
+  document.querySelectorAll('[data-qa-op]').forEach(btn => btn.onclick = () => {
+    S.qaOpLogin = btn.dataset.qaOp;
+    S.qaPage = 1;
+    document.querySelectorAll('[data-qa-op]').forEach(b =>
+      b.classList.toggle('btn-ghost', b.dataset.qaOp !== S.qaOpLogin));
+    loadList();
+  });
   const $f = document.getElementById('qa-filter');
-  $op.onchange = () => { S.qaOpLogin = $op.value; S.qaPage = 1; loadList(); };
   $f.onchange = () => { S.qaFilter = $f.value; S.qaPage = 1; loadList(); };
 
   async function loadList() {
