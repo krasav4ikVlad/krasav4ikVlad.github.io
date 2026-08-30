@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -123,6 +125,22 @@ async def text(c, settings) -> str:
         lines.append('<blockquote>Задача идёт раз в шесть часов. Проверить '
                      'вручную: <code>/bypasssync</code>.</blockquote>')
 
+    # ── ошибки, которые видели люди ─────────────────────────────────────────
+    #
+    # «Сервис подписок не отвечает» человек видит, а мы — нет: раньше это
+    # уходило строкой INFO в лог на сервере, без имени и без экрана.
+    journal = getattr(c, 'errors', None)
+    if journal is not None:
+        day = now() - timedelta(days=1)
+        total = await journal.count_since(day)
+        panel = await journal.count_since(day, kind='panel')
+        lines.append(f'\n<b>{e("warning")} Ошибки за сутки</b>: {total}'
+                     + (f', из них панель: {panel}' if panel else ''))
+        if total:
+            lines.append('<blockquote>Кто и что видел — <code>/errors</code>, '
+                         'по одному человеку — <code>/errors 802421217</code>.'
+                         '</blockquote>')
+
     # ── что сейчас раздаётся бесплатно ──────────────────────────────────────
     # Скидка и бонус живут в настройках и не напоминают о себе: включили на
     # выходные, забыли выключить — и каждое продление уходит дешевле. Вопрос
@@ -166,6 +184,55 @@ def _kb() -> types.InlineKeyboardMarkup:
 
 async def command(message: types.Message, c, settings) -> None:
     await message.answer(await text(c, settings), reply_markup=_kb())
+
+
+# Что означают виды ошибок в журнале — на русском и без сокращений.
+ERROR_KINDS = {
+    'panel': 'панель',
+    'app': 'ожидаемая',
+    'crash': 'сбой',
+}
+
+
+async def errors(message: types.Message, command, c, settings) -> None:
+    """`/errors [id пользователя]` — что видели люди вместо экрана.
+
+    «Сервис подписок не отвечает» — текст для человека; здесь настоящий
+    ответ панели, экран, на котором это случилось, и кто именно попал.
+    """
+    journal = getattr(c, 'errors', None)
+    if journal is None:
+        await message.answer(f'{e("cross")} Журнал ошибок не подключён.')
+        return
+
+    argument = (command.args or '').strip().lstrip('#')
+    user_id = int(argument) if argument.isdigit() else 0
+
+    rows = await journal.recent(limit=15, user_id=user_id)
+    if not rows:
+        await message.answer(
+            f'{e("ok")} Ошибок нет'
+            + (f' у <code>{user_id}</code>' if user_id else ' за последнее время')
+            + '.')
+        return
+
+    lines = [f'{e("warning")} <b>Последние ошибки</b>'
+             + (f' у <code>{user_id}</code>' if user_id else ''), '']
+    for row in rows:
+        who = (f'@{row["username"]}' if row.get('username')
+               else f'<code>{row.get("user_id")}</code>')
+        lines.append(
+            f'{fmt(row.get("at"))} · {who} · '
+            f'{ERROR_KINDS.get(row.get("kind"), row.get("kind"))}')
+        if row.get('where'):
+            lines.append(f'   экран: <code>{row["where"]}</code>')
+        lines.append(f'   <code>{str(row.get("message"))[:300]}</code>')
+        lines.append('')
+
+    lines.append('<blockquote>Ошибки панели («HTTP 4xx/5xx») — это ответ '
+                 'Remnawave: код и текст видно целиком. Проверить конкретного '
+                 'человека: <code>/errors 802421217</code>.</blockquote>')
+    await message.answer('\n'.join(lines))
 
 
 async def bypass_sync(message: types.Message, command, c, settings) -> None:
@@ -311,6 +378,7 @@ async def test_send(call: types.CallbackQuery, callback_data: Adm, c, settings) 
 def register(router: Router) -> None:
     router.message.register(command, Command('diag'))
     router.message.register(bypass_sync, Command('bypasssync'))
+    router.message.register(errors, Command('errors'))
     router.callback_query.register(refresh, Adm.filter(F.act == 'diag'))
     router.callback_query.register(test_menu, Adm.filter(F.act == 'exptest'))
     router.callback_query.register(test_send, Adm.filter(F.act == 'exptestgo'))

@@ -40,6 +40,8 @@ SERVER_POOL = 'private_pool'
 
 # журнал движения денег для панели операторов
 BALANCE_LOG = 'balance_log'
+# ошибки, которые увидели пользователи
+BOT_ERRORS = 'bot_errors'
 
 PAYMENTS = 'payments'
 PAYMENT_WEBHOOKS = 'payments_webhooks'

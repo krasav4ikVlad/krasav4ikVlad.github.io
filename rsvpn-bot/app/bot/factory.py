@@ -41,7 +41,7 @@ def create_dispatcher(container: Container, storage=None) -> Dispatcher:
         # первым: строка в лог должна появиться и у того действия, которое
         # дальше отвалится по фильтру или упадёт с ошибкой
         ActionLogMiddleware(container),
-        ErrorsMiddleware(),
+        ErrorsMiddleware(container),
         DependenciesMiddleware(container),
         ThrottleMiddleware(),
         MaintenanceMiddleware(container.settings, container.config.admin_ids),
@@ -57,7 +57,7 @@ def create_dispatcher(container: Container, storage=None) -> Dispatcher:
     # ошибок: без ErrorsMiddleware падение хендлера выглядит для человека как
     # «бот не отвечает на упоминание в чате», а в логах не остаётся ничего.
     dp.inline_query.outer_middleware(ActionLogMiddleware(container))
-    dp.inline_query.outer_middleware(ErrorsMiddleware())
+    dp.inline_query.outer_middleware(ErrorsMiddleware(container))
     dp.inline_query.outer_middleware(DependenciesMiddleware(container))
 
     dp.include_router(admin_panel.create_router(container.config.admin_ids))
