@@ -184,6 +184,15 @@ class CampaignEngine:
                 continue
 
             report.credited += credited
+            if credited > 0:
+                # Начисление идёт тем же запросом, что и флаг касания, мимо
+                # users.credit(): журналим здесь, иначе бонус кампании —
+                # единственные деньги, которых нет в истории операторов.
+                await self.users.record_money(
+                    user_id, credited, 'Бонус за возвращение', kind='campaign',
+                    auto=True, balance_after=await self.users.balance_of(user_id),
+                    meta={'campaign': step.flag()})
+
             context = StepContext(
                 name=self.users.pick(user, 'user_data.first_name'),
                 balance=balance,

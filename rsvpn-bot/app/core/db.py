@@ -38,6 +38,9 @@ PRIVATE_SERVERS = 'private_servers'
 # заранее поднятые машины, ждущие заявки
 SERVER_POOL = 'private_pool'
 
+# журнал движения денег для панели операторов
+BALANCE_LOG = 'balance_log'
+
 PAYMENTS = 'payments'
 PAYMENT_WEBHOOKS = 'payments_webhooks'
 

@@ -74,7 +74,9 @@ class TopupService:
 
         # 3. Зачисление
         description = f'Пополнение ({provider}), бонус {bonus + ab_bonus}₽'
-        if not await self.users.credit(user_id, credit, description):
+        if not await self.users.credit(user_id, credit, description, kind='topup',
+                                      meta={'paid': amount, 'bonus': credit - amount,
+                                            'provider': provider}):
             await self.payments.mark(txid, 'credit_failed')
             return {'status': 'credit_failed', 'user_id': user_id}
 
@@ -255,4 +257,13 @@ class TopupService:
         # здесь: для пригласившего это деньги, пришедшие сами по себе
         await self.users.log(referrer_id, self.users.ACTION_AUTO,
                              f'+{reward}₽ Реферальное начисление от друга {friend_id}')
+        # На реферальный счёт, а не на баланс: снять эти деньги можно только
+        # заявкой на вывод, и показывать их как пополнение баланса нельзя.
+        fresh = await self.users.get(referrer_id, {'info.ref_stats.withdrawable': 1})
+        await self.users.record_money(
+            referrer_id, reward, f'Реферальное начисление от друга {friend_id}',
+            kind='referral', auto=True, account='referral',
+            balance_after=int(self.users.pick(
+                fresh or {}, 'info.ref_stats.withdrawable', 0) or 0),
+            meta={'friend_id': friend_id, 'friend_topup': amount})
         return reward, referrer_id

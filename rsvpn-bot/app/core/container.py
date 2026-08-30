@@ -101,6 +101,14 @@ class Container:
         from app.services.discounts import DiscountService
         self.discounts = DiscountService(self.settings)
 
+        # Журнал движения денег: панели операторов нужна вся история, а не
+        # последние 500 записей в документе пользователя. Ставится на
+        # репозиторий, потому что баланс двигают пять разных мест, и все они
+        # ходят через users.
+        from app.repositories.balance_log import BalanceLogRepository
+        self.balance_log = BalanceLogRepository(self.db[names.BALANCE_LOG])
+        self.users.journal = self.balance_log
+
         from app.repositories.private_servers import PrivateServersRepository
         from app.services.private_servers import PrivateServerService
         # vpn и bot проставляются позже: покупка сервера возможна и без них,
@@ -281,7 +289,7 @@ class Container:
         поэтому у него strict=False.
         """
         for repo in (self.users, self.plans, self.payments_repo,
-                     self.private.servers, self.private.pool):
+                     self.private.servers, self.private.pool, self.balance_log):
             await repo.ensure_indexes()
         for service in (self.promo, self.survey):
             await service.ensure_indexes()

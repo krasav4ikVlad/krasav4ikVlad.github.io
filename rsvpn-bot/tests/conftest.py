@@ -28,6 +28,10 @@ class FakeCursor:
         self._docs = self._docs[:n]
         return self
 
+    def skip(self, n):
+        self._docs = self._docs[n:]
+        return self
+
     async def to_list(self, length=None):
         return list(self._docs) if length is None else list(self._docs[:length])
 

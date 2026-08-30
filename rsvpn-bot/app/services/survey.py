@@ -97,7 +97,8 @@ class SurveyService:
         if claimed.modified_count != 1:
             return 0
 
-        if not await self.users.credit(user_id, amount, 'Бонус за участие в опросе'):
+        if not await self.users.credit(user_id, amount, 'Бонус за участие в опросе',
+                                   kind='survey'):
             # пользователя нет — снимаем флаг, чтобы бонус не потерялся
             await self.answers.update_one({'user_id': user_id},
                                           {'$set': {'bonus_given': False}})

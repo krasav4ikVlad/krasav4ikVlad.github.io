@@ -19,7 +19,7 @@ from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import profile_caption
 from app.core.errors import VpnPanelError
-from app.core.time import fmt, parse_dt
+from app.core.time import fmt, now, parse_dt
 from app.integrations.vpn.links import LinkEncryptionError
 from app.content.emoji import e
 
@@ -190,7 +190,8 @@ async def buy_traffic(call: types.CallbackQuery, callback_data: Menu, c, user: d
 
     # деньги списываются до обращения к панели: если панель не ответит, есть
     # что возвращать. Обратный порядок оставил бы выданный трафик без оплаты
-    if not await c.users.charge(call.from_user.id, price, f'ByPass: {amount} Гб'):
+    if not await c.users.charge(call.from_user.id, price, f'ByPass: {amount} Гб',
+                                kind='bypass', meta={'gb': amount}):
         await call.answer(f'Не хватает средств: нужно {price}₽', show_alert=True)
         return
 
@@ -198,14 +199,19 @@ async def buy_traffic(call: types.CallbackQuery, callback_data: Menu, c, user: d
     try:
         await c.vpn.update_subscription(uuid, traffic_bytes=current + amount * GB)
     except VpnPanelError:
-        await c.users.credit(call.from_user.id, price, 'Возврат за трафик ByPass')
+        await c.users.credit(call.from_user.id, price, 'Возврат за трафик ByPass',
+                             kind='refund')
         await call.answer('Панель не ответила, деньги возвращены.', show_alert=True)
         return
 
     await c.users.col.update_one(
         {'user_data.user_id': call.from_user.id},
         {'$inc': {'vpn.bypass_trafficLimitBytes': amount * GB},
-         '$push': {'info.bypass_stats.purchases': {'amount_gb': amount, 'price': price}}})
+         # Дата обязательна: без неё в панели оператора покупка есть, а
+         # когда она была — неизвестно, и «купил вчера, а трафика нет»
+         # проверить нечем. Старый бот её писал, новый забывал.
+         '$push': {'info.bypass_stats.purchases': {
+             'amount_gb': amount, 'price': price, 'at': now()}}})
 
     await call.answer(f'Начислено {amount} Гб {e("ok")}')
     await bypass(call, c, await c.users.get(call.from_user.id), settings)

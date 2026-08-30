@@ -19,6 +19,34 @@ money = logging.getLogger('money')
 
 
 class UsersRepository(Repository):
+    # Журнал движения денег (app/repositories/balance_log.py). Ставится
+    # контейнером; без него бот работает как раньше, просто без истории —
+    # ронять списание из-за ненастроенного журнала нельзя.
+    journal = None
+
+    async def record_money(self, user_id: int, amount: int, description: str,
+                           kind: str = '', auto: bool = False, admin_id: int = 0,
+                           balance_after: int | None = None,
+                           account: str = 'balance',
+                           meta: dict | None = None) -> None:
+        """Записать движение денег в журнал операторов.
+
+        Вынесено сюда, а не в каждый сервис: баланс двигают пять разных мест,
+        и три из них делают это одним атомарным запросом мимо credit/charge
+        (плата за устройства, реферальные, бонус кампании). Общий метод
+        гарантирует, что строка в журнале выглядит одинаково независимо от
+        того, откуда пришла.
+        """
+        if self.journal is None:
+            return
+        await self.journal.record(user_id, amount, description, kind=kind,
+                                  auto=auto, admin_id=admin_id, account=account,
+                                  balance_after=balance_after, meta=meta)
+
+    async def balance_of(self, user_id: int) -> int:
+        user = await self.get(user_id, {'info.balance': 1})
+        return int(self.pick(user or {}, 'info.balance', 0) or 0)
+
     async def ensure_indexes(self) -> None:
         # only_existing: документы без user_id (мусор из старых версий)
         # не должны мешать уникальному индексу
@@ -40,7 +68,8 @@ class UsersRepository(Repository):
 
     # ── баланс ──────────────────────────────────────────────────────────────
     async def credit(self, user_id: int, amount: int, description: str,
-                     auto: bool = False) -> bool:
+                     auto: bool = False, kind: str = '', admin_id: int = 0,
+                     meta: dict | None = None) -> bool:
         """Начисление. Транзакция пишется единым форматом-словарём.
 
         auto=True — деньги двинул бот, а не человек: автопродление, плата за
@@ -48,7 +77,10 @@ class UsersRepository(Repository):
         категорией, иначе на платформе операторов «списал сам» и «списалось
         само» выглядят одинаково, а вопросы по ним разные.
         """
-        result = await self.col.update_one(
+        # find_one_and_update, а не update_one: журналу нужен баланс ПОСЛЕ
+        # операции, а отдельным чтением его не получить — между запросами
+        # может пройти чужое списание, и в истории окажется чужая цифра.
+        after = await self.col.find_one_and_update(
             {'user_data.user_id': user_id},
             {
                 '$inc': {'info.balance': amount},
@@ -57,7 +89,9 @@ class UsersRepository(Repository):
                     '$slice': -500,
                 }},
             },
+            return_document=True,
         )
+        result = type('_R', (), {'matched_count': 1 if after else 0})()
         # Деньги — в лог всегда и из одного места: сервисов, которые их
         # двигают, полдесятка, и логировать в каждом значит однажды забыть.
         # Поддержке нужен ответ на «за что списали», а не только результат.
@@ -65,17 +99,22 @@ class UsersRepository(Repository):
             money.info('%s +%s₽  %s', user_id, amount, description)
             await self.log(user_id, self.ACTION_AUTO if auto else self.ACTION_CREDIT,
                            f'+{amount}₽ {description}')
+            await self.record_money(
+                user_id, amount, description, kind=kind, auto=auto,
+                admin_id=admin_id, meta=meta,
+                balance_after=int(self.pick(after or {}, 'info.balance', 0) or 0))
         return result.matched_count == 1
 
     async def charge(self, user_id: int, amount: int, description: str,
-                     auto: bool = False) -> bool:
+                     auto: bool = False, kind: str = '', admin_id: int = 0,
+                     meta: dict | None = None) -> bool:
         """Списание с проверкой в самом запросе.
 
         Условие 'info.balance': {'$gte': amount} внутри update гарантирует, что
         двойное нажатие кнопки не уведёт баланс в минус: второй запрос просто
         не найдёт документ. Возвращает False, если средств не хватило.
         """
-        result = await self.col.update_one(
+        after = await self.col.find_one_and_update(
             {'user_data.user_id': user_id, 'info.balance': {'$gte': amount}},
             {
                 '$inc': {'info.balance': -amount},
@@ -84,11 +123,17 @@ class UsersRepository(Repository):
                     '$slice': -500,
                 }},
             },
+            return_document=True,
         )
+        result = type('_R', (), {'modified_count': 1 if after else 0})()
         if result.modified_count == 1:
             money.info('%s −%s₽  %s', user_id, amount, description)
             await self.log(user_id, self.ACTION_AUTO if auto else self.ACTION_CHARGE,
                            f'−{amount}₽ {description}')
+            await self.record_money(
+                user_id, -amount, description, kind=kind, auto=auto,
+                admin_id=admin_id, meta=meta,
+                balance_after=int(self.pick(after or {}, 'info.balance', 0) or 0))
         else:
             money.info('%s не хватило %s₽  %s', user_id, amount, description)
             await self.log(user_id, self.ACTION_AUTO if auto else self.ACTION_CHARGE,

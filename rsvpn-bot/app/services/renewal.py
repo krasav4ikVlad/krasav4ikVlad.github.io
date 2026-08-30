@@ -140,7 +140,10 @@ class RenewalService:
         # 1. Деньги. Проверка баланса живёт внутри запроса, поэтому параллельная
         #    покупка не может увести баланс в минус, а её результат — потеряться.
         if not await self.users.charge(user_id, price,
-                                       f'Продление подписки «{plan["title"]}»', auto=True):
+                                       f'Продление подписки «{plan["title"]}»', auto=True,
+                                       kind='renewal',
+                                       meta={'plan': plan.get('code'),
+                                             'days': plan.get('days')}):
             return 'no_funds'
 
         # 2. Панель. Считаем от текущей даты, если подписка уже просрочена, —
@@ -152,7 +155,8 @@ class RenewalService:
             await self.vpn.update_subscription(uuid, expire_at=new_expire)
         except VpnPanelError as exc:
             await self.users.credit(user_id, price,
-                                    'Возврат: панель не продлила подписку', auto=True)
+                                    'Возврат: панель не продлила подписку', auto=True,
+                                    kind='refund')
             log.error('продление %s не удалось, деньги возвращены: %s', user_id, exc)
             return 'error_panel'
 

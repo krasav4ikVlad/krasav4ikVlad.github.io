@@ -224,6 +224,16 @@ class PayoutService:
         if moved.modified_count != 1:
             return -1      # баланс изменился между показом и нажатием
 
+        # Перевод реферального баланса на обычный идёт своим запросом мимо
+        # users.credit(): для оператора это такие же деньги, и в истории они
+        # должны стоять рядом с остальными.
+        await self.users.record_money(
+            user_id, -amount, 'Перевод на баланс бота: списано с реферального',
+            kind='payout', admin_id=admin_id, account='referral', balance_after=0)
+        await self.users.record_money(
+            user_id, amount, 'Перевод реферального баланса на баланс бота',
+            kind='payout', admin_id=admin_id,
+            balance_after=await self.users.balance_of(user_id))
         await self._finish(user_id, 'to_balance', amount, admin_id)
         return amount
 
@@ -239,6 +249,13 @@ class PayoutService:
             if reset.modified_count != 1:
                 return -1
 
+        # На баланс бота эти деньги не попадают — уходят на карту. Строка
+        # в журнале с нулевой суммой, но с фактом: иначе «куда делись 540₽
+        # с реферального» останется без ответа.
+        await self.users.record_money(
+            user_id, -amount, 'Выплата по реквизитам', kind='payout',
+            admin_id=admin_id, account='referral', balance_after=0,
+            meta={'external': True})
         await self._finish(user_id, 'paid_external', amount, admin_id)
         return amount
 

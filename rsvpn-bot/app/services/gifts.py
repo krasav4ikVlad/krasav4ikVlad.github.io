@@ -104,7 +104,8 @@ class GiftService:
         paid_with_free = await self._take_free_gift(from_user_id, plan_code)
 
         if not paid_with_free and not await self.users.charge(
-                from_user_id, price, f'Подарок «{plan["title"]}»'):
+                from_user_id, price, f'Подарок «{plan["title"]}»', kind='gift',
+                meta={'plan': plan.get('code'), 'to_user_id': to_user_id}):
             await self._release(gift_id)
             return GiftResult(False, 'no_funds', price=price, plan=plan)
 
@@ -116,7 +117,8 @@ class GiftService:
             if paid_with_free:
                 await self._return_free_gift(from_user_id, plan_code)
             else:
-                await self.users.credit(from_user_id, price, 'Возврат за неудавшийся подарок')
+                await self.users.credit(from_user_id, price,
+                                        'Возврат за неудавшийся подарок', kind='refund')
             await self._release(gift_id)
             return GiftResult(False, 'panel_error', plan=plan)
 

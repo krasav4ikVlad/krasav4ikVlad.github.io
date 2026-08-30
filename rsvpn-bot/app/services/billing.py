@@ -55,13 +55,16 @@ class BillingService:
 
         # Списываем ДО обращения к панели: charge атомарен и защищает от
         # двойного клика. Если панель не ответит — вернём деньги.
-        if not await self.users.charge(user_id, price, f'Покупка подписки «{plan["title"]}»'):
+        if not await self.users.charge(user_id, price, f'Покупка подписки «{plan["title"]}»',
+                                       kind='plan', meta={'plan': plan.get('code'),
+                                                          'days': plan.get('days')}):
             raise NotEnoughBalance(need=price, have=balance)
 
         try:
             subscription = await self.vpn.create_subscription(user_id, days=plan['days'])
         except Exception:
-            await self.users.credit(user_id, price, 'Возврат: не удалось создать подписку')
+            await self.users.credit(user_id, price, 'Возврат: не удалось создать подписку',
+                                    kind='refund')
             raise
 
         await self.users.set_vpn(user_id, {

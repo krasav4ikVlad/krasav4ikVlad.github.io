@@ -92,7 +92,8 @@ class DeviceBillingService:
                                       await self.settings.int('price.devices_free_limit')))
         new_limit = current + amount
 
-        if not await self.users.charge(user_id, total, f'Доп. устройства: {amount} шт.'):
+        if not await self.users.charge(user_id, total, f'Доп. устройства: {amount} шт.',
+                                       kind='devices', meta={'devices': amount}):
             balance = int(self.users.pick(user or {}, 'info.balance', 0) or 0)
             raise NotEnoughBalance(need=total, have=balance)
 
@@ -101,7 +102,8 @@ class DeviceBillingService:
             if uuid:
                 await self.vpn.update_subscription(uuid, device_limit=new_limit)
         except VpnPanelError:
-            await self.users.credit(user_id, total, 'Возврат за доп. устройства')
+            await self.users.credit(user_id, total, 'Возврат за доп. устройства',
+                                    kind='refund')
             raise
 
         package = {
@@ -272,6 +274,11 @@ class DeviceBillingService:
             # журнал пишем здесь: для человека это списание «само собой»
             await self.users.log(user_id, self.users.ACTION_AUTO,
                                  f'−{total}₽ Продление {amount} доп. устройств')
+            await self.users.record_money(
+                user_id, -total, f'Продление {amount} доп. устройств',
+                kind='devices', auto=True,
+                balance_after=await self.users.balance_of(user_id),
+                meta={'devices': amount, 'package_id': package.get('id')})
             if self.notifier:
                 await self.notifier.devices_charged(user_id, amount=amount, price=total,
                                                     next_charge=due + timedelta(days=CHARGE_PERIOD_DAYS))

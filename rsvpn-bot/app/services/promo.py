@@ -115,7 +115,9 @@ class PromoService:
 
 # ── типы наград ─────────────────────────────────────────────────────────────
 async def _reward_balance(service: PromoService, user_id: int, value: int, promo: dict):
-    credited = await service.users.credit(user_id, value, f'Промокод {promo["code"]}')
+    credited = await service.users.credit(
+        user_id, value, f'Промокод {promo["code"]}', kind='promo',
+        meta={'code': promo['code']})
     return (True, f'+{value}₽', '') if credited else (False, '', 'user_not_found')
 
 

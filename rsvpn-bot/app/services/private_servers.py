@@ -255,7 +255,10 @@ class PrivateServerService:
 
         amount = await self.price(plan)
         if not await self.users.charge(user_id, amount,
-                                       f'Личный сервер «{plan.title}»'):
+                                       f'Личный сервер «{plan.title}»',
+                                       kind='private_server',
+                                       meta={'plan': plan.code, 'location': location,
+                                             'profile': profile}):
             return Result(False, 'no_funds', amount=amount)
 
         try:
@@ -263,7 +266,8 @@ class PrivateServerService:
                                                location=place.code, profile=profile,
                                                traffic_gb=place.traffic_gb)
         except Exception:
-            await self.users.credit(user_id, amount, 'Возврат: заявка на сервер не создана')
+            await self.users.credit(user_id, amount, 'Возврат: заявка на сервер не создана',
+                                    kind='refund')
             raise
 
         # Цену фиксируем на момент покупки: подняли прайс — у тех, кто уже
@@ -666,7 +670,8 @@ class PrivateServerService:
 
         amount = int(server.get('price') or 0)
         await self.users.credit(server['owner_id'], amount,
-                                'Возврат: сервер не выдан')
+                                'Возврат: сервер не выдан', kind='refund',
+                                meta={'server_id': server['_id']})
         await self.servers.set(server_id, status=ps.CANCELLED, cancel_reason=reason,
                                cancelled_at=now())
         return Result(True, server=server, amount=amount)
@@ -695,7 +700,8 @@ class PrivateServerService:
         amount = int(server.get('price') or 0) if refund else 0
         if amount:
             await self.users.credit(server['owner_id'], amount,
-                                    'Возврат за личный сервер')
+                                    'Возврат за личный сервер', kind='refund',
+                                    meta={'server_id': server['_id']})
 
         await self.servers.delete(server_id)
         log.warning('сервер %s удалён совсем (владелец %s, возврат %s₽)',
@@ -1072,7 +1078,8 @@ class PrivateServerService:
 
             if await self.users.charge(owner_id, price,
                                        f'Продление сервера «{server.get("title")}»',
-                                       auto=True):
+                                       auto=True, kind='private_server',
+                                       meta={'server_id': server['_id']}):
                 paid_until = (parse_dt(server.get('paid_until')) or now()) + timedelta(
                     days=ps.CHARGE_PERIOD_DAYS)
                 await self.servers.set(server['_id'], paid_until=paid_until,
