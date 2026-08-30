@@ -283,6 +283,60 @@ async def bypass_sync(message: types.Message, command, c, settings) -> None:
            'делает то же самое раз в шесть часов.</blockquote>'))
 
 
+PANEL_ANSWERS = {
+    'nothing': f'{e("ok")} Все подписки уже на числовых идентификаторах панели.',
+    'old': f'{e("ok")} Панель ещё до 3.0: она опознаёт подписки по uuid, '
+           f'и переезжать некуда. Команда понадобится сразу после обновления.',
+    'unknown': f'{e("cross")} Панель не ответила — версию выяснить не вышло. '
+               f'Проверьте подключение: <code>/squadcheck</code> и '
+               f'<code>/errors</code>.',
+}
+
+
+async def panel_ids(message: types.Message, command, c, settings) -> None:
+    """`/panelids [fix]` — перевести подписки на числовые id панели 3.x.
+
+    С Remnawave 3.0 пользователь опознаётся числовым id, а uuid из ответов
+    убран. У всех, кто купил подписку раньше, в базе лежит uuid, и панель
+    3.x его не понимает: ни продлить, ни отключить, ни показать устройства.
+    Обратного поиска по uuid в 3.x нет, поэтому каждого приходится
+    спрашивать заново по shortUuid — он от версии панели не зависит.
+    """
+    from app.services import panel_ids as migration
+
+    if c.vpn is None:
+        await message.answer(f'{e("cross")} Клиент панели не собран — '
+                             f'спрашивать не у кого.')
+        return
+
+    apply = 'fix' in (command.args or '').split()
+    report = await migration.migrate(c.users, c.vpn, apply=apply)
+
+    if report['panel'] in PANEL_ANSWERS:
+        await message.answer(PANEL_ANSWERS[report['panel']])
+        return
+
+    if apply:
+        await message.answer(
+            f'{e("ok")} <b>Переведено: {report["moved"]}</b> из {report["stale"]}'
+            + (f'\nНе вышло: <code>{report["failed"]}</code> — эти подписки '
+               f'панель по короткому идентификатору не нашла. Скорее всего их '
+               f'там уже нет: посмотрите <code>/errors</code>.'
+               if report['failed'] else ''))
+        return
+
+    rows = '\n'.join(f'<code>{row["user_id"]}</code>: '
+                      + ', '.join(field for field, _, _ in row['pending'])
+                      for row in report['rows'])
+    await message.answer(
+        f'{e("warning")} <b>Панель уже на 3.x, а подписок со старым uuid: '
+        f'{report["stale"]}</b>\n\n{rows}\n\n'
+        f'<blockquote>Пока они не переведены, панель отказывает по каждому '
+        f'запросу о них: продление, устройства, блокировка. Пришлите '
+        f'<code>/panelids fix</code>. Фоновая задача делает то же самое раз '
+        f'в час — команда нужна, когда ждать некогда.</blockquote>')
+
+
 async def refresh(call: types.CallbackQuery, c, settings) -> None:
     try:
         await call.message.edit_text(await text(c, settings), reply_markup=_kb())
@@ -379,6 +433,7 @@ def register(router: Router) -> None:
     router.message.register(command, Command('diag'))
     router.message.register(bypass_sync, Command('bypasssync'))
     router.message.register(errors, Command('errors'))
+    router.message.register(panel_ids, Command('panelids'))
     router.callback_query.register(refresh, Adm.filter(F.act == 'diag'))
     router.callback_query.register(test_menu, Adm.filter(F.act == 'exptest'))
     router.callback_query.register(test_send, Adm.filter(F.act == 'exptestgo'))

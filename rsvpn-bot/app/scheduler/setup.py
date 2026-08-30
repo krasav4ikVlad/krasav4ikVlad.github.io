@@ -48,6 +48,12 @@ def create_scheduler(container, bot) -> AsyncIOScheduler:
     scheduler.add_job(jobs.sync_bypass, 'interval', minutes=360,
                       args=[container], id='sync_bypass',
                       next_run_time=now() + timedelta(minutes=3))
+    # Раз в час: перевод подписок на числовые id панели 3.x. Пока панель
+    # прежняя, задача стоит одного запроса и выходит — держать её включённой
+    # заранее дешевле, чем вспоминать про неё в день обновления панели.
+    scheduler.add_job(jobs.migrate_panel_ids, 'interval', minutes=60,
+                      args=[container], id='migrate_panel_ids',
+                      next_run_time=now() + timedelta(minutes=7))
     scheduler.add_job(jobs.run_campaigns, 'interval', minutes=60,
                       args=[container, bot, engine], id='campaigns',
                       next_run_time=now() + timedelta(minutes=10))

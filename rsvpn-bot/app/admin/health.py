@@ -28,6 +28,7 @@ EXPIRY_SENT = 'expiry_sent'
 PRIVATE_SERVERS = 'private_servers'
 CAMPAIGNS = 'campaigns'
 BYPASS_SYNC = 'bypass_sync'
+PANEL_IDS = 'panel_ids'
 
 TITLES = {
     RENEWAL: 'Автопродление',
@@ -37,6 +38,7 @@ TITLES = {
     PRIVATE_SERVERS: 'Плата за личные серверы',
     CAMPAIGNS: 'Кампании',
     BYPASS_SYNC: 'Сверка дат ByPass',
+    PANEL_IDS: 'Переезд на id панели 3.x',
 }
 
 

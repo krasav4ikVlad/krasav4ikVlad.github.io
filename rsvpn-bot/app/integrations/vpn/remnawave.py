@@ -79,13 +79,56 @@ def _already_exists(exc: Exception) -> bool:
     return 'already exists' in text or 'http 409' in text
 
 
+# ── чем панель опознаёт пользователя ────────────────────────────────────────
+#
+# До 3.0 это был uuid, начиная с 3.0 — числовой id, а само поле uuid из
+# ответов убрано. Меняются при этом только значение и имя поля в теле
+# запроса: пути остались той же формы, /api/users/<чем-опознаём>.
+#
+# Поэтому весь бот продолжает хранить «ссылку на пользователя панели» в
+# vpn.uuid и передавать её сюда, а клиент по виду значения понимает, о какой
+# панели идёт речь. Так работают обе версии сразу — это не роскошь: в момент
+# обновления панели старые подписки ещё с uuid, новые уже с id, и жить с
+# перемешанной базой придётся в любом случае.
+
+
+def is_numeric_ref(ref) -> bool:
+    return isinstance(ref, int) or (isinstance(ref, str) and ref.isdigit())
+
+
+def ref_field(ref) -> str:
+    """Имя поля в теле запроса: id для панели 3.x, uuid для прежних."""
+    return 'id' if is_numeric_ref(ref) else 'uuid'
+
+
+def user_ref(user: dict) -> str | int | None:
+    """Ссылка на пользователя из ответа панели — какую бы версию ни отвечала."""
+    if not isinstance(user, dict):
+        return None
+    value = user.get('uuid')
+    return value if value else user.get('id')
+
+
+def _with_ref(user: dict) -> dict:
+    """Проставить uuid ответу панели 3.x.
+
+    Вызывающий код всех сервисов читает из ответа `uuid` и кладёт его в
+    vpn.uuid. Панель 3.x этого поля не отдаёт вовсе, и без подстановки
+    подписка сохранилась бы без ссылки на панель — то есть выданной, но
+    неуправляемой: ни продлить, ни отключить, ни показать устройства.
+    """
+    if isinstance(user, dict) and not user.get('uuid') and user.get('id') is not None:
+        return dict(user, uuid=user['id'])
+    return user
+
+
 def _user_record(data) -> dict:
     """Пользователь из ответа: сам объект, объект в обёртке или первый в списке."""
-    if isinstance(data, dict) and data.get('uuid'):
-        return data
+    if isinstance(data, dict) and user_ref(data):
+        return _with_ref(data)
     for row in _rows(data):
-        if row.get('uuid'):
-            return row
+        if user_ref(row):
+            return _with_ref(row)
     return {}
 
 
@@ -165,9 +208,16 @@ class RemnawaveClient:
         except Exception as exc:
             raise VpnPanelError(f'{method} {path}: {exc}') from exc
 
-        if response.status_code not in (200, 201):
+        # 201 отдаёт создание, 202 — фоновые операции, 204 — удаление.
+        # Панель 3.x перешла на них с прежних «всегда 200», и без этого списка
+        # успешное удаление читалось бы как отказ.
+        if response.status_code not in (200, 201, 202, 204):
             text = getattr(response, 'text', '')
             raise VpnPanelError(f'{method} {path}: HTTP {response.status_code} {text[:300]}')
+
+        # У 202 и 204 тела нет по определению — разбирать нечего.
+        if response.status_code in (202, 204):
+            return {}
 
         try:
             payload = response.json()
@@ -201,6 +251,14 @@ class RemnawaveClient:
                 return found
         return {}
 
+    async def find_by_short_uuid(self, short_uuid: str) -> dict:
+        """Пользователь панели по короткому идентификатору.
+
+        Единственный поиск, переживший переход на 3.x, и потому единственный
+        способ узнать новый числовой id для подписки, заведённой раньше.
+        """
+        return await self._find_user('', short_uuid)
+
     async def _create_or_adopt(self, payload: dict, keep_longer: bool = False) -> dict:
         """POST /api/users, а если такой пользователь в панели уже есть — взять его.
 
@@ -217,13 +275,13 @@ class RemnawaveClient:
         быть после покупки.
         """
         try:
-            return await self._request('POST', '/api/users', json=payload)
+            return _with_ref(await self._request('POST', '/api/users', json=payload))
         except VpnPanelError as exc:
             if not _already_exists(exc):
                 raise
             found = await self._find_user(payload.get('username', ''),
                                           payload.get('shortUuid', ''))
-            if not found.get('uuid'):
+            if not user_ref(found):
                 raise
 
         expire_at = parse_dt(payload.get('expireAt'))
@@ -236,7 +294,7 @@ class RemnawaveClient:
                 expire_at = have
 
         updated = await self.update_subscription(
-            found['uuid'],
+            user_ref(found),
             expire_at=expire_at,
             device_limit=payload.get('hwidDeviceLimit'),
             traffic_bytes=payload.get('trafficLimitBytes'),
@@ -247,7 +305,7 @@ class RemnawaveClient:
                     payload.get('username'))
         # Ответ PATCH беднее ответа POST: подставляем найденную запись снизу,
         # чтобы вызывающий код получил тот же набор полей, что и при создании.
-        return {**found, **(updated or {})}
+        return _with_ref({**found, **(updated or {})})
 
     async def create_subscription(self, user_id: int, days: int) -> dict:
         started = now()
@@ -292,13 +350,18 @@ class RemnawaveClient:
         # которую чинит app.services.bypass.
         return await self._create_or_adopt(payload)
 
-    async def update_subscription(self, uuid: str, *, expire_at: datetime | str | None = None,
+    async def update_subscription(self, ref: str | int, *, expire_at: datetime | str | None = None,
                                   traffic_bytes: int | None = None,
                                   device_limit: int | None = None,
                                   squads: list[str] | None = None,
                                   status: str | None = None) -> dict:
-        """Частичный PATCH: передаются только заданные поля."""
-        payload: dict = {'uuid': uuid}
+        """Частичный PATCH: передаются только заданные поля.
+
+        Кого править, панель 3.x читает из поля `id`, прежние — из `uuid`.
+        Ставим то, которое соответствует виду ссылки: лишнее поле панель 3.x
+        отвергает проверкой схемы, а не игнорирует.
+        """
+        payload: dict = {ref_field(ref): ref}
 
         if status is not None:
             payload['status'] = status
@@ -313,7 +376,7 @@ class RemnawaveClient:
         if squads is not None:
             payload['activeInternalSquads'] = squads
 
-        return await self._request('PATCH', '/api/users', json=payload)
+        return _with_ref(await self._request('PATCH', '/api/users', json=payload))
 
     async def renew_subscription(self, user: dict, expire_at: datetime) -> tuple[dict, list[str]]:
         """Продление с сохранением набора сквадов.
@@ -333,23 +396,23 @@ class RemnawaveClient:
         return data, squads or []
 
     # ── устройства ──────────────────────────────────────────────────────────
-    async def set_status(self, uuid: str, status: str) -> dict:
+    async def set_status(self, ref: str | int, status: str) -> dict:
         """ACTIVE / DISABLED — включить или отключить подписку в панели.
 
         Нужно жёсткой блокировке: обычный бан только закрывает бота, а
         конфиг у человека продолжает работать, пока не истечёт срок.
         """
-        return await self.update_subscription(uuid, status=status)
+        return await self.update_subscription(ref, status=status)
 
-    async def get_subscription(self, uuid: str) -> dict:
+    async def get_subscription(self, ref: str | int) -> dict:
         """Пользователь панели целиком: трафик, статус, когда был онлайн.
 
         Нужен владельцу личного сервера: без этого «статистика сервера» — это
         список имён без единой цифры.
         """
-        if not uuid:
+        if not ref:
             return {}
-        return await self._request('GET', f'/api/users/{uuid}') or {}
+        return _with_ref(await self._request('GET', f'/api/users/{ref}') or {})
 
     async def squad_usage(self, squad_uuid: str, start: datetime, end: datetime,
                           page_limit: int = 500) -> dict[int, int]:
@@ -387,8 +450,17 @@ class RemnawaveClient:
             self._squad_usage_supported = True
 
             for row in (data or {}).get('users') or []:
-                if isinstance(row, dict) and row.get('id') is not None:
-                    usage[int(row['id'])] = int(row.get('totalBytes') or 0)
+                if not isinstance(row, dict):
+                    continue
+                total = int(row.get('totalBytes') or 0)
+                # Раскладываем и по id, и по username. Что означает `id`,
+                # у разных версий панели своё — с 3.0 это идентификатор
+                # пользователя панели, а не telegram id; username остаётся
+                # telegram id строкой при любой версии.
+                if row.get('id') is not None:
+                    usage[int(row['id'])] = total
+                if row.get('username'):
+                    usage[str(row['username'])] = total
 
             if not (data or {}).get('hasMore'):
                 break
@@ -462,13 +534,13 @@ class RemnawaveClient:
             raise last
         return []
 
-    async def devices(self, uuid: str) -> list[dict]:
-        if not uuid:
+    async def devices(self, ref: str | int) -> list[dict]:
+        if not ref:
             return []
-        data = await self._request('GET', f'/api/hwid/devices/{uuid}')
+        data = await self._request('GET', f'/api/hwid/devices/{ref}')
         return (data or {}).get('devices') or []
 
-    async def delete_subscription(self, uuid: str) -> bool:
+    async def delete_subscription(self, ref: str | int) -> bool:
         """Удалить пользователя панели. Нужно только тестовым аккаунтам.
 
         Без этого удаление из базы бота бесполезно: shortUuid считается от
@@ -477,18 +549,18 @@ class RemnawaveClient:
 
         Нет такого пользователя — это успех, а не ошибка: цель достигнута.
         """
-        if not uuid:
+        if not ref:
             return False
         try:
-            await self._request('DELETE', f'/api/users/{uuid}')
+            await self._request('DELETE', f'/api/users/{ref}')
             return True
         except VpnPanelError as exc:
             if '404' in str(exc):
                 return True
-            log.warning('подписка %s не удалена из панели: %s', uuid, exc)
+            log.warning('подписка %s не удалена из панели: %s', ref, exc)
             return False
 
-    async def delete_device(self, uuid: str, hwid: str) -> bool:
+    async def delete_device(self, ref: str | int, hwid: str) -> bool:
         """Отвязать устройство. «Уже нет» считается успехом.
 
         Панель отвечает 404 A204 «HWID device not found», если устройство
@@ -496,17 +568,18 @@ class RemnawaveClient:
         устройства не было, и она достигнута: ошибкой это не является.
         """
         try:
+            field = 'userId' if is_numeric_ref(ref) else 'userUuid'
             await self._request('POST', '/api/hwid/devices/delete',
-                                json={'userUuid': uuid, 'hwid': hwid})
+                                json={field: ref, 'hwid': hwid})
             return True
         except VpnPanelError as exc:
             # A204 — код именно этого случая. По одному слову «not found»
             # судить нельзя: так же выглядит 404 на неверный путь, и его
             # молчаливое «успешно» скрыло бы поломку интеграции.
             if 'A204' in str(exc) or 'HWID device not found' in str(exc):
-                log.debug('устройство %s у %s уже отвязано', hwid, uuid)
+                log.debug('устройство %s у %s уже отвязано', hwid, ref)
                 return True
-            log.warning('не удалось отвязать устройство %s у %s: %s', hwid, uuid, exc)
+            log.warning('не удалось отвязать устройство %s у %s: %s', hwid, ref, exc)
             return False
 
     # ── настройки с запасным значением ──────────────────────────────────────

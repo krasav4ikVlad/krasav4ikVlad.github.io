@@ -110,6 +110,29 @@ async def sync_bypass(container) -> None:
         key: report[key] for key in ('checked', 'fixed', 'failed')})
 
 
+async def migrate_panel_ids(container) -> None:
+    """Перевести подписки на числовые id, когда панель обновят до 3.x.
+
+    Пока панель до 3.0, задача выходит после одного запроса: ей нечего
+    делать. После обновления она сама переведёт всех, и день обновления не
+    превращается в день, когда надо вспомнить про команду.
+    """
+    from app.services import panel_ids
+
+    if container.vpn is None:
+        return
+
+    report = await panel_ids.migrate(container.users, container.vpn, apply=True)
+    if report['panel'] == 'old':
+        return                      # панель прежняя — отмечать нечего
+
+    if report['moved'] or report['failed']:
+        log.warning('панель 3.x: переведено %s, не вышло %s',
+                    report['moved'], report['failed'])
+    await container.health.mark(health.PANEL_IDS, **{
+        key: report[key] for key in ('stale', 'moved', 'failed')})
+
+
 async def update_segments(container) -> None:
     """Пересчёт growth.segment — без него кампании никого не найдут."""
     from app.services.segments import SegmentService
