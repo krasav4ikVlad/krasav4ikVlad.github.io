@@ -89,7 +89,7 @@ async def owner_with_money(users, user_id=1, balance=3000):
                                 'activeInternalSquads': ['общий']}})
 
 
-async def live_server(service_tuple, owner=1, plan='company', location='ams'):
+async def live_server(service_tuple, owner=1, plan='company', location='nl'):
     service, vpn, users = service_tuple
     await owner_with_money(users, owner)
     result = await service.request(owner, plan, location=location, profile='grpc')
@@ -102,7 +102,7 @@ async def test_buying_charges_and_creates_a_request(service, db):
     srv, _, users = service
     await owner_with_money(users)
 
-    result = await srv.request(1, 'company', location='ams')
+    result = await srv.request(1, 'company', location='nl')
 
     assert result.ok and result.amount == 1500
     assert result.server['status'] == ps.REQUESTED
@@ -113,7 +113,7 @@ async def test_no_money_no_request(service, db):
     srv, _, users = service
     await owner_with_money(users, balance=100)
 
-    result = await srv.request(1, 'company', location='ams')
+    result = await srv.request(1, 'company', location='nl')
 
     assert not result.ok and result.reason == 'no_funds'
     assert await db['private_servers'].count_documents({}) == 0
@@ -122,9 +122,9 @@ async def test_no_money_no_request(service, db):
 async def test_second_server_is_refused(service):
     srv, _, users = service
     await owner_with_money(users)
-    await srv.request(1, 'mini', location='ams')
+    await srv.request(1, 'mini', location='nl')
 
-    result = await srv.request(1, 'mini', location='ams')
+    result = await srv.request(1, 'mini', location='nl')
 
     assert not result.ok and result.reason == 'already_has'
     assert (await users.get(1))['info']['balance'] == 3000 - 990, 'деньги списаны дважды'
@@ -135,7 +135,7 @@ async def test_price_comes_from_settings(service):
     await srv.settings.set('private.price_mini', 1200)
     await owner_with_money(users)
 
-    result = await srv.request(1, 'mini', location='ams')
+    result = await srv.request(1, 'mini', location='nl')
 
     assert result.amount == 1200
 
@@ -143,7 +143,7 @@ async def test_price_comes_from_settings(service):
 async def test_rejected_request_returns_the_money(service):
     srv, _, users = service
     await owner_with_money(users)
-    result = await srv.request(1, 'company', location='ams')
+    result = await srv.request(1, 'company', location='nl')
 
     await srv.reject(result.server['_id'])
 
@@ -511,13 +511,28 @@ async def test_choice_is_saved_with_the_request(service):
     assert result.server['traffic_gb'] == 0, 'Токио безлимитный'
 
 
-async def test_limited_location_keeps_its_quota(service):
+async def test_limited_locations_are_no_longer_sold(service):
+    """Терабайт на сервер не окупал машину — площадки сняты с продажи."""
     srv, _, users = service
     await owner_with_money(users)
 
     result = await srv.request(1, 'mini', location='hkg', profile='reality')
 
-    assert result.server['traffic_gb'] == 1024
+    assert not result.ok and result.reason == 'limited_location'
+    assert (await users.get(1))['info']['balance'] == 3000, 'деньги не списаны'
+
+
+def test_nothing_limited_is_left_on_the_shelf():
+    """Проверяем витрину целиком: пропущенная площадка — это продажа в минус."""
+    for plan in ps.PLANS:
+        assert all(not loc.limited for loc in ps.locations_for(plan)), plan.code
+
+
+def test_a_location_off_sale_still_describes_itself():
+    """На снятых площадках стоят проданные серверы: их карточка не должна пустеть."""
+    assert ps.BY_LOCATION['hkg'].traffic_gb == 1024
+    assert ps.BY_LOCATION['hkg'].traffic_title == '1 ТБ'
+    assert ps.BY_LOCATION['hkg'].title == 'Гонконг'
 
 
 async def test_location_is_required(service):
@@ -535,7 +550,7 @@ async def test_unknown_profile_falls_back_to_the_recommended_one(service):
     srv, _, users = service
     await owner_with_money(users)
 
-    result = await srv.request(1, 'mini', location='ams', profile='чтототам')
+    result = await srv.request(1, 'mini', location='nl', profile='чтототам')
 
     assert result.ok and result.server['profile'] == ps.DEFAULT_PROFILE
 
@@ -1117,7 +1132,6 @@ async def test_a_silent_panel_still_falls_back(service):
 async def share_server(service_tuple, owner, squad=SQUAD):
     service, vpn, users = service_tuple
     await owner_with_money(users, owner)
-    # Долю продаём только на безлимитных площадках — «ams» она бы не приняла.
     result = await service.request(owner, 'share', location='nl', profile='reality')
     await service.activate(result.server['_id'], squad)
     return await service.servers.get(result.server['_id'])
@@ -1146,10 +1160,10 @@ async def test_a_share_cannot_be_bought_on_a_limited_location(service):
 
 
 async def test_only_unlimited_locations_are_offered_for_a_share(service):
-    assert ps.locations_for(ps.BY_CODE['share']) == ps.UNLIMITED
-    assert ps.locations_for(ps.BY_CODE['mini']) == ps.LOCATIONS
+    """Правило про долю живёт отдельно от того, что снято с продажи."""
     assert not ps.allowed_location(ps.BY_CODE['share'], ps.BY_LOCATION['ams'])
     assert ps.allowed_location(ps.BY_CODE['share'], ps.BY_LOCATION['tyo'])
+    assert all(not loc.limited for loc in ps.locations_for(ps.BY_CODE['share']))
 
 
 async def test_the_fourth_share_is_refused(service):
@@ -1171,7 +1185,7 @@ async def test_a_whole_server_does_not_share_a_machine(service):
     srv, vpn, users = service
     await live_server(service, owner=1)
     await owner_with_money(users, 2)
-    second = await srv.request(2, 'company', location='ams', profile='grpc')
+    second = await srv.request(2, 'company', location='nl', profile='grpc')
 
     result = await srv.activate(second.server['_id'], SQUAD)
 
@@ -1382,8 +1396,8 @@ async def test_a_refusing_panel_leaves_the_request_in_the_queue(service):
     человека ничего нет, и никто об этом не знает."""
     srv, vpn, users = service
     await owner_with_money(users, 1)
-    await srv.pool_add(SPARE, 'ams', 'reality')
-    result = await srv.request(1, 'mini', location='ams', profile='reality')
+    await srv.pool_add(SPARE, 'nl', 'reality')
+    result = await srv.request(1, 'mini', location='nl', profile='reality')
     vpn.fail = True
 
     given = await srv.give_from_pool(result.server['_id'])
@@ -1447,7 +1461,7 @@ async def test_a_squad_the_panel_does_not_know_is_refused(service):
         raise RuntimeError('GET /api/internal-squads: HTTP 404 not found')
 
     vpn.squad = missing
-    result = await srv.pool_add(SPARE, 'ams', 'reality')
+    result = await srv.pool_add(SPARE, 'nl', 'reality')
 
     assert not result.ok and result.reason == 'unknown_squad'
     assert not await srv.pool_rows()
@@ -1462,14 +1476,14 @@ async def test_a_panel_that_only_stumbles_does_not_block_the_pool(service):
 
     vpn.squad = broken
 
-    assert (await srv.pool_add(SPARE, 'ams', 'reality')).ok
+    assert (await srv.pool_add(SPARE, 'nl', 'reality')).ok
 
 
 async def test_a_spare_machine_is_handed_out_at_once(service):
     srv, vpn, users = service
     await owner_with_money(users, 1)
-    await srv.pool_add(SPARE, 'ams', 'reality')
-    result = await srv.request(1, 'mini', location='ams', profile='reality')
+    await srv.pool_add(SPARE, 'nl', 'reality')
+    result = await srv.request(1, 'mini', location='nl', profile='reality')
 
     given = await srv.give_from_pool(result.server['_id'])
 
@@ -1483,7 +1497,7 @@ async def test_a_machine_of_another_location_does_not_fit(service):
     srv, vpn, users = service
     await owner_with_money(users, 1)
     await srv.pool_add(SPARE, 'tyo', 'reality')
-    result = await srv.request(1, 'mini', location='ams', profile='reality')
+    result = await srv.request(1, 'mini', location='nl', profile='reality')
 
     given = await srv.give_from_pool(result.server['_id'])
 
@@ -1494,22 +1508,22 @@ async def test_a_protocol_mismatch_does_not_fit_either(service):
     """Протокол потом не поменять — выдать «почти то же» нельзя."""
     srv, vpn, users = service
     await owner_with_money(users, 1)
-    await srv.pool_add(SPARE, 'ams', 'grpc')
-    result = await srv.request(1, 'mini', location='ams', profile='reality')
+    await srv.pool_add(SPARE, 'nl', 'grpc')
+    result = await srv.request(1, 'mini', location='nl', profile='reality')
 
     assert not (await srv.give_from_pool(result.server['_id'])).ok
 
 
 async def test_a_taken_machine_is_not_offered_twice(service):
     srv, vpn, users = service
-    await srv.pool_add(SPARE, 'ams', 'reality')
+    await srv.pool_add(SPARE, 'nl', 'reality')
     for owner in (1, 2):
         await owner_with_money(users, owner)
 
-    first = await srv.request(1, 'mini', location='ams', profile='reality')
+    first = await srv.request(1, 'mini', location='nl', profile='reality')
     assert (await srv.give_from_pool(first.server['_id'])).ok
 
-    second = await srv.request(2, 'mini', location='ams', profile='reality')
+    second = await srv.request(2, 'mini', location='nl', profile='reality')
     assert not (await srv.give_from_pool(second.server['_id'])).ok, 'машину выдали дважды'
 
 
@@ -1530,7 +1544,7 @@ async def test_a_busy_squad_is_not_taken_into_the_pool(service):
     srv, vpn, users = service
     server = await live_server(service)
 
-    result = await srv.pool_add(server['squad_uuid'], 'ams', 'reality')
+    result = await srv.pool_add(server['squad_uuid'], 'nl', 'reality')
 
     assert not result.ok and result.reason == 'squad_busy'
     assert server['_id'] in result.note
@@ -1538,9 +1552,9 @@ async def test_a_busy_squad_is_not_taken_into_the_pool(service):
 
 async def test_the_same_machine_is_not_added_twice(service):
     srv, vpn, users = service
-    assert (await srv.pool_add(SPARE, 'ams', 'reality')).ok
+    assert (await srv.pool_add(SPARE, 'nl', 'reality')).ok
 
-    again = await srv.pool_add(SPARE, 'ams', 'reality')
+    again = await srv.pool_add(SPARE, 'nl', 'reality')
 
     assert not again.ok and again.reason == 'already_in_pool'
 
@@ -1564,7 +1578,7 @@ async def test_the_queue_separates_locations_and_protocols(service):
     srv, vpn, users = service
     await owner_with_money(users, 1)
     await owner_with_money(users, 2)
-    await srv.request(1, 'mini', location='ams', profile='reality')
+    await srv.request(1, 'mini', location='nl', profile='reality')
     await srv.request(2, 'mini', location='tyo', profile='grpc')
 
     queue = await srv.queue()
@@ -1575,10 +1589,10 @@ async def test_the_queue_separates_locations_and_protocols(service):
 
 async def test_the_queue_marks_what_the_spare_covers(service):
     srv, vpn, users = service
-    await srv.pool_add(SPARE, 'ams', 'reality')
+    await srv.pool_add(SPARE, 'nl', 'reality')
     for owner in (1, 2):
         await owner_with_money(users, owner)
-        await srv.request(owner, 'mini', location='ams', profile='reality')
+        await srv.request(owner, 'mini', location='nl', profile='reality')
 
     group = (await srv.queue())[0]
 
@@ -1595,11 +1609,11 @@ async def test_the_shopping_list_counts_machines_by_location(service):
         await owner_with_money(users, owner)
         await srv.request(owner, 'mini', location='tyo', profile='grpc')
     await owner_with_money(users, 3)
-    await srv.request(3, 'company', location='ams', profile='reality')
+    await srv.request(3, 'company', location='nl', profile='reality')
 
     need = await srv.needed_locations()
 
-    assert [row['location'].code for row in need] == ['tyo', 'ams']
+    assert [row['location'].code for row in need] == ['tyo', 'nl']
     assert need[0]['machines'] == 2 and need[1]['machines'] == 1
     assert need[0]['profiles'] == {'grpc': 2}
 

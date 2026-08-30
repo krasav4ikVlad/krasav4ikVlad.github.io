@@ -65,6 +65,10 @@ class Location:
     # запас — лишний повод ошибиться, а ошибка тут продаёт не ту страну.
     country: str = ''
     aliases: tuple[str, ...] = ()
+    # Продаём ли её сейчас. Снятая с продажи площадка остаётся в списке, а не
+    # удаляется: на ней стоят уже проданные серверы, и без записи о ней их
+    # карточка показывала бы пустое место вместо города и лимита трафика.
+    sold: bool = True
 
     @property
     def limited(self) -> bool:
@@ -77,14 +81,25 @@ class Location:
 
 # Коды короткие: они едут в callback_data вместе с тарифом и профилем, а
 # там всего 64 байта на всё.
+#
+# Площадки с лимитом трафика сняты с продажи: терабайт на сервер не окупал
+# машину. Из списка они не убраны — на них стоят уже проданные серверы, и
+# без записи бот не смог бы показать ни город, ни лимит в их карточке.
 LOCATIONS: tuple[Location, ...] = (
-    Location('ams', 'Амстердам', 1024, 'NL', ('амстердам', 'amsterdam', 'ams')),
-    Location('fra', 'Франкфурт', 1024, 'DE', ('франкфурт', 'frankfurt', 'fra')),
-    Location('sto', 'Стокгольм', 1024, 'SE', ('стокгольм', 'stockholm', 'sto')),
-    Location('bud', 'Будапешт', 1024, 'HU', ('будапешт', 'budapest', 'bud')),
-    Location('mia', 'Майами', 1024, 'US', ('майами', 'miami', 'mia')),
-    Location('nyc', 'Нью-Йорк', 1024, 'US', ('нью-йорк', 'нью йорк', 'new york', 'nyc')),
-    Location('hkg', 'Гонконг', 1024, 'HK', ('гонконг', 'hong kong', 'hongkong', 'hkg')),
+    Location('ams', 'Амстердам', 1024, 'NL', ('амстердам', 'amsterdam', 'ams'),
+             sold=False),
+    Location('fra', 'Франкфурт', 1024, 'DE', ('франкфурт', 'frankfurt', 'fra'),
+             sold=False),
+    Location('sto', 'Стокгольм', 1024, 'SE', ('стокгольм', 'stockholm', 'sto'),
+             sold=False),
+    Location('bud', 'Будапешт', 1024, 'HU', ('будапешт', 'budapest', 'bud'),
+             sold=False),
+    Location('mia', 'Майами', 1024, 'US', ('майами', 'miami', 'mia'),
+             sold=False),
+    Location('nyc', 'Нью-Йорк', 1024, 'US',
+             ('нью-йорк', 'нью йорк', 'new york', 'nyc'), sold=False),
+    Location('hkg', 'Гонконг', 1024, 'HK',
+             ('гонконг', 'hong kong', 'hongkong', 'hkg'), sold=False),
     # Безлимитные — отдельные площадки, поэтому Франкфурт встречается дважды
     # и это не опечатка: там другой провайдер и другой тариф по трафику.
     Location('nl', 'Нидерланды', 0, 'NL', ('нидерланды', 'netherlands', 'holland')),
@@ -96,6 +111,10 @@ LOCATIONS: tuple[Location, ...] = (
 BY_LOCATION: dict[str, Location] = {loc.code: loc for loc in LOCATIONS}
 LIMITED = tuple(loc for loc in LOCATIONS if loc.limited)
 UNLIMITED = tuple(loc for loc in LOCATIONS if not loc.limited)
+# То, что вообще можно купить. Всё, что показывает витрина, считается отсюда,
+# а не из LOCATIONS: иначе снятая с продажи площадка осталась бы на одном из
+# экранов и человек упёрся бы в отказ уже после выбора.
+ON_SALE = tuple(loc for loc in LOCATIONS if loc.sold)
 
 
 @dataclass(frozen=True)
@@ -239,14 +258,19 @@ def match_profiles(text: str) -> tuple[Profile, ...]:
 def locations_for(plan: ServerPlan | None) -> tuple[Location, ...]:
     """Какие площадки продаём под этот тариф.
 
-    На долевой машине живут три покупателя со своими людьми — до пятнадцати
-    человек. Терабайт на всех кончится в первый же месяц, и разбираться,
-    чей это был торрент, придётся с тремя оплатившими сразу. Поэтому долю
-    сажаем только на безлимитные площадки.
+    Два ограничения, и они независимы. Первое общее: снятое с продажи не
+    предлагаем никому. Второе — про долю: на такой машине живут три
+    покупателя со своими людьми, до пятнадцати человек, терабайт на всех
+    кончится в первый же месяц, и разбираться, чей это был торрент, придётся
+    с тремя оплатившими сразу.
+
+    Правило про долю остаётся, хотя сейчас лимитных в продаже и так нет:
+    вернётся выгодная площадка с лимитом — она снова окажется под запретом
+    сама, без правки в этом месте.
     """
     if plan and plan.shared:
-        return UNLIMITED
-    return LOCATIONS
+        return tuple(loc for loc in ON_SALE if not loc.limited)
+    return ON_SALE
 
 
 def allowed_location(plan: ServerPlan | None, location: Location | None) -> bool:

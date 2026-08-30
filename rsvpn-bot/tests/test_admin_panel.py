@@ -963,7 +963,7 @@ async def test_admin_gives_the_server_by_squad_uuid(admin_env):
     await container.users.create({'user_data': {'user_id': ADMIN.id},
                                   'info': {'balance': 3000},
                                   'vpn': {'uuid': 'u-1', 'shortUuid': 's-1'}})
-    request = await container.private.request(ADMIN.id, 'mini', location='ams')
+    request = await container.private.request(ADMIN.id, 'mini', location='nl')
 
     await dp.feed_update(bot, callback(
         ServerAdmin(action='give', server_id=request.server['_id']).pack()))
@@ -973,7 +973,7 @@ async def test_admin_gives_the_server_by_squad_uuid(admin_env):
     assert server['status'] == 'active'
     assert server['squad_uuid'] == 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     # локацию выбрал покупатель, админ её не переспрашивает
-    assert server['location'] == 'ams'
+    assert server['location'] == 'nl'
 
 
 async def test_admin_is_not_allowed_to_paste_garbage_instead_of_a_uuid(admin_env):
@@ -984,7 +984,7 @@ async def test_admin_is_not_allowed_to_paste_garbage_instead_of_a_uuid(admin_env
     container.attach_bot(bot)
     await container.users.create({'user_data': {'user_id': ADMIN.id},
                                   'info': {'balance': 3000}})
-    request = await container.private.request(ADMIN.id, 'mini', location='ams')
+    request = await container.private.request(ADMIN.id, 'mini', location='nl')
 
     await dp.feed_update(bot, callback(
         ServerAdmin(action='give', server_id=request.server['_id']).pack()))
@@ -1025,7 +1025,7 @@ async def _pending_server(container, bot):
     await container.users.create({'user_data': {'user_id': ADMIN.id},
                                   'info': {'balance': 3000},
                                   'vpn': {'uuid': 'u-1', 'shortUuid': 's-1'}})
-    result = await container.private.request(ADMIN.id, 'mini', location='ams')
+    result = await container.private.request(ADMIN.id, 'mini', location='nl')
     return result.server['_id']
 
 
@@ -1092,7 +1092,7 @@ async def test_a_busy_squad_error_names_the_occupant(admin_env):
     await dp.feed_update(bot, message(f'/squad {second.server["_id"]} {squad}'))
 
     assert taken in session.last_text, session.last_text
-    assert 'Мини' in session.last_text and 'Амстердам' in session.last_text
+    assert 'Мини' in session.last_text and 'Нидерланды' in session.last_text
     assert '/srvdel' in session.last_text, 'что делать дальше — не сказано'
 
 
@@ -1272,7 +1272,7 @@ async def test_the_queue_screen_says_what_to_raise(admin_env):
 
     text = session.last_text
     assert 'Заявок ждёт: 1' in text
-    assert 'Мини' in text and 'Амстердам' in text
+    assert 'Мини' in text and 'Нидерланды' in text
     assert 'поднять машин: 1' in text
 
 
@@ -1303,7 +1303,7 @@ async def test_adding_a_machine_serves_the_waiting_request(admin_env):
     server_id = await _pending_server(container, bot)
 
     await dp.feed_update(bot, message(
-        '/pooladd bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee ams reality'))
+        '/pooladd bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee nl reality'))
 
     server = await container.private.servers.get(server_id)
     assert server['status'] == 'active'
@@ -1320,7 +1320,7 @@ async def test_the_queue_screen_says_what_to_buy(admin_env):
 
     text = session.last_text
     assert 'Купить машин' in text
-    assert 'Амстердам' in text and '1 ТБ' in text
+    assert 'Нидерланды' in text and 'безлимит' in text
     assert 'TCP Reality' in text
 
 
@@ -1400,7 +1400,7 @@ async def test_the_card_offers_one_tap_handover_when_a_spare_fits(admin_env):
     assert not any('запаса' in b.text for row in markup.inline_keyboard for b in row)
 
     await container.private.pool_add('bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee',
-                                     'ams', 'reality')
+                                     'nl', 'reality')
     markup = await card_markup(container, server)
     assert any('запаса' in b.text for row in markup.inline_keyboard for b in row)
 

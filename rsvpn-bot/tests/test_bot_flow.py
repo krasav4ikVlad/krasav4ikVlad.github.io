@@ -1894,8 +1894,9 @@ async def test_shop_offers_locations_after_the_plan(env):
 
     assert 'Где поднять сервер' in session.last_text
     labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
-    assert any('Амстердам' in label and '1 ТБ' in label for label in labels), labels
     assert any('Токио' in label and 'безлимит' in label for label in labels), labels
+    assert not any('1 ТБ' in label for label in labels), \
+        'площадки с лимитом сняты с продажи — их не должно быть на витрине'
 
 
 async def test_location_leads_to_the_protocol_choice(env):
@@ -1905,7 +1906,7 @@ async def test_location_leads_to_the_protocol_choice(env):
     await _open_servers(dp, bot, c)
 
     session.calls.clear()
-    await dp.feed_update(bot, callback(Server(action='loc', value='mini-ams').pack()))
+    await dp.feed_update(bot, callback(Server(action='loc', value='mini-nl').pack()))
 
     assert 'Протокол' in session.last_text
     labels = [b.text for row in last_markup(session).inline_keyboard for b in row]
@@ -1920,7 +1921,7 @@ async def test_the_protocol_screen_says_who_goes_on_a_router(env):
     dp, bot, session, c = env
     await _open_servers(dp, bot, c)
 
-    await dp.feed_update(bot, callback(Server(action='loc', value='mini-ams').pack()))
+    await dp.feed_update(bot, callback(Server(action='loc', value='mini-nl').pack()))
 
     text = session.last_text
     assert text.count('Ставится на роутер') == 2, 'reality и gRPC'
@@ -1934,7 +1935,7 @@ async def test_the_confirmation_repeats_the_router_verdict(env):
     await _open_servers(dp, bot, c)
 
     await dp.feed_update(bot, callback(
-        Server(action='prof', value='mini-ams-hysteria2').pack()))
+        Server(action='prof', value='mini-nl-hysteria2').pack()))
 
     assert 'На роутер не ставится' in session.last_text
 
@@ -1947,10 +1948,10 @@ async def test_confirmation_shows_everything_that_was_chosen(env):
 
     session.calls.clear()
     await dp.feed_update(bot, callback(
-        Server(action='prof', value='mini-hkg-grpc').pack()))
+        Server(action='prof', value='mini-nl-grpc').pack()))
 
     text = session.last_text
-    assert 'Гонконг' in text and '1 ТБ' in text and 'gRPC' in text
+    assert 'Нидерланды' in text and 'безлимит' in text and 'gRPC' in text
     assert '990₽' in text
 
 
@@ -2069,7 +2070,7 @@ async def test_members_screen_can_actually_be_rendered(env):
     await _open_servers(dp, bot, c)
     await c.users.credit(5, 3000, 'тест')
     c.private.vpn = c.vpn
-    result = await c.private.request(5, 'mini', location='ams', profile='reality')
+    result = await c.private.request(5, 'mini', location='nl', profile='reality')
     await c.private.activate(result.server['_id'], 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
     await c.users.create({'user_data': {'user_id': 77, 'first_name': 'Друг'},
                           'info': {'balance': 0}, 'vpn': {'uuid': 'u-77'}})
@@ -2146,7 +2147,7 @@ async def _own_server(dp, bot, c, plan='mini'):
     await c.settings.set('private.visibility', 'all')
     await c.users.credit(5, 3000, 'тест')
     c.private.vpn = c.vpn
-    result = await c.private.request(5, plan, location='ams', profile='reality')
+    result = await c.private.request(5, plan, location='nl', profile='reality')
     await c.private.activate(result.server['_id'],
                              'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
     return result.server['_id']

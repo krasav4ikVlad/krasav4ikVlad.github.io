@@ -415,9 +415,10 @@ async def set_location(message: types.Message, command, c, settings) -> None:
         return
 
     location = ps.BY_LOCATION[code]
-    # Долю продаём только на безлимит: терабайт на трёх покупателей с их
-    # людьми кончается за месяц, и разбираться придётся со всеми сразу.
-    if not ps.allowed_location(ps.plan_of(server), location):
+    # Проверяем только правило доли. Снятые с продажи площадки здесь
+    # разрешены нарочно: команда проставляет локацию задним числом серверам,
+    # которые как раз на таких площадках и стоят.
+    if ps.is_shared(server) and location.limited:
         await message.answer(
             f'{e("cross")} <code>{code}</code> — площадка с лимитом трафика, '
             f'а тариф долевой. Безлимитные: '
@@ -627,9 +628,12 @@ async def queue_text(c) -> str:
                  '<code>/pooladd UUID локация протокол</code>. Заявка на такую '
                  'машину выдаётся сама в момент покупки — человек получает '
                  'сервер сразу, а вам не приходит заявка.\n\n'
-                 'Коды локаций: <code>ams fra sto bud mia nyc hkg</code> (1 ТБ), '
-                 '<code>nl fra2 mil tyo</code> (безлимит). '
-                 'Протоколы: <code>reality grpc hysteria2</code>.</blockquote>')
+                 'Коды локаций: <code>nl fra2 mil tyo</code>. '
+                 'Протоколы: <code>reality grpc hysteria2</code>.\n\n'
+                 'Площадки с лимитом 1 ТБ (<code>ams fra sto bud mia nyc '
+                 'hkg</code>) сняты с продажи: добавлять их в запас незачем, '
+                 'заказать их никто не сможет. Уже проданные серверы на них '
+                 'работают как работали.</blockquote>')
     return '\n'.join(lines)
 
 

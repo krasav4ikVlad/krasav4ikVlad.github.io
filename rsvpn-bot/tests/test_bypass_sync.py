@@ -263,7 +263,7 @@ async def test_a_private_server_keeps_them_together(db, user_factory):
                           'vpn.shortUuid': 's-1', 'vpn.expireAt': soon,
                           'vpn.bypass_uuid': 'bp-1', 'vpn.bypass_expireAt': soon})
 
-    result = await service.request(1, 'mini', location='ams', profile='reality')
+    result = await service.request(1, 'mini', location='nl', profile='reality')
     await service.activate(result.server['_id'],
                            'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
 
