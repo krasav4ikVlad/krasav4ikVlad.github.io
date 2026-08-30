@@ -147,9 +147,13 @@ async def preview(message: types.Message, state: FSMContext, c, settings) -> Non
     kb.row(_btn(f'{e("ok")} Отправить', 'bcgo'), _btn(f'{e("back")} Отмена', 'broadcast'))
 
     # Показываем именно тем же способом, каким уйдёт: если разметка битая,
-    # ошибка вылезет здесь, а не на десяти тысячах получателей
+    # ошибка вылезет здесь, а не на десяти тысячах получателей. Кнопки — те
+    # же самые: письмо без них выглядит иначе, а проверяют предпросмотр
+    # ровно затем, чтобы увидеть настоящее письмо.
+    from app.bot.keyboards.common import broadcast_keyboard
+
     try:
-        await message.answer(text)
+        await message.answer(text, reply_markup=await broadcast_keyboard(c.settings))
     except Exception as exc:
         await message.answer(f'{e("warning")} Разметка сломана, Telegram отказался её принять:\n'
                              f'<code>{exc}</code>\n\nПоправьте и пришлите заново.')
@@ -365,6 +369,12 @@ async def _run(c, bot, job_id: str) -> None:
 
     sender = Sender(on_blocked=c.users.mark_blocked, on_flood=on_flood)
 
+    # Кнопки собираем один раз на всю рассылку: настройки за время отправки
+    # не меняются, а сто девяносто тысяч чтений подряд — меняются.
+    from app.bot.keyboards.common import broadcast_keyboard
+
+    markup = await broadcast_keyboard(c.settings)
+
     async def send_one(user_id: int) -> bool:
         """Одно письмо, но с потолком по времени.
 
@@ -373,7 +383,7 @@ async def _run(c, bot, job_id: str) -> None:
         от обрыва — и именно так рассылка «пропадала».
         """
         try:
-            return await asyncio.wait_for(sender.send(bot, user_id, text),
+            return await asyncio.wait_for(sender.send(bot, user_id, text, markup),
                                           timeout=SEND_TIMEOUT_SEC)
         except asyncio.TimeoutError:
             log.warning('таймаут отправки %s', user_id)

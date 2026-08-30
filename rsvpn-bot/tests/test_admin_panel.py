@@ -272,6 +272,54 @@ async def test_broadcast_reaches_users_with_custom_emoji(admin_env):
     assert '<tg-emoji' in session.calls[-1][1]
 
 
+# ── кнопки под письмом рассылки ─────────────────────────────────────────────
+#
+# Письмо без кнопок — тупик: человек прочитал и закрыл. Обе ведут туда, куда
+# он пойдёт дальше: смотреть свой срок и читать новости.
+
+async def test_a_broadcast_letter_carries_two_buttons(admin_env):
+    from app.bot.keyboards.common import broadcast_keyboard
+
+    dp, bot, session, container = admin_env
+
+    markup = await broadcast_keyboard(container.settings)
+    buttons = [b for row in markup.inline_keyboard for b in row]
+
+    assert len(buttons) == 2, buttons
+    assert 'подписка' in buttons[0].text.lower()
+    assert 'my_subscription' in buttons[0].callback_data
+    assert buttons[1].url == await container.settings.get('link.channel')
+
+
+async def test_the_channel_button_disappears_without_a_link(admin_env):
+    """Кнопка с пустым url — это ошибка Telegram и непринятое письмо."""
+    from app.bot.keyboards.common import broadcast_keyboard
+
+    dp, bot, session, container = admin_env
+    await container.settings.set('link.channel', '')
+
+    markup = await broadcast_keyboard(container.settings)
+
+    assert len([b for row in markup.inline_keyboard for b in row]) == 1
+
+
+async def test_the_preview_shows_the_same_buttons(admin_env):
+    """Предпросмотр смотрят затем, чтобы увидеть настоящее письмо."""
+    from app.admin.broadcast import Broadcast
+
+    dp, bot, session, container = admin_env
+    state = dp.fsm.get_context(bot=bot, chat_id=CHAT.id, user_id=ADMIN.id)
+    await state.set_state(Broadcast.text)
+    await state.update_data(total=10, audience='all')
+
+    session.markups.clear()
+    await dp.feed_update(bot, message('Привет, мы всё починили'))
+
+    letter = session.markups[0]
+    labels = [b.text for row in letter.inline_keyboard for b in row]
+    assert any('подписка' in label.lower() for label in labels), labels
+
+
 async def test_trial_reset_from_the_panel(admin_env):
     """Кнопка в админке действительно снимает метку, а не только рисует экран."""
     from app.core.time import now

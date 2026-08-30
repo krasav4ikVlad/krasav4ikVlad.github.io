@@ -41,6 +41,27 @@ def extend_button() -> types.InlineKeyboardButton:
         text=f'{e("renew")} Продлить подписку', callback_data=Menu(screen='extend').pack())
 
 
+async def broadcast_keyboard(settings) -> types.InlineKeyboardMarkup:
+    """Две кнопки под каждым письмом рассылки: подписка и канал.
+
+    Письмо без кнопок — тупик: человек прочитал и закрыл. «Ваша подписка»
+    ведёт туда, где видно срок и кнопку продления, канал — туда, где
+    новости и статус узлов. Ссылка на канал берётся из настроек, а не из
+    кода: она уже есть в подвале всех экранов, и второе место, где её надо
+    не забыть поменять, однажды разъедется с первым.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(
+        text=f'{e("shield")} Ваша подписка',
+        callback_data=Menu(screen='my_subscription').pack()))
+
+    channel = str(await settings.get('link.channel') or '').strip()
+    if channel:
+        builder.row(types.InlineKeyboardButton(
+            text=f'{e("channel")} Новости RS VPN', url=channel))
+    return builder.as_markup()
+
+
 def campaign_keyboards() -> dict:
     """Клавиатуры для рассылок — по ключу из CampaignStep.keyboard."""
     def topup():
