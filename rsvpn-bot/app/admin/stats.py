@@ -111,7 +111,12 @@ def _pipeline(admin_ids, moment) -> list[dict]:
         {'$project': {
             'is_admin': {'$cond': [{'$in': ['$user_data.user_id', admins]}, 1, 0]},
             'balance': {'$ifNull': ['$info.balance', 0]},
-            'ref_balance': {'$ifNull': ['$info.ref_stats.balance', 0]},
+            # Реферальные деньги лежат в withdrawable — именно его увеличивает
+            # начисление и обнуляет выплата. В `balance` не пишет никто: поле
+            # осталось от старого бота, и экран показывал по нему ноль, то есть
+            # самое большое обязательство бота было не видно вовсе.
+            'ref_balance': {'$ifNull': ['$info.ref_stats.withdrawable',
+                                        {'$ifNull': ['$info.ref_stats.balance', 0]}]},
             'segment': {'$ifNull': ['$growth.segment', '']},
             'has_topup': {'$eq': ['$growth.has_topup', True]},
             'has_sub': {'$gt': [{'$strLenCP': {'$ifNull': ['$vpn.shortUuid', '']}}, 0]},
@@ -188,7 +193,7 @@ async def _collect_in_python(users_repo, admin_ids, moment) -> dict:
     unknown = 0
 
     async for doc in users.find({}, {
-            'user_data.user_id': 1, 'info.balance': 1, 'info.ref_stats.balance': 1,
+            'user_data.user_id': 1, 'info.balance': 1, 'info.ref_stats': 1,
             'info.transactions': 1, 'vpn.shortUuid': 1, 'vpn.expireAt': 1, 'growth': 1}):
         numbers['total_users'] += 1
         if (doc.get('user_data') or {}).get('user_id') in set(admin_ids):
@@ -196,7 +201,9 @@ async def _collect_in_python(users_repo, admin_ids, moment) -> dict:
 
         info, vpn, growth = doc.get('info') or {}, doc.get('vpn') or {}, doc.get('growth') or {}
         balance = int(info.get('balance', 0) or 0)
-        numbers['ref_balance_sum'] += int((info.get('ref_stats') or {}).get('balance', 0) or 0)
+        ref = info.get('ref_stats') or {}
+        numbers['ref_balance_sum'] += int(
+            ref.get('withdrawable') or ref.get('balance') or 0)
 
         expire = parse_mongo_date(vpn.get('expireAt'))
         if expire:

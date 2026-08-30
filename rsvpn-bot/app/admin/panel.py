@@ -15,6 +15,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.admin import broadcast
 from app.admin import commands as admin_commands
+from app.admin import money as admin_money
 from app.admin import diag as admin_diag
 from app.admin import private_servers as admin_private
 from app.admin import moderation as admin_moderation
@@ -64,6 +65,7 @@ def main_kb(c) -> InlineKeyboardBuilder:
     kb.row(btn(f'{e("broadcast")} Рассылка', 'broadcast'))
     kb.row(btn(f'{e("trial")} Сброс бесплатного периода', 'trial'))
     kb.row(btn(f'{e("cross")} Заблокировали бота', 'blocked'))
+    kb.row(btn(f'{e("money")} Экономика: деньги за месяц', 'money'))
     kb.row(btn(f'{e("tools")} Диагностика', 'diag'))
     kb.row(btn(f'{e("ban")} Заблокированные', 'banned'))
     kb.row(btn(f'{e("clipboard")} Команды бота', 'cmds'))
@@ -448,4 +450,5 @@ def create_router(admin_ids) -> Router:
     admin_diag.register(router)
     admin_private.register(router)
     admin_commands.register(router)
+    admin_money.register(router)
     return router
