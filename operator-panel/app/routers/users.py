@@ -1,10 +1,14 @@
-"""Read-only endpoints: search, user card, histories (logs / transactions / bypass / referrals)."""
+"""Read-only endpoints: search, user card, histories (balance_log / logs / transactions / bypass / referrals / payments)."""
 from __future__ import annotations
+
+import re
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query, status
 
+from ..config import get_settings
+from ..database import get_db
 from ..security import CurrentOperator
 from ..user_service import brief_view, find_user_or_404, search_users, users_col
 from ..utils import jsonable, parse_any_ts
@@ -21,7 +25,7 @@ async def search(q: str = Query(min_length=1, max_length=128), _op: CurrentOpera
 @router.get("/{user_id}")
 async def user_card(user_id: int, _op: CurrentOperator = None):
     doc = await find_user_or_404(user_id, projection={
-        "user_data": 1, "info.balance": 1, "info.email": 1,
+        "user_data": 1, "info.balance": 1, "info.email": 1, "info.is_banned": 1,
         "info.ref_stats.withdrawable": 1, "info.ref_stats.earned_total": 1,
         "vpn": 1, "growth": 1, "role": 1,
     })
@@ -33,6 +37,7 @@ async def user_card(user_id: int, _op: CurrentOperator = None):
         "user_data": ud,
         "balance": info.get("balance", 0),
         "email": info.get("email"),
+        "is_banned": bool(info.get("is_banned")),
         "ref_withdrawable": ref.get("withdrawable", 0),
         "ref_earned_total": ref.get("earned_total", 0),
         "vpn": {
@@ -45,11 +50,97 @@ async def user_card(user_id: int, _op: CurrentOperator = None):
             "extraDevices": vpn.get("extraDevices", []),
             "bypass_expireAt": vpn.get("bypass_expireAt"),
             "bypass_trafficLimitBytes": vpn.get("bypass_trafficLimitBytes"),
+            "bypass_hwidDeviceLimit": vpn.get("bypass_hwidDeviceLimit"),
             "activeInternalSquads": vpn.get("activeInternalSquads", []),
         },
         "growth": doc.get("growth") or {},
         "role": doc.get("role"),
     })
+
+
+# ---------------------------------------------------------------- журнал денег (balance_log)
+# Первоисточник движения денег с версии бота 104. Знак берём ТОЛЬКО из
+# amount (+ приход / − расход) — на угадывании знака из описания старая
+# панель показывала списания как пополнения.
+
+BL_KINDS = ("topup", "plan", "renewal", "devices", "bypass", "private_server",
+            "gift", "promo", "referral", "campaign", "survey", "payout",
+            "refund", "admin", "other")
+
+
+@router.get("/{user_id}/balance-log")
+async def user_balance_log(
+    user_id: int,
+    kind: str | None = Query(default=None, max_length=32),
+    account: str | None = Query(default=None, max_length=16),
+    search: str | None = Query(default=None, max_length=200),
+    date_from: str | None = None,
+    date_to: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    _op: CurrentOperator = None,
+):
+    if kind and kind not in BL_KINDS:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Неверный kind")
+    if account and account not in ("balance", "referral"):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Неверный account")
+    col = get_db()[get_settings().balance_log_collection]
+    q: dict = {"user_id": user_id}
+    if kind:
+        q["kind"] = kind
+    if account:
+        q["account"] = account
+    dt_from = parse_any_ts(date_from)
+    dt_to = parse_any_ts(date_to)
+    if dt_to is not None and date_to and len(date_to.strip()) <= 10:
+        dt_to = dt_to + timedelta(days=1)  # дата без времени — включаем весь день
+    if dt_from or dt_to:
+        q["at"] = {}
+        if dt_from:
+            q["at"]["$gte"] = dt_from
+        if dt_to:
+            q["at"]["$lt"] = dt_to
+    if search and search.strip():
+        rx = {"$regex": re.escape(search.strip()), "$options": "i"}
+        q["$or"] = [{"title": rx}, {"description": rx}]
+
+    total = await col.count_documents(q)
+    items = [{k: jsonable(v) for k, v in d.items() if k != "_id"}
+             async for d in col.find(q).sort("at", -1)
+             .skip((page - 1) * page_size).limit(page_size)]
+
+    # сверка из доки: sum(amount) по account=balance должна сходиться с
+    # info.balance, если журнал вёлся с начала; расхождение = операции до v104
+    journal_sum = None
+    try:
+        agg = await col.aggregate([
+            {"$match": {"user_id": user_id, "account": "balance"}},
+            {"$group": {"_id": None, "sum": {"$sum": "$amount"}}},
+        ]).to_list(1)
+        if agg:
+            journal_sum = agg[0].get("sum")
+    except Exception:
+        pass
+    return {"total": total, "page": page, "page_size": page_size,
+            "items": items, "journal_sum": journal_sum}
+
+
+@router.get("/{user_id}/payments")
+async def user_payments(
+    user_id: int,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    _op: CurrentOperator = None,
+):
+    """Платежи провайдеров — первоисточник выручки (реально уплаченное,
+    без бонусов); в balance_log то же зачисление лежит уже с бонусом."""
+    col = get_db()[get_settings().payments_collection]
+    q = {"user_id": user_id}
+    total = await col.count_documents(q)
+    items = [{k: jsonable(v) for k, v in d.items() if k != "_id"}
+             async for d in col.find(q).sort("created_at", -1)
+             .skip((page - 1) * page_size).limit(page_size)]
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
 def _filter_entries(

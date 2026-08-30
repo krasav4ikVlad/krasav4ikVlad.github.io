@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     audit_collection: str = "operator_logs"
     support_messages_collection: str = "support_messages"
     reviews_collection: str = "ticket_reviews"  # вердикты «Проверки» (своя коллекция панели)
+    # журнал движения денег бота (пишется с версии 104) и платежи провайдеров
+    balance_log_collection: str = "balance_log"
+    payments_collection: str = "payments"
 
     # --- Быстрые ответы (общая с ботом коллекция) ---
     # По умолчанию — та же база; если бот держит их в другом месте, задайте свои.

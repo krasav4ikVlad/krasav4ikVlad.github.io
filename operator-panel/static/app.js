@@ -437,16 +437,21 @@ async function viewUser(userId) {
           <div class="muted mono">user_id: ${esc(ud.user_id)} · регистрация: ${fmtDate(ud.date_joined)}
             ${ud.utm ? '· utm: ' + esc(ud.utm) : ''}</div>
         </div>
-        <div>${subBadge(vpn.expireAt)}</div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end">
+          ${subBadge(vpn.expireAt)}
+          ${u.is_banned ? '<span class="badge badge-red">заблокирован</span>' : ''}
+          ${(u.growth || {}).blocked_bot ? '<span class="badge badge-gray">заблокировал бота</span>' : ''}
+        </div>
       </div>
 
       <div class="stats-grid">
         <div class="stat"><div class="stat-label">Баланс</div><div class="stat-value">${fmtNum(u.balance)} ₽</div></div>
+        <div class="stat"><div class="stat-label">Реф. баланс</div><div class="stat-value">${fmtNum(u.ref_withdrawable)} ₽</div></div>
         <div class="stat"><div class="stat-label">Подписка до</div><div class="stat-value">${fmtDate(vpn.expireAt)}</div></div>
         <div class="stat"><div class="stat-label">Тариф</div><div class="stat-value" style="font-size:16px" title="Выбранный период — по нему проходит автопродление">${esc(periodLabel(vpn.period))}</div></div>
         <div class="stat"><div class="stat-label">Лимит устройств</div><div class="stat-value">${esc(vpn.hwidDeviceLimit ?? '—')}</div></div>
         <div class="stat"><div class="stat-label">ByPass трафик</div><div class="stat-value">${fmtBytes(vpn.bypass_trafficLimitBytes)}</div></div>
-        <div class="stat"><div class="stat-label">Реф. баланс</div><div class="stat-value">${fmtNum(u.ref_withdrawable)} ₽</div></div>
+        <div class="stat"><div class="stat-label">ByPass до</div><div class="stat-value" style="font-size:16px">${fmtDate(vpn.bypass_expireAt)}</div></div>
         <div class="stat"><div class="stat-label">Email</div><div class="stat-value" style="font-size:14px">${esc(u.email || '—')}</div></div>
         <div class="stat"><div class="stat-label">Сегмент</div><div class="stat-value" style="font-size:14px">${esc((u.growth || {}).segment || '—')}</div></div>
       </div>
@@ -461,13 +466,16 @@ async function viewUser(userId) {
     </div>
 
     <div class="tabs" id="tabs">
-      <button data-tab="logs" class="active">История действий</button>
-      <button data-tab="transactions">Транзакции и баланс</button>
+      <button data-tab="money" class="active">Движение денег</button>
+      <button data-tab="logs">История действий</button>
+      <button data-tab="payments">Платежи</button>
       <button data-tab="bypass">Покупки ByPass</button>
       <button data-tab="referrals">Рефералы</button>
       <button data-tab="devices">Устройства</button>
+      <button data-tab="transactions">Архив (до журнала)</button>
     </div>
     <div class="card" id="tab-content"></div>`;
+  S.userCard = u;
 
   // -------- action buttons
   const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
@@ -485,18 +493,141 @@ async function viewUser(userId) {
     $tabs.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
     renderTab(btn.dataset.tab, userId);
   });
-  renderTab('logs', userId);
+  renderTab('money', userId);
 }
 
 // ---------------------------------------------------------------- tabs
 
 async function renderTab(tab, userId) {
   const $c = document.getElementById('tab-content');
+  if (tab === 'money') return tabMoney($c, userId);
   if (tab === 'logs') return tabLogs($c, userId);
+  if (tab === 'payments') return tabPayments($c, userId);
   if (tab === 'transactions') return tabTransactions($c, userId);
   if (tab === 'bypass') return tabBypass($c, userId);
   if (tab === 'referrals') return tabReferrals($c, userId);
   if (tab === 'devices') return tabDevices($c, userId);
+}
+
+// ---- «Движение денег»: журнал balance_log — первоисточник с версии 104.
+// Знак и цвет строки берутся ТОЛЬКО из amount (+ приход / − расход).
+
+const BL_KIND_LABELS = {
+  topup: 'Пополнение', plan: 'Покупка подписки', renewal: 'Автопродление',
+  devices: 'Доп. устройства', bypass: 'Трафик ByPass',
+  private_server: 'Личный сервер', gift: 'Подарок', promo: 'Промокод',
+  referral: 'Реферальный процент', campaign: 'Бонус кампании',
+  survey: 'Бонус за опрос', payout: 'Вывод', refund: 'Возврат',
+  admin: 'Правка администратора', other: 'Прочее',
+};
+
+function blSourceLabel(l) {
+  if (l.source === 'auto' || l.auto) return 'автоматически';
+  if (l.source === 'admin') return 'админ' + (l.admin_id ? ' #' + esc(l.admin_id) : '');
+  return '';
+}
+
+async function tabMoney($c, userId, page = 1) {
+  const val = n => { const el = $c.querySelector(`[name=${n}]`); return el ? el.value.trim() : ''; };
+  const first = $c.dataset.tabInit !== 'money';
+  $c.dataset.tabInit = 'money';
+
+  if (first || !$c.querySelector('#bl-list')) {
+    $c.innerHTML = `<h2>Движение денег</h2>
+      <div class="filter-bar">
+        <select name="bl-kind" style="width:auto">
+          <option value="">Все операции</option>
+          ${Object.entries(BL_KIND_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
+        </select>
+        <select name="bl-account" style="width:auto">
+          <option value="">Оба счёта</option>
+          <option value="balance">Баланс</option>
+          <option value="referral">Реферальный</option>
+        </select>
+        <input name="bl-search" placeholder="Поиск по описанию…">
+        <input name="bl-from" type="date" title="С даты">
+        <input name="bl-to" type="date" title="По дату">
+        <button class="btn btn-sm" id="bl-apply">Применить</button>
+      </div>
+      <div id="bl-list"></div>`;
+    $c.querySelector('#bl-apply').onclick = () => tabMoney($c, userId, 1);
+  }
+
+  const qs = new URLSearchParams({ page, page_size: 50 });
+  if (val('bl-kind')) qs.set('kind', val('bl-kind'));
+  if (val('bl-account')) qs.set('account', val('bl-account'));
+  if (val('bl-search')) qs.set('search', val('bl-search'));
+  if (val('bl-from')) qs.set('date_from', val('bl-from'));
+  if (val('bl-to')) qs.set('date_to', val('bl-to'));
+
+  const $list = $c.querySelector('#bl-list');
+  $list.innerHTML = spinnerHtml();
+  let data;
+  try { data = await api(`/api/users/${userId}/balance-log?` + qs); }
+  catch (err) { $list.innerHTML = `<div class="error-note">${esc(err.message)}</div>`; return; }
+
+  // сверка из доки: Σ журнала по балансу должна сходиться с текущим балансом
+  let checkHtml = '';
+  const bal = S.userCard && S.userCard.balance;
+  if (data.journal_sum != null && bal != null) {
+    const match = Math.abs(Number(data.journal_sum) - Number(bal)) < 0.01;
+    checkHtml = `<div class="muted" style="font-size:12.5px; margin-bottom:8px">
+      Σ по журналу (баланс): ${fmtNum(data.journal_sum)} ₽ · сейчас на балансе: ${fmtNum(bal)} ₽
+      ${match ? '— сходится' : '— расхождение: операции до появления журнала (v104)'}</div>`;
+  }
+
+  $list.innerHTML = checkHtml + (data.items.length ? `<div class="table-wrap"><table>
+    <tr><th>Время</th><th>Сумма</th><th>Счёт</th><th>Операция</th><th>Кто</th><th>Остаток</th></tr>
+    ${data.items.map(l => {
+      const amt = Number(l.amount) || 0;
+      return `<tr>
+        <td class="mono" style="white-space:nowrap">${fmtDate(l.at)}</td>
+        <td class="${amt >= 0 ? 'amount-pos' : 'amount-neg'}" style="white-space:nowrap">
+          ${amt > 0 ? '+' : amt < 0 ? '−' : ''}${fmtNum(Math.abs(amt))} ₽</td>
+        <td>${l.account === 'referral' ? '<span class="badge badge-yellow">реф.</span>'
+              : '<span class="badge badge-gray">баланс</span>'}</td>
+        <td><b>${esc(l.title || BL_KIND_LABELS[l.kind] || l.kind || '—')}</b>
+          ${l.description ? `<div class="muted" style="font-size:12px">${esc(l.description)}</div>` : ''}</td>
+        <td class="muted" style="font-size:12.5px">${blSourceLabel(l)}</td>
+        <td class="mono" style="white-space:nowrap">${l.balance_after != null ? fmtNum(l.balance_after) + ' ₽' : '—'}</td>
+      </tr>`;
+    }).join('')}
+  </table></div>` + pagerHtml(data)
+    : '<div class="center">Записей в журнале нет — операции до версии 104 смотрите во вкладке «Архив»</div>');
+  const pv = $list.querySelector('#pg-prev'), nx = $list.querySelector('#pg-next');
+  if (pv) pv.onclick = () => tabMoney($c, userId, data.page - 1);
+  if (nx) nx.onclick = () => tabMoney($c, userId, data.page + 1);
+}
+
+async function tabPayments($c, userId, page = 1) {
+  $c.dataset.tabInit = 'pay';
+  $c.innerHTML = `<h2>Платежи (от платёжных систем)</h2>
+    <div class="muted" style="font-size:12.5px; margin-bottom:8px">Первоисточник выручки: сколько человек
+      реально заплатил (без бонусов). Зачисление с бонусом — в «Движении денег» (Пополнение).</div>` + spinnerHtml();
+  let data;
+  try { data = await api(`/api/users/${userId}/payments?page=${page}&page_size=50`); }
+  catch (err) { $c.innerHTML += `<div class="error-note">${esc(err.message)}</div>`; return; }
+  const stBadge = s => s === 'credited' ? '<span class="badge badge-green">зачислен</span>'
+    : s === 'registered' ? '<span class="badge badge-yellow">ожидает</span>'
+    : `<span class="badge badge-red">${esc(s || '—')}</span>`;
+  $c.innerHTML = `<h2>Платежи (от платёжных систем) · ${data.total}</h2>
+    <div class="muted" style="font-size:12.5px; margin-bottom:8px">Первоисточник выручки: сколько человек
+      реально заплатил (без бонусов). Зачисление с бонусом — в «Движении денег» (Пополнение).</div>
+    ${data.items.length ? `<div class="table-wrap"><table>
+      <tr><th>Время</th><th>Сумма</th><th>Провайдер</th><th>Статус</th><th>txid</th></tr>
+      ${data.items.map(p => `<tr>
+        <td class="mono" style="white-space:nowrap">${fmtDate(p.created_at)}</td>
+        <td class="amount-pos" style="white-space:nowrap">${fmtNum(p.amount)} ₽</td>
+        <td>${esc(p.provider || '—')}</td>
+        <td>${stBadge(p.status)}</td>
+        <td class="mono" style="font-size:12px">${esc(p.txid || '—')}
+          ${p.payload ? `<details style="margin-top:4px"><summary class="muted" style="cursor:pointer; font-size:11.5px">ответ провайдера</summary>
+            <pre style="white-space:pre-wrap; font-size:11px; max-width:420px; overflow-x:auto">${esc(JSON.stringify(p.payload, null, 1))}</pre></details>` : ''}</td>
+      </tr>`).join('')}
+    </table></div>` + pagerHtml(data) : '<div class="center">Платежей нет</div>'}`;
+  const pv = $c.querySelector('#pg-prev'), nx = $c.querySelector('#pg-next');
+  if (pv) pv.onclick = () => tabPayments($c, userId, data.page - 1);
+  if (nx) nx.onclick = () => tabPayments($c, userId, data.page + 1);
 }
 
 function filterBarHtml(withAction) {
@@ -567,7 +698,11 @@ async function tabTransactions($c, userId, page = 1) {
   if (prev.to) qs.set('date_to', prev.to);
 
   if (!$c.querySelector('#tx-list')) {
-    $c.innerHTML = `<h2>Транзакции и движение баланса</h2>${filterBarHtml(false)}<div id="tx-list"></div>`;
+    $c.innerHTML = `<h2>Архив (до появления журнала)</h2>
+      <div class="muted" style="font-size:12.5px; margin-bottom:8px">Старые записи бота до версии 104:
+        logs_balance — суммы без знака, transactions — три формата вперемешку. Всё новое —
+        во вкладке «Движение денег», там полнее и с категориями.</div>
+      ${filterBarHtml(false)}<div id="tx-list"></div>`;
     ['f-search', 'f-from', 'f-to'].forEach(n => {
       const el = $c.querySelector(`[name=${n}]`);
       if (el && prev[n.slice(2)]) el.value = prev[n.slice(2)];
@@ -580,15 +715,12 @@ async function tabTransactions($c, userId, page = 1) {
     const data = await api(`/api/users/${userId}/transactions?` + qs);
     const bl = data.balance_log, tx = data.transactions;
     $list.innerHTML = `
-      <h2 style="margin-top:8px">Движение баланса (logs_balance) · ${bl.total}</h2>
+      <h2 style="margin-top:8px">logs_balance (старый бот, суммы без знака) · ${bl.total}</h2>
       ${bl.items.length ? `<div class="table-wrap"><table>
         <tr><th>Время</th><th>Сумма</th><th>Детали</th></tr>
-        ${bl.items.map(l => {
-          const amt = Number(l.amount) || 0;
-          return `<tr><td class="mono" style="white-space:nowrap">${fmtDate(l.timestamp)}</td>
-            <td class="${amt >= 0 ? 'amount-pos' : 'amount-neg'}">${amt >= 0 ? '+' : ''}${esc(l.amount)}</td>
-            <td>${esc(l.details || '')}</td></tr>`;
-        }).join('')}
+        ${bl.items.map(l => `<tr><td class="mono" style="white-space:nowrap">${fmtDate(l.timestamp)}</td>
+            <td class="mono" title="Старый бот писал суммы без знака — направление не определить">${esc(l.amount)}</td>
+            <td>${esc(l.details || '')}</td></tr>`).join('')}
       </table></div>` + pagerHtml(bl) : '<div class="center">Записей нет</div>'}
       <h2 style="margin-top:24px">Транзакции · ${tx.total}</h2>
       ${tx.items.length ? `<div class="table-wrap"><table>

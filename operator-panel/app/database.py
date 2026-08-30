@@ -121,6 +121,12 @@ async def ensure_indexes() -> None:
     # текстовый индекс — поиск похожих случаев для ИИ-помощника
     await _safe_create_index(messages, [("text", "text")])
 
+    # журнал денег и платежи ведёт бот; индексы могут уже существовать — _safe
+    balance_log = db[settings.balance_log_collection]
+    await _safe_create_index(balance_log, [("user_id", 1), ("at", -1)])
+    payments = db[settings.payments_collection]
+    await _safe_create_index(payments, [("user_id", 1), ("created_at", -1)])
+
     reviews = db[settings.reviews_collection]
     await _safe_create_index(reviews, [("operator_login", 1), ("user_id", 1)], unique=True)
     await _safe_create_index(reviews, [("operator_login", 1), ("acked", 1), ("created_at", -1)])
