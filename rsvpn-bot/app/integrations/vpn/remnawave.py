@@ -25,7 +25,7 @@ import logging
 from datetime import datetime, timedelta
 
 from app.core.errors import VpnPanelError
-from app.core.time import now
+from app.core.time import now, parse_dt
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +69,24 @@ def usage_by_identifier(data) -> dict:
             if isinstance(value, (int, float)):
                 usage[int(value)] = usage.get(int(value), 0) + int(amount)
     return usage
+
+
+# Панель отвечает на повтор по-разному в зависимости от версии: где-то 409,
+# где-то 400 с текстом про username или short UUID. Общее у всех ответов —
+# «already exists», по нему и отличаем «такой уже есть» от настоящего отказа.
+def _already_exists(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return 'already exists' in text or 'http 409' in text
+
+
+def _user_record(data) -> dict:
+    """Пользователь из ответа: сам объект, объект в обёртке или первый в списке."""
+    if isinstance(data, dict) and data.get('uuid'):
+        return data
+    for row in _rows(data):
+        if row.get('uuid'):
+            return row
+    return {}
 
 
 def _links(data) -> list[str]:
@@ -159,12 +177,84 @@ class RemnawaveClient:
         return payload.get('response', payload) if isinstance(payload, dict) else payload
 
     # ── подписки ────────────────────────────────────────────────────────────
+    async def _find_user(self, username: str, short_uuid: str) -> dict:
+        """Найти пользователя панели по имени или короткому идентификатору.
+
+        Имя ручки в разных версиях панели своё, поэтому пробуем обе и
+        считаем 404 нормальным ответом: «не нашли по этой — ищем по той».
+        """
+        paths = []
+        if username:
+            paths.append(f'/api/users/by-username/{username}')
+        if short_uuid:
+            paths.append(f'/api/users/by-short-uuid/{short_uuid}')
+
+        for path in paths:
+            try:
+                found = _user_record(await self._request('GET', path))
+            except VpnPanelError as exc:
+                if 'HTTP 404' in str(exc):
+                    continue
+                log.warning('поиск в панели по %s не удался: %s', path, exc)
+                continue
+            if found:
+                return found
+        return {}
+
+    async def _create_or_adopt(self, payload: dict, keep_longer: bool = False) -> dict:
+        """POST /api/users, а если такой пользователь в панели уже есть — взять его.
+
+        Ровно этот случай ломался чаще всего. Запись в панели создаётся, а
+        ответ до бота не доходит: оборванное соединение, таймаут, перезапуск.
+        Деньги бот возвращает, подписку у себя не сохраняет — и человек
+        остаётся с записью в панели, о которой бот не знает. Дальше каждая
+        следующая попытка упиралась в «short UUID already exists»: shortUuid
+        считается от user_id и всегда совпадает с прежним. Выбраться из этого
+        сам человек не мог — покупка не проходила уже никогда.
+
+        Поэтому повтор здесь не отказ, а продолжение прерванной выдачи: берём
+        существующую запись и доводим её до того вида, в котором она должна
+        быть после покупки.
+        """
+        try:
+            return await self._request('POST', '/api/users', json=payload)
+        except VpnPanelError as exc:
+            if not _already_exists(exc):
+                raise
+            found = await self._find_user(payload.get('username', ''),
+                                          payload.get('shortUuid', ''))
+            if not found.get('uuid'):
+                raise
+
+        expire_at = parse_dt(payload.get('expireAt'))
+        if keep_longer:
+            # Срок не укорачиваем и не удваиваем: если у записи уже больше,
+            # оставляем её. Второй раз оплаченные дни не добавляются — иначе
+            # прерванная выдача давала бы двойной срок.
+            have = parse_dt(found.get('expireAt'))
+            if have and expire_at and have > expire_at:
+                expire_at = have
+
+        updated = await self.update_subscription(
+            found['uuid'],
+            expire_at=expire_at,
+            device_limit=payload.get('hwidDeviceLimit'),
+            traffic_bytes=payload.get('trafficLimitBytes'),
+            squads=payload.get('activeInternalSquads') or None,
+            status='ACTIVE',
+        )
+        log.warning('подписка %s уже была в панели — продолжили прерванную выдачу',
+                    payload.get('username'))
+        # Ответ PATCH беднее ответа POST: подставляем найденную запись снизу,
+        # чтобы вызывающий код получил тот же набор полей, что и при создании.
+        return {**found, **(updated or {})}
+
     async def create_subscription(self, user_id: int, days: int) -> dict:
         started = now()
         device_limit = await self._setting_int('price.default_device_limit', 2)
         squads = await self._squads.for_new_user() if self._squads else []
 
-        return await self._request('POST', '/api/users', json={
+        return await self._create_or_adopt({
             'username': str(user_id),
             'status': 'ACTIVE',
             'shortUuid': subscription_token(user_id),
@@ -173,7 +263,7 @@ class RemnawaveClient:
             'telegramId': user_id,
             'hwidDeviceLimit': device_limit,
             'activeInternalSquads': squads,
-        })
+        }, keep_longer=True)
 
     async def create_bypass_subscription(self, user_id: int, expire_at: datetime,
                                          traffic_bytes: int | None = None) -> dict:
@@ -197,7 +287,10 @@ class RemnawaveClient:
         if external:
             payload['externalSquadUuid'] = external
 
-        return await self._request('POST', '/api/users', json=payload)
+        # Срок здесь равен сроку основной подписки, поэтому у найденной записи
+        # он не сохраняется, а выравнивается: расхождение дат — отдельная беда,
+        # которую чинит app.services.bypass.
+        return await self._create_or_adopt(payload)
 
     async def update_subscription(self, uuid: str, *, expire_at: datetime | str | None = None,
                                   traffic_bytes: int | None = None,
