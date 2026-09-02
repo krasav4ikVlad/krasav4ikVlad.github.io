@@ -208,6 +208,11 @@ class Result:
     # note — с чем именно. Без него «на машине другой тариф» не отвечает на
     # единственный нужный вопрос: какой сервер её занял.
     note: str = ''
+    # Сколько дней человек прождал и какую прибавку к пополнению получил за
+    # это. Нужно и в письме ему, и в карточке заявки: отказ без цифры
+    # ожидания не объясняет, за что извиняемся.
+    waited_days: int = 0
+    bonus_rate: float = 0.0
 
 
 class PrivateServerService:
@@ -663,7 +668,13 @@ class PrivateServerService:
         return Result(True, server=await self.servers.get(server_id))
 
     async def reject(self, server_id: str, reason: str = '') -> Result:
-        """Отказ до запуска: деньги возвращаются целиком."""
+        """Отказ до запуска: деньги возвращаются целиком.
+
+        Если человек ждал долго, к деньгам добавляется прибавка к следующему
+        пополнению. Возврат сам по себе ничего не компенсирует: он лишь
+        возвращает исходное положение, а неделя ожидания сервера, которого
+        так и не будет, остаётся не оплаченной ничем.
+        """
         server = await self.servers.get(server_id)
         if not server or server.get('status') != ps.REQUESTED:
             return Result(False, 'wrong_status', server=server)
@@ -674,7 +685,29 @@ class PrivateServerService:
                                 meta={'server_id': server['_id']})
         await self.servers.set(server_id, status=ps.CANCELLED, cancel_reason=reason,
                                cancelled_at=now())
-        return Result(True, server=server, amount=amount)
+
+        waited = self._waited_days(server)
+        rate = await self._wait_bonus(waited)
+        if rate:
+            await self.users.promise_bonus(server['owner_id'], rate)
+            log.info('за %s дней ожидания сервера %s обещана прибавка %s%%',
+                     waited, server_id, round(rate * 100))
+
+        return Result(True, server=server, amount=amount,
+                      waited_days=waited, bonus_rate=rate)
+
+    @staticmethod
+    def _waited_days(server: dict) -> int:
+        created = parse_dt(server.get('created_at'))
+        return max(0, (now() - created).days) if created else 0
+
+    async def _wait_bonus(self, waited_days: int) -> float:
+        """Прибавка за ожидание. 0 — не положена или выключена в настройках."""
+        rate = await self.settings.rate('private.wait_bonus_rate')
+        if rate <= 0:
+            return 0.0
+        return rate if waited_days >= await self.settings.int(
+            'private.wait_bonus_days') else 0.0
 
     async def wipe(self, server_id: str, refund: bool = False) -> Result:
         """Стереть сервер совсем: доступ снять, документ удалить.

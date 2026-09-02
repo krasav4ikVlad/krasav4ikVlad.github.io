@@ -67,7 +67,7 @@ class FakeResult:
 
 
 class FakeCollection:
-    """Минимальный Mongo: точечные пути, $set/$inc/$push/$addToSet, $exists/$gte/$nin."""
+    """Минимальный Mongo: точечные пути, $set/$inc/$max/$push/$addToSet, $exists/$gte/$nin."""
 
     def __init__(self, name='fake'):
         self.name = name
@@ -255,6 +255,10 @@ class FakeCollection:
                     break
             if isinstance(target, dict):
                 target.pop(parts[-1], None)
+        for key, value in (update.get('$max') or {}).items():
+            current = self._get(doc, key)
+            if current is None or value > current:
+                self._set_path(doc, key, value)
         for key, value in (update.get('$addToSet') or {}).items():
             items = self._get(doc, key) or []
             if value not in items:

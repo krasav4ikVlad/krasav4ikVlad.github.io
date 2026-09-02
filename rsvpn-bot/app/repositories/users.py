@@ -66,6 +66,24 @@ class UsersRepository(Repository):
         await self.col.insert_one(document)
         return document
 
+    async def promise_bonus(self, user_id: int, rate: float) -> bool:
+        """Пообещать прибавку к следующему пополнению. Одноразовая.
+
+        Кладётся в info.bonus_multiplier, который TopupService прибавляет к
+        обычному бонусу и тут же обнуляет.
+
+        Через $max, а не $set: обещание уже могло быть выдано за что-то
+        другое, и отбирать его, выдавая второе, нечестно — человек его не
+        получал и даже не знает, что оно было. Побеждает большее.
+        """
+        if rate <= 0:
+            return False
+        result = await self.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$max': {'info.bonus_multiplier': float(rate)}},
+        )
+        return bool(result.matched_count)
+
     # ── баланс ──────────────────────────────────────────────────────────────
     async def credit(self, user_id: int, amount: int, description: str,
                      auto: bool = False, kind: str = '', admin_id: int = 0,

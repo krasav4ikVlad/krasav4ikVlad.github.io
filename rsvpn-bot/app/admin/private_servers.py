@@ -333,22 +333,147 @@ async def reject(call: types.CallbackQuery, callback_data: Adm, c, settings) -> 
     await call.answer(f'Отказано, {result.amount}₽ возвращены', show_alert=True)
     # Той же карточкой: в теме остаётся одна заявка с итогом, а не заявка
     # плюс сообщение о ней.
-    note = f'{e("cross")} <b>Отказано</b>, {result.amount}₽ возвращены на баланс.'
-    if not await edit_card(call.bot, c, result.server, note):
+    if not await edit_card(call.bot, c, result.server, cancel_note(result)):
         try:
-            await call.message.edit_text(
-                f'{e("cross")} Заявка <code>{callback_data.server_id}</code> отклонена, '
-                f'{result.amount}₽ возвращены на баланс.')
+            await call.message.edit_text(cancel_note(result))
         except Exception:
             pass
 
     try:
-        await call.bot.send_message(
-            result.server['owner_id'],
-            f'{e("cross")} Не получилось запустить сервер. '
-            f'{result.amount}₽ вернулись на ваш баланс.')
+        await call.bot.send_message(result.server['owner_id'],
+                                    cancel_letter(result))
     except Exception as exc:
         log.warning('отказ по серверу не доставлен: %s', exc)
+
+
+def _days(count: int) -> str:
+    """«3 дня» / «5 дней» — иначе в письме человеку получается «5 дня»."""
+    tail = count % 100
+    if 11 <= tail <= 14:
+        return f'{count} дней'
+    return f'{count} ' + {1: 'день', 2: 'дня', 3: 'дня', 4: 'дня'}.get(count % 10, 'дней')
+
+
+def cancel_note(result) -> str:
+    """Итог отмены для карточки в админ-чате."""
+    note = (f'{e("cross")} <b>Заявка отменена</b>, '
+            f'{result.amount}₽ возвращены на баланс.')
+    if result.bonus_rate:
+        note += (f'\nЖдал {_days(result.waited_days)} — обещана прибавка '
+                 f'<b>+{round(result.bonus_rate * 100)}%</b> к следующему '
+                 f'пополнению.')
+    elif result.waited_days:
+        note += f'\nЖдал {_days(result.waited_days)}.'
+    return note
+
+
+def cancel_letter(result, reason: str = '') -> str:
+    """Письмо человеку. Деньги — первой строкой: это первое, о чём он подумает."""
+    lines = [f'{e("cross")} <b>Не получилось запустить ваш сервер</b>', '']
+    if reason:
+        lines += [reason, '']
+    lines.append(f'{e("money")} <b>{result.amount}₽</b> вернулись на баланс — '
+                 f'их можно потратить на подписку или оставить до следующего раза.')
+
+    if result.bonus_rate:
+        percent = round(result.bonus_rate * 100)
+        lines += ['', f'{e("gift")} Вы ждали {_days(result.waited_days)}, и это '
+                      f'наша вина. К следующему пополнению добавим '
+                      f'<b>+{percent}%</b> сверх обычного бонуса — прибавка '
+                      f'уже закреплена за вами и сработает сама.']
+
+    lines += ['', 'Извините за ожидание.']
+    return '\n'.join(lines)
+
+
+async def _tell_owner(bot, result, reason: str = '') -> bool:
+    """Написать человеку про отмену. False — не дошло, закрыл бота."""
+    try:
+        await bot.send_message(result.server['owner_id'],
+                               cancel_letter(result, reason))
+        return True
+    except Exception as exc:
+        log.warning('отказ по серверу не доставлен: %s', exc)
+        return False
+
+
+async def cancel_command(message: types.Message, command, c, settings) -> None:
+    """`/srvcancel <id сервера|id юзера|@username> [причина]` — отменить заявку.
+
+    То же, что кнопка «Отказать» под карточкой, но работает и тогда, когда
+    карточки под рукой нет: заявка уехала вверх по теме, пришла до того, как
+    их начали запоминать, или человек написал в поддержку сам.
+
+    Причина — обычным текстом в конце: она уходит человеку как есть. Без неё
+    письмо всё равно осмысленное, поэтому обязательной её не делаем.
+    """
+    parts = (command.args or '').split(maxsplit=1)
+    if not parts:
+        days = await settings.int('private.wait_bonus_days')
+        rate = round(await settings.rate('private.wait_bonus_rate') * 100)
+        await message.answer(
+            f'{e("cross")} <b>Отмена заявки на личный сервер</b>\n\n'
+            f'<code>/srvcancel srv_xxxxxxxx</code> — по id заявки\n'
+            f'<code>/srvcancel 123456789</code> или '
+            f'<code>/srvcancel @username</code> — по человеку\n'
+            f'<code>/srvcancel srv_xxxxxxxx закончились машины в Токио</code> — '
+            f'с причиной: она уйдёт человеку как есть\n\n'
+            f'<blockquote>Деньги возвращаются целиком. Ждал дольше '
+            f'{_days(days)} — сверх денег получит +{rate}% к следующему '
+            f'пополнению; проценты и срок меняются в '
+            f'/admin → Личные серверы.</blockquote>')
+        return
+
+    target = parts[0]
+    reason = parts[1].strip() if len(parts) > 1 else ''
+
+    if target.startswith('srv_'):
+        server = await c.private.servers.get(target)
+    else:
+        owner = await c.moderation.find_user(target)
+        if not owner:
+            await message.answer(f'{e("cross")} Пользователь <code>{target}</code> '
+                                 f'не найден.')
+            return
+        server = await c.private.servers.of_owner(
+            (owner.get('user_data') or {}).get('user_id'))
+
+    if not server:
+        await message.answer(f'{e("cross")} Заявки нет: ни по id, ни у этого '
+                             f'человека.')
+        return
+
+    result = await c.private.reject(server['_id'],
+                                    reason=reason or 'отменено администратором')
+    if not result.ok:
+        # Отменять можно только то, что ещё не выдано: у работающего сервера
+        # свой путь — /srvdel, и он снимает доступ, а не просто закрывает заявку.
+        await message.answer(
+            f'{e("cross")} Отменить нельзя: заявка в статусе '
+            f'«{server.get("status")}».\n\n'
+            f'<blockquote>Отменяются только заявки, по которым сервер ещё не '
+            f'выдан. Работающий сервер убирается командой '
+            f'<code>/srvdel {server["_id"]} refund</code>.</blockquote>')
+        return
+
+    delivered = await _tell_owner(message.bot, result, reason)
+    shown = await edit_card(message.bot, c, result.server, cancel_note(result))
+    await drop_command(message)
+
+    # Карточка уже стоит в этом же чате и всё рассказала — второе сообщение
+    # добавило бы в тему ровно тот шум, ради отсутствия которого команда и
+    # удаляет саму себя. Отвечаем, только когда показать больше нечего.
+    here = shown and result.server.get('card_chat_id') == message.chat.id
+    if here and delivered:
+        return
+
+    await message.answer(
+        cancel_note(result)
+        + f'\n\nВладелец: <code>{result.server["owner_id"]}</code>, заявка '
+          f'<code>{result.server["_id"]}</code>.'
+        + ('' if delivered else f'\n\n{e("attention")} Сообщение человеку не '
+                                f'доставлено — он закрыл бота. Деньги и прибавка '
+                                f'начислены всё равно.'))
 
 
 async def listing(message: types.Message, c, settings) -> None:
@@ -871,6 +996,7 @@ def register(router: Router) -> None:
     router.message.register(squad_check, Command('squadcheck'))
     router.message.register(server_fix, Command('srvfix'))
     router.message.register(delete_server, Command('srvdel'))
+    router.message.register(cancel_command, Command('srvcancel'))
     router.message.register(squad_command, Command('squad'))
     router.message.register(diagnose, Command('srvdiag'))
     router.message.register(set_location, Command('srvloc'))
