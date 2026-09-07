@@ -194,3 +194,92 @@ def test_the_card_says_what_the_person_got():
     note = cancel_note(Result(waited_days=5, bonus_rate=0.15))
 
     assert '990₽' in note and '5 дней' in note and '+15%' in note
+
+
+# ── отказать всем ───────────────────────────────────────────────────────────
+#
+# Кнопка на случай, когда машин не будет. Действие массовое и необратимое,
+# поэтому цифры должны совпадать с тем, что реально произойдёт.
+
+async def test_everyone_in_the_queue_is_refused_at_once(service):
+    srv, _, users = service
+    for owner in (1, 2, 3):
+        await waiting_request(service, days_ago=5, owner=owner)
+
+    report = await srv.reject_all()
+
+    assert report['cancelled'] == 3 and report['refunded'] == 990 * 3
+    assert report['compensated'] == 3
+    for owner in (1, 2, 3):
+        assert (await users.get(owner))['info']['balance'] == 3000
+
+
+async def test_only_those_who_waited_get_the_bonus(service):
+    srv, _, users = service
+    await waiting_request(service, days_ago=5, owner=1)
+    await waiting_request(service, days_ago=0, owner=2)
+
+    report = await srv.reject_all()
+
+    assert report['cancelled'] == 2 and report['compensated'] == 1
+    assert (await users.get(1))['info']['bonus_multiplier'] == pytest.approx(0.15)
+    assert not (await users.get(2))['info'].get('bonus_multiplier')
+
+
+async def test_working_servers_are_not_touched(service):
+    """Отказ по очереди — про невыданные заявки, а не про живые серверы."""
+    srv, _, users = service
+    live = await waiting_request(service, days_ago=5, owner=1)
+    await srv.activate(live, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+    await waiting_request(service, days_ago=5, owner=2)
+
+    report = await srv.reject_all()
+
+    assert report['cancelled'] == 1
+    assert (await srv.servers.get(live))['status'] == ps.ACTIVE
+
+
+async def test_the_reason_reaches_every_letter(service):
+    srv, _, users = service
+    await waiting_request(service, days_ago=5)
+
+    report = await srv.reject_all(reason='машины закончились')
+
+    assert 'машины закончились' in cancel_letter(report['results'][0],
+                                                 'машины закончились')
+    assert (await srv.servers.get(
+        report['results'][0].server['_id']))['cancel_reason'] == 'машины закончились'
+
+
+async def test_the_preview_matches_what_actually_happens(service):
+    """Цифры показываются до нажатия — значит, обязаны сойтись с итогом."""
+    srv, _, users = service
+    await waiting_request(service, days_ago=9, owner=1)
+    await waiting_request(service, days_ago=1, owner=2)
+
+    preview = await srv.sold_out_preview()
+    report = await srv.reject_all()
+
+    assert preview['count'] == report['cancelled'] == 2
+    assert preview['refund'] == report['refunded'] == 990 * 2
+    assert preview['compensated'] == report['compensated'] == 1
+    assert preview['longest'] == 9
+
+
+async def test_the_preview_changes_nothing(service):
+    srv, _, users = service
+    server_id = await waiting_request(service, days_ago=5)
+
+    await srv.sold_out_preview()
+
+    assert (await srv.servers.get(server_id))['status'] == ps.REQUESTED
+    assert (await users.get(1))['info']['balance'] == 3000 - 990
+
+
+async def test_an_empty_queue_is_not_an_error(service):
+    srv, _, _ = service
+
+    report = await srv.reject_all()
+
+    assert report['cancelled'] == 0 and report['refunded'] == 0
+    assert (await srv.sold_out_preview())['count'] == 0

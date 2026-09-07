@@ -386,11 +386,21 @@ def cancel_letter(result, reason: str = '') -> str:
     return '\n'.join(lines)
 
 
-async def _tell_owner(bot, result, reason: str = '') -> bool:
-    """Написать человеку про отмену. False — не дошло, закрыл бота."""
+async def _tell_owner(bot, result, reason: str = '', sender=None) -> bool:
+    """Написать человеку про отмену. False — не дошло, закрыл бота.
+
+    При массовом отказе писем сразу десятки, поэтому туда передаётся Sender:
+    он ждёт, когда Telegram просит подождать, и помечает закрывших бота.
+    Одиночной отмене он не нужен — одно письмо лимитов не задевает.
+    """
+    text = cancel_letter(result, reason)
+    owner_id = result.server['owner_id']
+
+    if sender is not None:
+        return await sender.send(bot, owner_id, text)
+
     try:
-        await bot.send_message(result.server['owner_id'],
-                               cancel_letter(result, reason))
+        await bot.send_message(owner_id, text)
         return True
     except Exception as exc:
         log.warning('отказ по серверу не доставлен: %s', exc)
@@ -766,12 +776,114 @@ async def queue_screen(call: types.CallbackQuery, c, settings) -> None:
     from app.admin.panel import edit
     from app.bot.callbacks import Admin as PanelAdm
 
+    waiting = len(await c.private.servers.pending())
+
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(
         text=f'{e("refresh")} Обновить', callback_data=PanelAdm(act='srvq').pack()))
+    if waiting:
+        kb.row(types.InlineKeyboardButton(
+            text=f'{e("cross")} Отказать всем ({waiting}) — серверы закончились',
+            callback_data=PanelAdm(act='srvout').pack()))
     kb.row(types.InlineKeyboardButton(
         text=f'{e("back")} Назад', callback_data=PanelAdm(act='main').pack()))
     await edit(call, await queue_text(c), kb)
+
+
+# ── отказать всем ───────────────────────────────────────────────────────────
+#
+# Кнопка на случай, когда машин не будет: держать людей в очереди под сервер,
+# которого не появится, хуже, чем вернуть деньги сегодня. Действие массовое и
+# необратимое, поэтому в два нажатия и с цифрами до, а не после.
+
+async def sold_out_ask(call: types.CallbackQuery, c, settings) -> None:
+    from app.admin.panel import edit
+    from app.bot.callbacks import Admin as PanelAdm
+
+    preview = await c.private.sold_out_preview()
+    if not preview['count']:
+        await call.answer('Ожидающих заявок нет', show_alert=True)
+        return
+
+    reason = str(await settings.get('private.sold_out_reason') or '').strip()
+    rate = round(await settings.rate('private.wait_bonus_rate') * 100)
+
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(
+        text=f'{e("cross")} Да, отказать всем ({preview["count"]})',
+        callback_data=PanelAdm(act='srvout', a='go').pack()))
+    kb.row(types.InlineKeyboardButton(
+        text=f'{e("back")} Отмена', callback_data=PanelAdm(act='srvq').pack()))
+
+    await edit(call,
+               f'{e("warning")} <b>Отказать всем по очереди</b>\n\n'
+               f'Заявок: <b>{preview["count"]}</b>\n'
+               f'Вернётся людям: <b>{preview["refund"]}₽</b>\n'
+               f'Получат прибавку +{rate}%: <b>{preview["compensated"]}</b>\n'
+               f'Дольше всех ждут: <b>{_days(preview["longest"])}</b>\n\n'
+               f'<b>Письмо каждому будет такое</b> — суммы и сроки '
+               f'подставятся его собственные:\n'
+               f'<blockquote>{cancel_letter(_SampleResult(preview, rate / 100), reason)}'
+               f'</blockquote>\n'
+               f'<i>Отменить это нельзя. Текст причины меняется в '
+               f'/admin → Личные серверы.</i>', kb)
+
+
+class _SampleResult:
+    """Заглушка для показа письма до отправки: письмо собирает одна функция,
+    и предпросмотр обязан идти через неё же — иначе он однажды разойдётся
+    с тем, что люди получат на самом деле.
+
+    Числа здесь усреднённые и потому только для примера: сумма у каждого
+    своя по его тарифу, срок ожидания — по его заявке.
+    """
+
+    def __init__(self, preview: dict, rate: float):
+        count = max(1, preview['count'])
+        self.amount = preview['refund'] // count
+        self.waited_days = preview['longest']
+        self.bonus_rate = rate if preview['compensated'] else 0.0
+
+
+async def sold_out_go(call: types.CallbackQuery, c, settings) -> None:
+    from app.admin.panel import edit
+    from app.bot.callbacks import Admin as PanelAdm
+
+    reason = str(await settings.get('private.sold_out_reason') or '').strip()
+    await call.answer('Отказываю по всем заявкам…')
+
+    report = await c.private.reject_all(reason=reason or 'серверы закончились')
+    if not report['cancelled']:
+        await edit(call, f'{e("ok")} Отменять было нечего.',
+                   InlineKeyboardBuilder().row(types.InlineKeyboardButton(
+                       text=f'{e("back")} Назад',
+                       callback_data=PanelAdm(act='srvq').pack())))
+        return
+
+    # Письма идут через Sender: он знает про флуд-лимит Telegram и про тех,
+    # кто закрыл бота. Прямая отправка полусотне людей подряд упирается в
+    # лимит и теряет хвост очереди — именно тех, кто ждал дольше всех.
+    from app.campaigns.sender import Sender
+
+    sender = Sender(on_blocked=c.users.mark_blocked)
+    lost = 0
+    for result in report['results']:
+        if not await _tell_owner(call.bot, result, reason, sender=sender):
+            lost += 1
+        await edit_card(call.bot, c, result.server, cancel_note(result))
+
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(
+        text=f'{e("back")} К очереди', callback_data=PanelAdm(act='srvq').pack()))
+    await edit(call,
+               f'{e("ok")} <b>Отказано по {report["cancelled"]} заявкам</b>\n\n'
+               f'Возвращено: <b>{report["refunded"]}₽</b>\n'
+               f'Получили прибавку за ожидание: <b>{report["compensated"]}</b>\n'
+               + (f'Не удалось отменить: <b>{report["failed"]}</b>\n'
+                  if report['failed'] else '')
+               + (f'\n{e("attention")} Не доставлено: <b>{lost}</b> — эти люди '
+                  f'закрыли бота. Деньги и прибавка начислены всё равно.'
+                  if lost else ''), kb)
 
 
 async def queue_command(message: types.Message, c, settings) -> None:
@@ -1007,3 +1119,6 @@ def register(router: Router) -> None:
 
     from app.bot.callbacks import Admin as PanelAdm
     router.callback_query.register(queue_screen, PanelAdm.filter(F.act == 'srvq'))
+    router.callback_query.register(
+        sold_out_go, PanelAdm.filter(F.act == 'srvout'), PanelAdm.filter(F.a == 'go'))
+    router.callback_query.register(sold_out_ask, PanelAdm.filter(F.act == 'srvout'))

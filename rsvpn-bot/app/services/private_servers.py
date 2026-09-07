@@ -696,6 +696,57 @@ class PrivateServerService:
         return Result(True, server=server, amount=amount,
                       waited_days=waited, bonus_rate=rate)
 
+    async def sold_out_preview(self) -> dict:
+        """Что случится, если отказать всем. Ничего не меняет.
+
+        Массовое действие показываем цифрами до нажатия, а не после: денег
+        и людей тут больше, чем помещается в «вы уверены?».
+        """
+        pending = await self.servers.pending()
+        preview = {'count': len(pending), 'refund': 0, 'compensated': 0,
+                   'longest': 0}
+        for server in pending:
+            waited = self._waited_days(server)
+            preview['refund'] += int(server.get('price') or 0)
+            preview['longest'] = max(preview['longest'], waited)
+            if await self._wait_bonus(waited):
+                preview['compensated'] += 1
+        return preview
+
+    async def reject_all(self, reason: str = '') -> dict:
+        """Отказать по всем ожидающим заявкам разом.
+
+        Нужно ровно тогда, когда машин не будет: держать людей в очереди
+        под сервер, которого не появится, хуже, чем вернуть деньги сегодня.
+
+        Отказ каждому идёт обычным reject(), поэтому возврат и прибавка за
+        ожидание считаются по тем же правилам, что и поштучно.
+        """
+        report: dict = {'total': 0, 'cancelled': 0, 'refunded': 0,
+                        'compensated': 0, 'failed': 0, 'results': []}
+
+        # pending() отдаёт страницами по сотне, а отменённые из выборки
+        # уходят — поэтому идём, пока заявки не кончатся. Ограничитель на
+        # случай, если отмена вдруг перестанет менять статус.
+        for _ in range(50):
+            pending = await self.servers.pending()
+            if not pending:
+                break
+            for server in pending:
+                report['total'] += 1
+                result = await self.reject(server['_id'],
+                                           reason=reason or 'серверы закончились')
+                if not result.ok:
+                    report['failed'] += 1
+                    continue
+                report['cancelled'] += 1
+                report['refunded'] += result.amount
+                report['compensated'] += 1 if result.bonus_rate else 0
+                report['results'].append(result)
+            if report['failed']:
+                break                   # что-то не отменяется — не крутимся зря
+        return report
+
     @staticmethod
     def _waited_days(server: dict) -> int:
         created = parse_dt(server.get('created_at'))
