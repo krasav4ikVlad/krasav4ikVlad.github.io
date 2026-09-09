@@ -66,6 +66,7 @@ def main_kb(c) -> InlineKeyboardBuilder:
     kb.row(btn(f'{e("trial")} Сброс бесплатного периода', 'trial'))
     kb.row(btn(f'{e("cross")} Заблокировали бота', 'blocked'))
     kb.row(btn(f'{e("money")} Экономика: деньги за месяц', 'money'))
+    kb.row(btn(f'{e("wrench")} Технические работы', 'maint'))
     kb.row(btn(f'{e("tools")} Диагностика', 'diag'))
     kb.row(btn(f'{e("ban")} Заблокированные', 'banned'))
     kb.row(btn(f'{e("clipboard")} Команды бота', 'cmds'))

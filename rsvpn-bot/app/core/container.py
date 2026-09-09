@@ -112,6 +112,9 @@ class Container:
         from app.repositories.errors import ErrorLogRepository
         self.errors = ErrorLogRepository(self.db[names.BOT_ERRORS])
 
+        from app.repositories.games import GamesRepository
+        self.games = GamesRepository(self.db[names.GAMES])
+
         from app.repositories.private_servers import PrivateServersRepository
         from app.services.private_servers import PrivateServerService
         # vpn и bot проставляются позже: покупка сервера возможна и без них,
@@ -293,7 +296,7 @@ class Container:
         """
         for repo in (self.users, self.plans, self.payments_repo,
                      self.private.servers, self.private.pool, self.balance_log,
-                     self.errors):
+                     self.errors, self.games):
             await repo.ensure_indexes()
         for service in (self.promo, self.survey):
             await service.ensure_indexes()

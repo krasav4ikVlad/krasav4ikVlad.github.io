@@ -42,6 +42,7 @@ SERVER_POOL = 'private_pool'
 BALANCE_LOG = 'balance_log'
 # ошибки, которые увидели пользователи
 BOT_ERRORS = 'bot_errors'
+GAMES = 'games'
 
 PAYMENTS = 'payments'
 PAYMENT_WEBHOOKS = 'payments_webhooks'

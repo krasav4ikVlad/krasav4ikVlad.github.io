@@ -337,6 +337,72 @@ async def panel_ids(message: types.Message, command, c, settings) -> None:
         f'в час — команда нужна, когда ждать некогда.</blockquote>')
 
 
+MAINTENANCE_ON = 'features.maintenance_mode'
+
+
+async def maintenance_text(settings, c) -> str:
+    on = await settings.flag(MAINTENANCE_ON)
+    game = await settings.flag('features.maintenance_game')
+    body = str(await settings.get('text.maintenance') or '').strip()
+
+    head = (f'{e("wrench")} <b>Техработы включены</b>\n\n'
+            f'Люди сейчас видят один экран и больше ничего сделать не могут. '
+            f'Подписки это не трогает — VPN у них работает.'
+            if on else
+            f'{e("ok")} <b>Бот работает обычно</b>\n\n'
+            f'Включите режим перед выкладкой или починкой: на любое действие '
+            f'человек увидит экран о работах вместо ошибки.')
+
+    return (f'{head}\n\n'
+            f'<b>Что увидят люди:</b>\n<blockquote>{body}</blockquote>\n'
+            f'Сапёр на экране ожидания: '
+            f'<b>{"включён" if game else "выключен"}</b>\n\n'
+            f'<blockquote>Вас режим не касается: админка и все команды '
+            f'работают как всегда, можно спокойно проверять. Текст и сапёр '
+            f'меняются в /admin → Технические работы.</blockquote>')
+
+
+def maintenance_kb(on: bool) -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(
+        text=(f'{e("ok")} Выключить техработы' if on
+              else f'{e("wrench")} Включить техработы'),
+        callback_data=Adm(act='maint', a='off' if on else 'on').pack()))
+    kb.row(types.InlineKeyboardButton(
+        text=f'{e("back")} Назад', callback_data=Adm(act='main').pack()))
+    return kb
+
+
+async def maintenance_screen(call: types.CallbackQuery, callback_data: Adm,
+                             c, settings) -> None:
+    from app.admin.panel import edit
+
+    if callback_data.a in ('on', 'off'):
+        await settings.set(MAINTENANCE_ON, callback_data.a == 'on')
+        await call.answer('Техработы включены' if callback_data.a == 'on'
+                          else 'Бот снова работает')
+
+    on = await settings.flag(MAINTENANCE_ON)
+    await edit(call, await maintenance_text(settings, c), maintenance_kb(on))
+
+
+async def maintenance_command(message: types.Message, command, c, settings) -> None:
+    """`/maintenance [on|off]` — режим техработ.
+
+    Без аргумента показывает состояние и кнопку: включать такое вслепую,
+    одной командой, слишком легко — а выключить забыть ещё легче.
+    """
+    arg = (command.args or '').strip().lower()
+    if arg in ('on', 'вкл', '1'):
+        await settings.set(MAINTENANCE_ON, True)
+    elif arg in ('off', 'выкл', '0'):
+        await settings.set(MAINTENANCE_ON, False)
+
+    on = await settings.flag(MAINTENANCE_ON)
+    await message.answer(await maintenance_text(settings, c),
+                         reply_markup=maintenance_kb(on).as_markup())
+
+
 async def refresh(call: types.CallbackQuery, c, settings) -> None:
     try:
         await call.message.edit_text(await text(c, settings), reply_markup=_kb())
@@ -434,6 +500,8 @@ def register(router: Router) -> None:
     router.message.register(bypass_sync, Command('bypasssync'))
     router.message.register(errors, Command('errors'))
     router.message.register(panel_ids, Command('panelids'))
+    router.message.register(maintenance_command, Command('maintenance'))
+    router.callback_query.register(maintenance_screen, Adm.filter(F.act == 'maint'))
     router.callback_query.register(refresh, Adm.filter(F.act == 'diag'))
     router.callback_query.register(test_menu, Adm.filter(F.act == 'exptest'))
     router.callback_query.register(test_send, Adm.filter(F.act == 'exptestgo'))

@@ -59,6 +59,10 @@ def create_dispatcher(container: Container, storage=None) -> Dispatcher:
     dp.inline_query.outer_middleware(ActionLogMiddleware(container))
     dp.inline_query.outer_middleware(ErrorsMiddleware(container))
     dp.inline_query.outer_middleware(DependenciesMiddleware(container))
+    # Во время техработ подарки через инлайн тоже не выдаются: иначе «ничего
+    # нельзя» обходится одним упоминанием бота в чужом чате.
+    dp.inline_query.outer_middleware(
+        MaintenanceMiddleware(container.settings, container.config.admin_ids))
 
     dp.include_router(admin_panel.create_router(container.config.admin_ids))
     register(dp)

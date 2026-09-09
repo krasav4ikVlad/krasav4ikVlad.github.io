@@ -62,6 +62,12 @@ class Server(CallbackData, prefix='srv'):
     value: str = ''
 
 
+class Game(CallbackData, prefix='g'):
+    """Сапёр на экране техработ: открыть, нажать клетку, режим, новое поле."""
+    action: str          # open | tap | mode | new | exit
+    value: str = ''
+
+
 class ServerAdmin(CallbackData, prefix='srva'):
     """Заявка на личный сервер — кнопки под карточкой в админ-чате."""
     action: str          # give | reject

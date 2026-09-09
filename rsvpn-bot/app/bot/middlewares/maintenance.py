@@ -1,4 +1,14 @@
-"""Режим техработ: тумблер features.maintenance_mode. Админов не касается."""
+"""Режим техработ: тумблер features.maintenance_mode. Админов не касается.
+
+Раньше здесь был всплывающий ответ на нажатие — тот, что показывается
+поверх экрана и исчезает. Он не говорил ни что случилось, ни надолго ли, и
+повторялся на каждое нажатие, пока человек не бросал. Теперь показывается
+нормальный экран, и он же остаётся на месте прежнего.
+
+Одно исключение — сапёр: во время техработ это единственное, что человеку
+разрешено, и пропускать его обязан именно перехватчик. Игра не трогает ни
+панель, ни баланс, поэтому «ничего нельзя» она не нарушает.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +16,15 @@ from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, types
 from aiogram.types import TelegramObject
+
+from app.bot.callbacks import Game
+
+GAME_PREFIX = f'{Game.__prefix__}{Game.__separator__}'
+
+
+def is_game(event: TelegramObject) -> bool:
+    return (isinstance(event, types.CallbackQuery)
+            and (event.data or '').startswith(GAME_PREFIX))
 
 
 class MaintenanceMiddleware(BaseMiddleware):
@@ -21,9 +40,20 @@ class MaintenanceMiddleware(BaseMiddleware):
         if not await self.settings.flag('features.maintenance_mode'):
             return await handler(event, data)
 
-        text = await self.settings.get('text.maintenance')
-        if isinstance(event, types.CallbackQuery):
-            await event.answer(text, show_alert=True)
-        elif isinstance(event, types.Message):
-            await event.answer(text)
+        if is_game(event) and await self.settings.flag('features.maintenance_game'):
+            return await handler(event, data)
+
+        # Инлайн-режим отвечать текстом не умеет: там нельзя ни написать
+        # человеку, ни показать экран — только отдать список вариантов.
+        # Пустой список и есть честный ответ «сейчас ничего нет».
+        if isinstance(event, types.InlineQuery):
+            try:
+                await event.answer([], cache_time=1, is_personal=True)
+            except Exception:
+                pass
+            return None
+
+        from app.bot.handlers.maintenance import show_maintenance
+
+        await show_maintenance(event, self.settings)
         return None
