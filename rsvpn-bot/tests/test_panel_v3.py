@@ -290,3 +290,48 @@ async def test_a_panel_answering_the_wrong_shape_is_a_failure_not_a_write(
 
     assert report['failed'] == 1 and report['moved'] == 0
     assert (await container.users.get(7))['vpn']['uuid'] == V2_USER['uuid']
+
+
+# ── ручки, переехавшие в 3.x ────────────────────────────────────────────────
+async def test_squad_usage_falls_back_to_the_old_path(db):
+    """В 3.x расход по скваду переехал; у части сборок жив ещё старый путь."""
+    from app.integrations.vpn.remnawave import SQUAD_USAGE_PATHS
+
+    client, http = api(db, [
+        FakeResponse(404, {}, text='Cannot GET'),
+        ok({'users': [{'id': 4271, 'username': '7', 'totalBytes': 100}]}),
+    ])
+
+    usage = await client.squad_usage('squad-1', now() - timedelta(days=1), now())
+
+    assert usage[4271] == 100
+    assert [call[1].split('/api')[1] for call in http.calls] == [
+        path.format(squad='squad-1').split('/api')[1] for path in SQUAD_USAGE_PATHS]
+
+
+async def test_the_new_squad_usage_path_is_tried_first(db):
+    client, http = api(db, [ok({'users': []})])
+
+    await client.squad_usage('squad-1', now() - timedelta(days=1), now())
+
+    assert http.calls[0][1].endswith('/api/internal-squads/squad-1/usage')
+
+
+async def test_connection_keys_never_guess_with_a_telegram_id_on_v3(db):
+    """Путь ждёт userId панели, а telegram id тоже число — в теории это
+    чужая подписка."""
+    client, http = api(db, [FakeResponse(404, {}, text='not found')])
+
+    with pytest.raises(VpnPanelError):
+        await client.connection_keys(4271, user_id=802421217)
+    assert len(http.calls) == 1, 'вторая попытка полезла бы не к тому человеку'
+
+
+async def test_connection_keys_still_try_both_on_an_old_panel(db):
+    """На 2.x ссылка — uuid, и числовой запасной вариант там был осмысленным."""
+    client, http = api(db, [FakeResponse(404, {}, text='not found'),
+                            ok({'enabledKeys': ['vless://key']})])
+
+    links = await client.connection_keys(V2_USER['uuid'], user_id=802421217)
+
+    assert links == ['vless://key'] and len(http.calls) == 2

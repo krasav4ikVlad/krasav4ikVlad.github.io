@@ -988,7 +988,7 @@ async def test_older_panel_is_counted_by_nodes(service):
 
 async def test_missing_squad_endpoint_is_asked_only_once():
     """404 на каждый показ статистики — лишний запрос на пустом месте."""
-    from app.integrations.vpn.remnawave import RemnawaveClient
+    from app.integrations.vpn.remnawave import SQUAD_USAGE_PATHS, RemnawaveClient
 
     calls = []
 
@@ -1008,9 +1008,15 @@ async def test_missing_squad_endpoint_is_asked_only_once():
 
     client = RemnawaveClient('https://panel', 'token', Http())
     assert await client.squad_usage(SQUAD, now(), now()) == {}
+    tried = len(calls)
     assert await client.squad_usage(SQUAD, now(), now()) == {}
 
-    assert len(calls) == 1, calls
+    # За первый раз перебираются все известные адреса ручки: в 3.x она
+    # переехала, и старый путь остаётся запасным. Второй раз не спрашиваем
+    # уже ни одного — иначе каждый показ статистики начинается с заведомо
+    # неудачных запросов.
+    assert tried == len(SQUAD_USAGE_PATHS), calls
+    assert len(calls) == tried, calls
 
 
 async def test_usage_window_is_not_a_single_day(service):

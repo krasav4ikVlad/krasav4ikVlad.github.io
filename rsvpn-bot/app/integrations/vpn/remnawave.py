@@ -167,6 +167,15 @@ def subscription_token(user_id: int, bypass: bool = False) -> str:
     return base64.b32encode(digest).decode().rstrip('=').lower()
 
 
+# Расход по скваду. В 3.x ручка переехала из bandwidth-stats к самим
+# сквадам, но старый путь у части сборок ещё отвечает. Порядок — от нового к
+# старому: на 404 пробуем следующий, и так до первого ответившего.
+SQUAD_USAGE_PATHS = (
+    '/api/internal-squads/{squad}/usage',
+    '/api/bandwidth-stats/internal-squads/{squad}/usage',
+)
+
+
 class RemnawaveClient:
     def __init__(self, base_url: str, token: str, http, settings=None, squads=None,
                  dry_run: bool = False):
@@ -225,6 +234,22 @@ class RemnawaveClient:
             raise VpnPanelError(f'{method} {path}: ответ не JSON') from exc
 
         return payload.get('response', payload) if isinstance(payload, dict) else payload
+
+    async def _first_answering(self, paths, **kwargs):
+        """Первый путь, который не ответил 404. None — не ответил ни один.
+
+        Нужно там, где ручка переехала между версиями панели: перебрать
+        варианты дешевле, чем спрашивать версию отдельным запросом, и
+        честнее, чем считать, что путь один.
+        """
+        for path in paths:
+            try:
+                return await self._request('GET', path, **kwargs)
+            except VpnPanelError as exc:
+                if 'HTTP 404' in str(exc):
+                    continue
+                raise
+        return None
 
     # ── подписки ────────────────────────────────────────────────────────────
     async def _find_user(self, username: str, short_uuid: str) -> dict:
@@ -437,16 +462,13 @@ class RemnawaveClient:
             if cursor is not None:
                 params['cursor'] = cursor
 
-            try:
-                data = await self._request(
-                    'GET', f'/api/bandwidth-stats/internal-squads/{squad_uuid}/usage',
-                    params=params)
-            except VpnPanelError as exc:
-                if 'HTTP 404' in str(exc):
-                    log.info('панель без ручки расхода по скваду — считаем по нодам')
-                    self._squad_usage_supported = False
-                    return {}
-                raise
+            data = await self._first_answering(
+                [path.format(squad=squad_uuid) for path in SQUAD_USAGE_PATHS],
+                params=params)
+            if data is None:
+                log.info('панель без ручки расхода по скваду — считаем по нодам')
+                self._squad_usage_supported = False
+                return {}
             self._squad_usage_supported = True
 
             for row in (data or {}).get('users') or []:
@@ -511,13 +533,21 @@ class RemnawaveClient:
                     'end': end.strftime('%Y-%m-%d'),
                     'topUsersLimit': top})
 
-    async def connection_keys(self, uuid: str, user_id: int | None = None) -> list[str]:
+    async def connection_keys(self, ref: str | int,
+                              user_id: int | None = None) -> list[str]:
         """Готовые ссылки подключения: vless://, ss:// и прочие.
 
-        Ручка в разных версиях панели принимает то uuid, то числовой id,
-        поэтому пробуем оба — второй только если первый ответил 404.
+        Запасной вариант с telegram id остался от панелей до 3.0, где ручка
+        принимала то uuid, то какой-то числовой идентификатор. На 3.x он не
+        просто бесполезен, а опасен: путь ждёт userId панели, а telegram id
+        тоже число — и в теории попадёт в чужую подписку. Поэтому пробуем
+        его только тогда, когда ссылка ещё не числовая, то есть панель
+        заведомо старая.
         """
-        attempts = [value for value in (uuid, user_id) if value]
+        attempts = [ref]
+        if user_id and not is_numeric_ref(ref):
+            attempts.append(user_id)
+        attempts = [value for value in attempts if value]
         last: Exception | None = None
         for value in attempts:
             try:
