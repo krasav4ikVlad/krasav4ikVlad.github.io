@@ -284,12 +284,17 @@ async def bypass_sync(message: types.Message, command, c, settings) -> None:
 
 
 PANEL_ANSWERS = {
-    'nothing': f'{e("ok")} Все подписки уже на числовых идентификаторах панели.',
-    'old': f'{e("ok")} Панель ещё до 3.0: она опознаёт подписки по uuid, '
-           f'и переезжать некуда. Команда понадобится сразу после обновления.',
+    'nothing': f'{e("ok")} Все подписки опознаются панелью — переводить нечего.',
     'unknown': f'{e("cross")} Панель не ответила — версию выяснить не вышло. '
                f'Проверьте подключение: <code>/squadcheck</code> и '
                f'<code>/errors</code>.',
+}
+
+# Куда переводим. Направление зависит от панели, а не от нашего намерения:
+# после отката с 3.x на 2.x переводить надо ровно наоборот.
+DIRECTIONS = {
+    'to_id': ('панель уже 3.x', 'числовые id'),
+    'to_uuid': ('панель откатили на 2.x', 'прежние uuid'),
 }
 
 
@@ -316,9 +321,12 @@ async def panel_ids(message: types.Message, command, c, settings) -> None:
         await message.answer(PANEL_ANSWERS[report['panel']])
         return
 
+    why, target = DIRECTIONS.get(report['direction'], ('панель сменила версию',
+                                                       'нужный вид'))
     if apply:
         await message.answer(
-            f'{e("ok")} <b>Переведено: {report["moved"]}</b> из {report["stale"]}'
+            f'{e("ok")} <b>Переведено на {target}: {report["moved"]}</b> '
+            f'из {report["stale"]}'
             + (f'\nНе вышло: <code>{report["failed"]}</code> — эти подписки '
                f'панель по короткому идентификатору не нашла. Скорее всего их '
                f'там уже нет: посмотрите <code>/errors</code>.'
@@ -329,12 +337,12 @@ async def panel_ids(message: types.Message, command, c, settings) -> None:
                       + ', '.join(field for field, _, _ in row['pending'])
                       for row in report['rows'])
     await message.answer(
-        f'{e("warning")} <b>Панель уже на 3.x, а подписок со старым uuid: '
-        f'{report["stale"]}</b>\n\n{rows}\n\n'
-        f'<blockquote>Пока они не переведены, панель отказывает по каждому '
-        f'запросу о них: продление, устройства, блокировка. Пришлите '
-        f'<code>/panelids fix</code>. Фоновая задача делает то же самое раз '
-        f'в час — команда нужна, когда ждать некогда.</blockquote>')
+        f'{e("warning")} <b>{why.capitalize()}, а подписок с другим видом '
+        f'ссылки: {report["stale"]}</b>\n\n{rows}\n\n'
+        f'<blockquote>Пока они не переведены на {target}, панель отказывает '
+        f'по каждому запросу о них: продление, устройства, блокировка. '
+        f'Пришлите <code>/panelids fix</code>. Фоновая задача делает то же '
+        f'самое раз в час — команда нужна, когда ждать некогда.</blockquote>')
 
 
 MAINTENANCE_ON = 'features.maintenance_mode'

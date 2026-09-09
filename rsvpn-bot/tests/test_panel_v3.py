@@ -157,7 +157,7 @@ async def test_nothing_happens_while_the_panel_is_still_old(container, user_fact
 
     report = await panel_ids.migrate(container.users, panel, apply=True)
 
-    assert report['panel'] == 'old' and report['moved'] == 0
+    assert report['panel'] == 'nothing' and report['moved'] == 0
     assert len(panel.asked) == 1, 'одна проверка версии, а не запрос на человека'
 
 
@@ -247,3 +247,46 @@ async def test_a_subscription_without_a_stored_short_id_still_moves(container,
 
     assert report['moved'] == 1
     assert panel.asked == [subscription_token(802421217)] * 2
+
+
+# ── откат панели ────────────────────────────────────────────────────────────
+#
+# Обновление панели не должно быть дверью без ручки с той стороны. Если
+# 3.x откатили на 2.x, ссылки надо перевести обратно — иначе переведённые
+# подписки станут неуправляемыми уже на старой панели.
+
+async def test_a_rollback_moves_the_references_back(container, user_factory):
+    await user_factory(**{'user_data.user_id': 7, 'vpn.uuid': 4271,
+                          'vpn.shortUuid': 's-1'})
+
+    report = await panel_ids.migrate(container.users, Panel(V2_USER), apply=True)
+
+    assert report['direction'] == 'to_uuid' and report['moved'] == 1
+    assert (await container.users.get(7))['vpn']['uuid'] == V2_USER['uuid']
+
+
+async def test_the_direction_follows_the_panel_not_our_intention(container,
+                                                                 user_factory):
+    await user_factory(**{'vpn.uuid': V2_USER['uuid'], 'vpn.shortUuid': 's-1'})
+
+    forward = await panel_ids.migrate(container.users, Panel(V3_USER))
+
+    assert forward['direction'] == 'to_id' and forward['stale'] == 1
+
+
+async def test_a_panel_answering_the_wrong_shape_is_a_failure_not_a_write(
+        container, user_factory):
+    """Версию выяснили по одному человеку, а по второму панель ответила
+    иначе: записать это молча — потерять подписку."""
+    await user_factory(**{'user_data.user_id': 7, 'vpn.uuid': V2_USER['uuid'],
+                          'vpn.shortUuid': 's-1'})
+
+    class Flaky(Panel):
+        async def find_by_short_uuid(self, short_uuid):
+            self.asked.append(short_uuid)
+            return V3_USER if len(self.asked) == 1 else V2_USER
+
+    report = await panel_ids.migrate(container.users, Flaky(V3_USER), apply=True)
+
+    assert report['failed'] == 1 and report['moved'] == 0
+    assert (await container.users.get(7))['vpn']['uuid'] == V2_USER['uuid']
