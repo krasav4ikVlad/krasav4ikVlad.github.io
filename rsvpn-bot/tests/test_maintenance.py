@@ -16,7 +16,7 @@ from app.domain import minesweeper as ms
 # ── правила поля ────────────────────────────────────────────────────────────
 def test_the_first_tap_never_explodes():
     """Проиграть первым же нажатием — верный способ закрыть игру навсегда."""
-    for cell in range(ms.CELLS):
+    for cell in range(ms.cells(ms.new_board())):
         board = ms.open_cell(ms.new_board(), cell)
         assert board['state'] == ms.PLAY, cell
         assert cell not in set(board['mines'])
@@ -33,7 +33,7 @@ def test_the_mines_are_laid_only_once():
     board = ms.open_cell(ms.new_board(), 0)
     mines = list(board['mines'])
 
-    ms.open_cell(board, next(c for c in range(ms.CELLS)
+    ms.open_cell(board, next(c for c in range(ms.cells(board))
                              if c not in set(board['open']) and c not in set(mines)))
 
     assert board['mines'] == mines, 'поле не должно пересоздаваться посреди партии'
@@ -61,7 +61,7 @@ def test_a_finished_game_ignores_further_taps():
 
 def test_opening_everything_but_the_mines_wins():
     board = ms.open_cell(ms.new_board(), 0)
-    for cell in range(ms.CELLS):
+    for cell in range(ms.cells(board)):
         if cell not in set(board['mines']):
             ms.open_cell(board, cell)
 
@@ -91,14 +91,14 @@ def test_a_flag_can_be_taken_back():
 
 def test_flags_left_can_go_negative_as_a_hint():
     board = ms.open_cell(ms.new_board(), 0)
-    for cell in (c for c in range(ms.CELLS) if c not in set(board['open']))    :
+    for cell in (c for c in range(ms.cells(board)) if c not in set(board['open'])):
         ms.toggle_flag(board, cell)
 
     assert ms.flags_left(board) < 0, 'наставил больше, чем есть мин — это видно'
 
 
 def test_the_numbers_match_the_neighbours():
-    board = ms.new_board()
+    board = ms.new_board(5, 5, 4)
     board['mines'] = [0, 1]
 
     assert ms.around(board, 2) == 1     # сосед только с одной
@@ -107,15 +107,64 @@ def test_the_numbers_match_the_neighbours():
 
 
 def test_corners_have_three_neighbours_not_eight():
-    assert len(ms.neighbours(0)) == 3
-    assert len(ms.neighbours(ms.CELLS - 1)) == 3
-    assert len(ms.neighbours(12)) == 8
+    board = ms.new_board(5, 5, 4)
+
+    assert len(ms.neighbours(board, 0)) == 3
+    assert len(ms.neighbours(board, ms.cells(board) - 1)) == 3
+    assert len(ms.neighbours(board, 12)) == 8
+
+
+# ── размер ──────────────────────────────────────────────────────────────────
+def test_the_board_remembers_its_own_size():
+    """Иначе смена настройки посреди партии превращает поле в мусор:
+    индексы клеток считаются от ширины."""
+    board = ms.new_board(6, 4, 5)
+
+    assert ms.size(board) == (6, 4) and ms.cells(board) == 24
+    assert len(ms.open_cell(board, 0)['mines']) == 5
+
+
+def test_a_board_saved_before_sizes_existed_still_works():
+    """У партий из прежней сборки полей w/h нет вовсе."""
+    old = {'mines': [], 'open': [], 'flags': [], 'state': ms.PLAY}
+
+    assert ms.size(old) == (ms.WIDTH, ms.HEIGHT)
+    assert ms.open_cell(old, 0)['state'] == ms.PLAY
+
+
+def test_an_impossible_size_is_trimmed_not_obeyed():
+    """Клавиатуру шире восьми Telegram отвергает целиком — экрана не будет."""
+    assert ms.fit(20, 40, 500) == (8, 10, 79)
+    assert ms.fit(0, 0, 0) == (ms.WIDTH, ms.HEIGHT, ms.MINES)
+
+
+def test_at_least_one_cell_stays_free_of_mines():
+    """Поле, сплошь заминированное, пройти нельзя — и это не игра.
+
+    Мин оставляем на одну меньше, чем клеток: единственный ход сразу же и
+    выигрывает, но взорваться на первом нажатии человек не может.
+    """
+    board = ms.new_board(3, 3, 99)
+
+    assert board['m'] == 8
+    assert ms.open_cell(board, 4)['state'] == ms.WON
+
+
+def test_a_tight_board_still_gets_all_its_mines():
+    """На 3×3 свободный пятачок вокруг первого хода — это всё поле."""
+    board = ms.open_cell(ms.new_board(3, 3, 8), 4)
+
+    assert len(board['mines']) == 8 and 4 not in set(board['mines'])
 
 
 # ── как это выглядит ────────────────────────────────────────────────────────
-def test_the_field_fits_telegram_limits():
-    """Восемь кнопок в ряд и сотня всего — иначе Telegram откажет."""
-    markup = board_markup(ms.new_board()).as_markup()
+@pytest.mark.parametrize('width,height,mines', [
+    (3, 3, 2), (5, 5, 4), (8, 8, 10), (8, 10, 20), (20, 40, 500),
+])
+def test_any_field_fits_telegram_limits(width, height, mines):
+    """Восемь кнопок в ряд и сотня всего — иначе Telegram отвергнет
+    клавиатуру целиком, и человек не увидит вообще ничего."""
+    markup = board_markup(ms.new_board(width, height, mines)).as_markup()
 
     assert all(len(row) <= 8 for row in markup.inline_keyboard)
     assert sum(len(row) for row in markup.inline_keyboard) <= 100

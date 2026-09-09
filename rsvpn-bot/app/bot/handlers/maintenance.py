@@ -36,12 +36,13 @@ def cell_label(board: dict, index: int) -> str:
 
 
 def board_markup(board: dict, playing: bool = True) -> InlineKeyboardBuilder:
+    width, height = ms.size(board)
     kb = InlineKeyboardBuilder()
-    for row in range(ms.HEIGHT):
+    for row in range(height):
         kb.row(*[types.InlineKeyboardButton(
-            text=cell_label(board, row * ms.WIDTH + column),
-            callback_data=Game(action='tap', value=str(row * ms.WIDTH + column)).pack())
-            for column in range(ms.WIDTH)])
+            text=cell_label(board, row * width + column),
+            callback_data=Game(action='tap', value=str(row * width + column)).pack())
+            for column in range(width)])
 
     if playing:
         # Переключатель, а не долгое нажатие: второго способа нажать кнопку
@@ -80,6 +81,13 @@ def board_text(board: dict, wins: int = 0) -> str:
             if wins else '')
 
     return head + tail
+
+
+async def fresh_board(settings) -> dict:
+    """Новое поле того размера, который выставлен в админке."""
+    return ms.new_board(await settings.int('game.width'),
+                        await settings.int('game.height'),
+                        await settings.int('game.mines'))
 
 
 async def maintenance_text(settings) -> str:
@@ -146,23 +154,23 @@ async def _render(call: types.CallbackQuery, c, board: dict, wins: int = 0) -> N
 
 
 async def open_game(call: types.CallbackQuery, c, settings) -> None:
-    board = await c.games.load(call.from_user.id) or ms.new_board()
-    if board.get('state') != ms.PLAY:
-        board = ms.new_board()
+    board = await c.games.load(call.from_user.id)
+    if not board or board.get('state') != ms.PLAY:
+        board = await fresh_board(settings)
     await c.games.save(call.from_user.id, board)
     await call.answer()
     await _render(call, c, board)
 
 
 async def new_game(call: types.CallbackQuery, c, settings) -> None:
-    board = ms.new_board()
+    board = await fresh_board(settings)
     await c.games.save(call.from_user.id, board)
     await call.answer('Новое поле')
     await _render(call, c, board)
 
 
 async def toggle_mode(call: types.CallbackQuery, c, settings) -> None:
-    board = await c.games.load(call.from_user.id) or ms.new_board()
+    board = await c.games.load(call.from_user.id) or await fresh_board(settings)
     board['flag_mode'] = not board.get('flag_mode')
     await c.games.save(call.from_user.id, board)
     await call.answer('Флажки' if board['flag_mode'] else 'Открываем')
@@ -170,7 +178,7 @@ async def toggle_mode(call: types.CallbackQuery, c, settings) -> None:
 
 
 async def tap(call: types.CallbackQuery, callback_data: Game, c, settings) -> None:
-    board = await c.games.load(call.from_user.id) or ms.new_board()
+    board = await c.games.load(call.from_user.id) or await fresh_board(settings)
     if board.get('state') != ms.PLAY:
         await call.answer('Партия окончена — начните новое поле', show_alert=False)
         return
@@ -202,9 +210,9 @@ async def game_command(message: types.Message, c, settings) -> None:
     """`/game` — сыграть и без техработ, если админ разрешил."""
     if not await settings.flag('features.maintenance_game'):
         return
-    board = await c.games.load(message.from_user.id) or ms.new_board()
-    if board.get('state') != ms.PLAY:
-        board = ms.new_board()
+    board = await c.games.load(message.from_user.id)
+    if not board or board.get('state') != ms.PLAY:
+        board = await fresh_board(settings)
     await c.games.save(message.from_user.id, board)
     await message.answer(board_text(board),
                          reply_markup=board_markup(board).as_markup())
