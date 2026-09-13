@@ -43,6 +43,7 @@ BALANCE_LOG = 'balance_log'
 # ошибки, которые увидели пользователи
 BOT_ERRORS = 'bot_errors'
 GAMES = 'games'
+REF_TAGS = 'ref_tags'
 
 PAYMENTS = 'payments'
 PAYMENT_WEBHOOKS = 'payments_webhooks'

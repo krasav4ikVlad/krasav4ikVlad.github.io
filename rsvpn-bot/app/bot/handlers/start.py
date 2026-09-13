@@ -15,6 +15,7 @@ from aiogram.fsm.context import FSMContext
 
 from app.bot.handlers.profile import show_profile
 from app.core.time import now
+from app.domain import ref_tags
 from app.content.emoji import e
 
 log = logging.getLogger(__name__)
@@ -51,18 +52,34 @@ def new_user_document(tg_user: types.User, referrer, utm: str, start_balance: in
     }
 
 
-async def resolve_referrer(c, raw: str):
-    """Из аргумента /start достаём того, кто привёл. Алиасы — в настройках."""
+async def resolve_referrer(c, raw: str) -> tuple[int | str, str]:
+    """Из аргумента /start достаём того, кто привёл, и метку, если она была.
+
+    Возвращает (id пригласившего, метка). Метка нужна отдельно: по ней
+    считается, сколько привела именно эта ссылка, а без этого именные
+    ссылки отличались бы от числовых только видом.
+
+    Порядок проверок: сначала число, потом метка в базе, и только потом
+    старые алиасы из настроек — их ещё могли раздать людям, и ломать
+    выданные ссылки нельзя.
+    """
+    raw = (raw or '').strip()
     if raw.isdigit():
-        return int(raw)
+        return int(raw), ''
+
+    tags = getattr(c, 'ref_tags', None)
+    if tags is not None:
+        owner = await tags.owner(raw)
+        if owner:
+            return owner, ref_tags.normalize(raw)
 
     aliases = str(await c.settings.get(REF_ALIASES_SETTING, ''))
     for pair in aliases.split(','):
         if ':' in pair:
             name, user_id = (x.strip() for x in pair.split(':', 1))
-            if name == raw and user_id.isdigit():
-                return int(user_id)
-    return ''
+            if name.lower() == raw.lower() and user_id.isdigit():
+                return int(user_id), ref_tags.normalize(raw)
+    return '', ''
 
 
 async def start(message: types.Message, command: CommandObject, state: FSMContext,
@@ -89,9 +106,9 @@ async def start(message: types.Message, command: CommandObject, state: FSMContex
 
 
 async def register(tg_user: types.User, args: str, c, settings) -> dict:
-    referrer = ''
+    referrer, tag = '', ''
     if args.startswith('ref_'):
-        referrer = await resolve_referrer(c, args[4:])
+        referrer, tag = await resolve_referrer(c, args[4:])
     elif args.startswith('gift_'):
         parts = args.split('_')
         referrer = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else ''
@@ -104,7 +121,14 @@ async def register(tg_user: types.User, args: str, c, settings) -> dict:
     start_balance = await settings.int('price.start_balance')
 
     document = new_user_document(tg_user, referrer, args, start_balance)
+    if tag:
+        # Метка остаётся в документе: через месяц «откуда этот человек»
+        # по одному счётчику уже не ответить, а по документу — можно.
+        document['user_data']['ref_tag'] = tag
     await c.users.create(document)
+
+    if tag and getattr(c, 'ref_tags', None) is not None:
+        await c.ref_tags.count_hit(tag)
 
     if referrer:
         await c.users.col.update_one(

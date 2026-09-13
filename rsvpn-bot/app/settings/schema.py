@@ -353,8 +353,10 @@ SCHEMA: tuple[Group, ...] = (
         Setting('link.web_cabinet', 'Личный кабинет', 'str', 'https://console.rscore.app/'),
         Setting('link.tribute', 'Tribute (карты)', 'str', 'https://t.me/tribute/app?startapp=dNvx'),
         Setting('link.bot_username', 'Юзернейм бота (для реф. ссылок)', 'str', 'rsconnect_bot'),
-        Setting('link.ref_aliases', 'Именные реф. ссылки', 'str', '',
-                hint='имя:user_id через запятую, например blog:123456'),
+        Setting('link.ref_aliases', 'Именные реф. ссылки (старые)', 'str', '',
+                hint='имя:user_id через запятую. Оставлено для ссылок, '
+                     'выданных раньше: новые заводите командой /reftag — '
+                     'там видно, сколько каждая привела'),
         Setting('link.offer', 'Публичная оферта', 'str',
                 'https://telegra.ph/Polzovatelskoe-soglashenie-Publichnaya-oferta-RS-VPN-07-02'),
         Setting('link.privacy', 'Политика конфиденциальности', 'str',
