@@ -44,6 +44,7 @@ class Container:
     analytics: Any = None
     expiry: Any = None
     private: Any = None
+    partner_bots: Any = None
     squads: Any = None
     lifeline: Any = None
     renewal: Any = None
@@ -117,6 +118,9 @@ class Container:
 
         from app.repositories.ref_tags import RefTagsRepository
         self.ref_tags = RefTagsRepository(self.db[names.REF_TAGS])
+
+        from app.repositories.partner_bots import PartnerBotsRepository
+        self.partner_bots_repo = PartnerBotsRepository(self.db[names.PARTNER_BOTS])
 
         from app.repositories.private_servers import PrivateServersRepository
         from app.services.private_servers import PrivateServerService
@@ -299,7 +303,8 @@ class Container:
         """
         for repo in (self.users, self.plans, self.payments_repo,
                      self.private.servers, self.private.pool, self.balance_log,
-                     self.errors, self.games, self.ref_tags):
+                     self.errors, self.games, self.ref_tags,
+                     self.partner_bots_repo):
             await repo.ensure_indexes()
         for service in (self.promo, self.survey):
             await service.ensure_indexes()
@@ -351,6 +356,9 @@ class Container:
         container.vpn = RemnawaveClient(config.vpn.base_url, config.vpn.token, http,
                                         container.settings, squads,
                                         dry_run=config.vpn.dry_run)
+        from app.services.partner_bots import PartnerBotService
+        container.partner_bots = PartnerBotService(
+            container.partner_bots_repo, http, container.settings)
         container.links = LinkEncryptor(
             http, rsa_public_key=config.vpn.happ_rsa_public_key,
             incy_script=config.vpn.incy_script, incy_cwd=config.vpn.incy_cwd)

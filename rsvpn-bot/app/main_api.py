@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.partner import router as partner_router
 from app.api.remnawave import router as remnawave_router
 from app.api.webhooks import router as webhooks_router
 from app.core.config import Config
@@ -41,6 +42,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title='RS VPN API', lifespan=lifespan)
 app.include_router(webhooks_router)
 app.include_router(remnawave_router)
+app.include_router(partner_router)
 
 
 @app.get('/health')

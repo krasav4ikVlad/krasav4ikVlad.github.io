@@ -44,6 +44,7 @@ BALANCE_LOG = 'balance_log'
 BOT_ERRORS = 'bot_errors'
 GAMES = 'games'
 REF_TAGS = 'ref_tags'
+PARTNER_BOTS = 'partner_bots'
 
 PAYMENTS = 'payments'
 PAYMENT_WEBHOOKS = 'payments_webhooks'
