@@ -26,6 +26,7 @@ USAGE = (
     f'<code>/reftag vlad @username блогер</code> — можно по юзернейму и '
     f'с заметкой\n'
     f'<code>/reftags</code> — все метки и сколько каждая привела\n'
+    f'<code>/refpost vlad</code> — готовый пост для канала партнёра\n'
     f'<code>/reftagdel vlad</code> — освободить метку\n\n'
     f'<blockquote>Ссылка станет '
     f'<code>t.me/бот?start=ref_vlad</code> и будет вести на того же '
@@ -82,6 +83,52 @@ async def add(message: types.Message, command, c, settings) -> None:
         + f'\n\n<blockquote>Человек увидит эту ссылку у себя в разделе '
           f'«Реферальная программа» вместо числовой. Начисления считаются '
           f'как обычно — метка только меняет вид ссылки.</blockquote>')
+
+
+async def post(message: types.Message, command, c, settings) -> None:
+    """`/refpost <метка>` — готовый пост для канала партнёра.
+
+    Канал — самый дешёвый способ не терять приведённых: партнёр
+    рекламирует имя канала, а метка живёт в кнопке под закреплённым постом
+    и переживает даже пересылку — репост тащит кнопку с собой.
+
+    Бот отдаёт текст и ссылку отдельными сообщениями, чтобы партнёр мог
+    переслать их себе и скопировать не глядя: одно сообщение с разметкой
+    он бы скопировал вместе с тегами.
+    """
+    tag = domain.normalize(command.args or '')
+    if not tag:
+        await message.answer(
+            f'{e("cross")} <code>/refpost vlad</code> — готовый пост для '
+            f'канала партнёра.')
+        return
+
+    owner = await c.ref_tags.owner(tag)
+    if not owner:
+        await message.answer(
+            f'{e("cross")} Метки <code>{tag}</code> нет. Сначала выдайте её: '
+            f'<code>/reftag {tag} id_партнёра</code>.')
+        return
+
+    bot_username = await settings.get('link.bot_username')
+    body = str(await settings.get('partner.greeting') or '').strip()
+    button = str(await settings.get('partner.button') or 'Получить VPN').strip()
+    url = domain.link(bot_username, tag)
+
+    await message.answer(
+        f'{e("channel")} <b>Пост для канала партнёра</b>\n\n'
+        f'Метка <code>{tag}</code>, владелец <code>{owner}</code>\n\n'
+        f'<blockquote>Партнёру: вставить текст ниже в свой канал, '
+        f'прикрепить к нему кнопку «{button}» со ссылкой из следующего '
+        f'сообщения и закрепить пост.\n\n'
+        f'Кнопку к посту канала добавляют через @ControllerBot или любой '
+        f'другой постинг-бот. Если возиться не хочется — можно просто '
+        f'вставить ссылку в текст, метка засчитается так же.</blockquote>')
+
+    # Текст и ссылка — отдельными сообщениями и без разметки: партнёр
+    # пересылает их себе и копирует как есть.
+    await message.answer(body)
+    await message.answer(url)
 
 
 async def listing(message: types.Message, c, settings) -> None:
@@ -162,5 +209,6 @@ async def screen(call: types.CallbackQuery, c, settings) -> None:
 def register(router: Router) -> None:
     router.message.register(add, Command('reftag'))
     router.message.register(listing, Command('reftags'))
+    router.message.register(post, Command('refpost'))
     router.message.register(remove, Command('reftagdel'))
     router.callback_query.register(screen, Adm.filter(F.act == 'reftags'))
