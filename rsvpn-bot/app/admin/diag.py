@@ -411,6 +411,129 @@ async def maintenance_command(message: types.Message, command, c, settings) -> N
                          reply_markup=maintenance_kb(on).as_markup())
 
 
+DEVSYNC_USAGE = (
+    f'{e("devices")} <b>Сверка лимита устройств</b>\n\n'
+    f'<code>/devsync</code> — где база бота разошлась с оплаченным\n'
+    f'<code>/devsync fix</code> — выровнять найденное\n'
+    f'<code>/devsync panel</code> — спросить у панели настоящий лимит\n'
+    f'<code>/devsync panel fix</code> — и выровнять\n'
+    f'<code>/devsync 802421217</code> — все числа по одному человеку\n\n'
+    f'<blockquote>Чисел три: сколько оплачено пакетами, что записано у бота '
+    f'и что стоит в панели. Первое — правда, оно выводится из денег; '
+    f'остальные к нему и приводятся.\n\n'
+    f'Сверка с панелью стоит запроса на человека, поэтому идёт отдельно и '
+    f'по умолчанию на 300 человек: <code>/devsync panel 2000</code> — '
+    f'больше.</blockquote>'
+)
+
+
+def _packages(count: int) -> str:
+    """«в 1 пакетах» читается как опечатка, и это она и есть."""
+    tail = count % 100
+    if 11 <= tail <= 14:
+        return f'{count} пакетах'
+    return f'{count} ' + {1: 'пакете', 2: 'пакетах', 3: 'пакетах',
+                          4: 'пакетах'}.get(count % 10, 'пакетах')
+
+
+def _devrow(row: dict) -> str:
+    panel = row.get('panel')
+    return (f'<code>{row["user_id"]}</code>: оплачено <b>{row["paid"]}</b>, '
+            f'у бота <b>{row["stored"]}</b>'
+            + (f', в панели <b>{panel}</b>' if panel is not None else ''))
+
+
+async def _devsync_one(message: types.Message, c, settings, user_id: int) -> None:
+    from app.services import device_sync
+
+    base = await settings.int('price.devices_free_limit')
+    card = await device_sync.one(c.users, c.vpn, base, user_id)
+    if not card:
+        await message.answer(f'{e("cross")} Пользователь <code>{user_id}</code> '
+                             f'не найден.')
+        return
+
+    active = [p for p in card['packages'] if p.get('active', True)]
+    lines = [f'{e("devices")} <b>Устройства пользователя {user_id}</b>', '']
+    lines.append(f'{e("money")} Оплачено: <b>{card["paid"]}</b> '
+                 f'({card["base"]} бесплатных + {card["paid"] - card["base"]} '
+                 f'в {_packages(len(active))})')
+    lines.append(f'{e("support")} У бота записано: <b>{card["stored"]}</b>')
+    lines.append(f'{e("servers")} В панели: '
+                 + (f'<b>{card["panel"]}</b>' if card['panel'] is not None
+                    else f'<i>{card["panel_error"] or "неизвестно"}</i>'))
+    if card['bypass'] is not None:
+        lines.append(f'{e("bypass")} У ByPass: <b>{card["bypass"]}</b>')
+
+    agree = (card['panel'] is not None
+             and card['paid'] == card['stored'] == int(card['panel']))
+    lines.append('')
+    lines.append(f'{e("ok")} Всё сходится.' if agree else
+                 f'{e("warning")} Расхождение. Выровнять по оплаченному: '
+                 f'<code>/devsync fix</code> пройдёт по всей базе, либо '
+                 f'докупка/возврат устройства у человека выставит лимит сам.')
+    await message.answer('\n'.join(lines))
+
+
+async def devsync(message: types.Message, command, c, settings) -> None:
+    """`/devsync [fix|panel|id]` — сверка лимита устройств."""
+    from app.services import device_sync
+
+    args = (command.args or '').split()
+    if args and args[0].isdigit():
+        await _devsync_one(message, c, settings, int(args[0]))
+        return
+
+    apply = 'fix' in args
+    base = await settings.int('price.devices_free_limit')
+
+    if apply and c.vpn is None:
+        await message.answer(f'{e("cross")} Клиент панели не собран — '
+                             f'выравнивать нечем.')
+        return
+
+    if 'panel' in args:
+        if c.vpn is None:
+            await message.answer(f'{e("cross")} Клиент панели не собран.')
+            return
+        cap = next((int(a) for a in args if a.isdigit()), 300)
+        await message.answer(f'{e("hourglass")} Спрашиваю панель по '
+                             f'{cap} подпискам — это займёт время.')
+        found = await device_sync.check_panel(c.users, c.vpn, base, limit=cap)
+        rows = found['drift']
+        tail = (f'\nПроверено: {found["checked"]}'
+                + (f', не ответила панель: {found["failed"]}'
+                   if found['failed'] else '')
+                + ('\n<i>Дошли до предела — повторите с большим числом.</i>'
+                   if found['stopped'] else ''))
+    else:
+        rows = await device_sync.find_drift(c.users, base)
+        tail = '\n<i>Это сверка без панели. Что стоит в ней самой — '\
+               '<code>/devsync panel</code>.</i>'
+
+    if not rows:
+        await message.answer(f'{e("ok")} Расхождений нет.{tail}')
+        return
+
+    shown = '\n'.join(_devrow(row) for row in rows[:20])
+    if not apply:
+        await message.answer(
+            f'{e("warning")} <b>Расхождений: {len(rows)}</b>\n\n{shown}'
+            + (f'\n<i>…и ещё {len(rows) - 20}</i>' if len(rows) > 20 else '')
+            + f'{tail}\n\n'
+            f'<blockquote>Выровнять по оплаченному: добавьте <code>fix</code>. '
+            f'Бот выставит число в панели, у себя и у ByPass — в этом '
+            f'порядке.</blockquote>')
+        return
+
+    report = await device_sync.repair(c.users, c.vpn, rows, apply=True)
+    await message.answer(
+        f'{e("ok")} <b>Выровнено: {report["fixed"]}</b> из {report["total"]}'
+        + (f'\nНе вышло: <code>{report["failed"]}</code> — панель отказала, '
+           f'их документы не тронуты. Смотрите <code>/errors</code>.'
+           if report['failed'] else ''))
+
+
 async def refresh(call: types.CallbackQuery, c, settings) -> None:
     try:
         await call.message.edit_text(await text(c, settings), reply_markup=_kb())
@@ -509,6 +632,7 @@ def register(router: Router) -> None:
     router.message.register(errors, Command('errors'))
     router.message.register(panel_ids, Command('panelids'))
     router.message.register(maintenance_command, Command('maintenance'))
+    router.message.register(devsync, Command('devsync'))
     router.callback_query.register(maintenance_screen, Adm.filter(F.act == 'maint'))
     router.callback_query.register(refresh, Adm.filter(F.act == 'diag'))
     router.callback_query.register(test_menu, Adm.filter(F.act == 'exptest'))
