@@ -411,6 +411,46 @@ async def maintenance_command(message: types.Message, command, c, settings) -> N
                          reply_markup=maintenance_kb(on).as_markup())
 
 
+async def chat_id(message: types.Message, c, settings) -> None:
+    """`/chatid` — id этого чата и этой темы.
+
+    Нужна при переезде в новую группу. Сам id ещё можно подсмотреть в
+    пересылке через сторонних ботов, а вот номер темы форума — негде: он
+    виден только тому, кому сообщение пришло, то есть боту.
+
+    Отдельная команда, а не строка в /diag: её присылают именно туда, про
+    что спрашивают, — в нужный чат и в нужную тему.
+    """
+    chat = message.chat
+    topic = message.message_thread_id
+    current = await settings.int('notify.chat_id')
+
+    lines = [f'{e("id")} <b>Этот чат</b>', '']
+    lines.append(f'Название: <b>{chat.title or "личка"}</b>')
+    lines.append(f'Тип: <code>{chat.type}</code>')
+    lines.append(f'Chat ID: <code>{chat.id}</code>')
+    if topic:
+        lines.append(f'Тема: <code>{topic}</code>')
+    else:
+        lines.append('<i>Это не тема форума — пришлите команду внутрь темы, '
+                     'чтобы узнать её номер.</i>')
+
+    lines.append('')
+    if chat.id == current:
+        lines.append(f'{e("ok")} Это и есть текущий чат уведомлений.')
+    else:
+        lines.append(f'{e("attention")} Сейчас уведомления идут в '
+                     f'<code>{current}</code>.')
+        lines.append('')
+        lines.append('<blockquote>Чтобы переехать сюда: /admin → Уведомления '
+                     'админам → «Чат для уведомлений». Номера тем там же '
+                     'придётся проставить заново — в новой группе они '
+                     'другие. Присылайте <code>/chatid</code> в каждую тему '
+                     'и переносите числа.</blockquote>')
+
+    await message.answer('\n'.join(lines))
+
+
 DEVSYNC_USAGE = (
     f'{e("devices")} <b>Сверка лимита устройств</b>\n\n'
     f'<code>/devsync</code> — где база бота разошлась с оплаченным\n'
@@ -633,6 +673,7 @@ def register(router: Router) -> None:
     router.message.register(panel_ids, Command('panelids'))
     router.message.register(maintenance_command, Command('maintenance'))
     router.message.register(devsync, Command('devsync'))
+    router.message.register(chat_id, Command('chatid'))
     router.callback_query.register(maintenance_screen, Adm.filter(F.act == 'maint'))
     router.callback_query.register(refresh, Adm.filter(F.act == 'diag'))
     router.callback_query.register(test_menu, Adm.filter(F.act == 'exptest'))
