@@ -27,6 +27,7 @@ USAGE = (
     f'{e("gift")} <b>Розыгрыш</b>\n\n'
     f'<code>/raffle</code> — как идёт: билеты, участники, деньги\n'
     f'<code>/raffletickets</code> — таблица билетов файлом (CSV)\n'
+    f'<code>/rafflebonus</code> — кому причитается подарок за порог билетов\n'
     f'<code>/raffle 01.10.2026 22.10.2026</code> — за другой период\n\n'
     f'<blockquote>Даты акции и минимальную оплату друга задайте один раз в '
     f'/admin → Розыгрыш — тогда команды можно звать без аргументов.\n\n'
@@ -69,7 +70,14 @@ async def report(message: types.Message, command, c, settings) -> dict | None:
         require_active=await settings.flag('raffle.require_active'))
 
 
-def summary(data: dict) -> str:
+def reached(data: dict, tickets: int) -> list[dict]:
+    """Кто дотянулся до порога подарка. Пустой порог — никто, а не все."""
+    if tickets <= 0:
+        return []
+    return [item for item in data['participants'] if item['tickets'] >= tickets]
+
+
+def summary(data: dict, bonus_tickets: int = 0, bonus_days: int = 0) -> str:
     lines = [f'{e("gift")} <b>Розыгрыш</b>',
              f'{fmt(data["start"], "%d.%m.%Y")} — {fmt(data["end"], "%d.%m.%Y")}', '']
 
@@ -87,6 +95,14 @@ def summary(data: dict) -> str:
     if data['flagged']:
         lines.append(f'{e("warning")} С пометкой подозрения: '
                      f'<b>{data["flagged"]}</b>')
+
+    # Подарок за порог — единственный расход акции, который не разыгрывается,
+    # а причитается. Его цену нужно видеть до розыгрыша, а не после.
+    if bonus_tickets and bonus_days:
+        winners = reached(data, bonus_tickets)
+        lines.append(f'{e("calendar")} Порог {bonus_tickets} '
+                     f'{_tickets(bonus_tickets)} прошли: '
+                     f'<b>{len(winners)}</b> — им +{bonus_days} дн.')
     lines.append('')
 
     lines.append('<b>Больше всех привели</b>')
@@ -157,7 +173,10 @@ def filename(data: dict) -> str:
 async def command(message: types.Message, command, c, settings) -> None:
     data = await report(message, command, c, settings)
     if data is not None:
-        await message.answer(summary(data))
+        await message.answer(summary(
+            data,
+            bonus_tickets=await settings.int('raffle.bonus_tickets'),
+            bonus_days=await settings.int('raffle.bonus_days')))
 
 
 async def tickets(message: types.Message, command, c, settings) -> None:
@@ -187,6 +206,47 @@ async def tickets(message: types.Message, command, c, settings) -> None:
             f'делает случайный выбор проверяемым.</blockquote>'))
 
 
+async def bonus(message: types.Message, command, c, settings) -> None:
+    """`/rafflebonus` — кому причитается подарок за порог билетов.
+
+    Отдельной командой, а не строкой в сводке: это список для начисления, и
+    из него копируют id. В сводке он занял бы весь экран.
+    """
+    need = await settings.int('raffle.bonus_tickets')
+    days = await settings.int('raffle.bonus_days')
+    if need <= 0 or days <= 0:
+        await message.answer(
+            f'{e("cross")} Подарок за порог выключен. Включается в '
+            f'/admin → Розыгрыш: «Подарок за сколько билетов» и «Сколько '
+            f'дней дарим».')
+        return
+
+    data = await report(message, command, c, settings)
+    if data is None:
+        return
+
+    winners = reached(data, need)
+    if not winners:
+        await message.answer(
+            f'{e("gift")} Порог в {need} {_tickets(need)} пока никто не прошёл.')
+        return
+
+    lines = [f'{e("gift")} <b>Подарок за {need} {_tickets(need)}: '
+             f'+{days} дн.</b>',
+             f'Человек: <b>{len(winners)}</b>', '']
+    for item in winners:
+        who = f' @{item["username"]}' if item['username'] else ''
+        lines.append(f'<code>{item["user_id"]}</code>{who} — '
+                     f'{item["tickets"]} {_tickets(item["tickets"])}')
+
+    lines.append('')
+    lines.append('<blockquote>Это не розыгрыш, а то, что причитается: '
+                 'начислять всем из списка. Порог и число дней меняются в '
+                 '/admin → Розыгрыш.</blockquote>')
+    await message.answer('\n'.join(lines))
+
+
 def register(router: Router) -> None:
     router.message.register(command, Command('raffle'))
     router.message.register(tickets, Command('raffletickets'))
+    router.message.register(bonus, Command('rafflebonus'))

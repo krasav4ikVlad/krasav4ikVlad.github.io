@@ -404,6 +404,106 @@ async def test_the_summary_survives_an_empty_contest(repos, db):
     assert 'ни одного' in text
 
 
+# ── подарок за порог ────────────────────────────────────────────────────────
+async def three_friends(repos, owner: int, count: int, start_id: int) -> None:
+    payments, users = repos
+    for index in range(count):
+        friend_id = start_id + index
+        await friend(users, friend_id, referrer=owner)
+        await paid(payments, friend_id, 300, day=3 + index * 3)
+
+
+async def test_the_threshold_gift_goes_to_those_who_reached_it(repos, db):
+    payments, users = repos
+    await friend(users, 1, referrer=None)
+    await friend(users, 2, referrer=None)
+    await three_friends(repos, owner=1, count=3, start_id=60)
+    await three_friends(repos, owner=2, count=2, start_id=70)
+
+    winners = admin.reached(await collect(repos), 3)
+
+    assert [item['user_id'] for item in winners] == [1]
+
+
+async def test_more_than_the_threshold_still_counts(repos, db):
+    payments, users = repos
+    await friend(users, 1, referrer=None)
+    await three_friends(repos, owner=1, count=5, start_id=60)
+
+    assert len(admin.reached(await collect(repos), 3)) == 1
+
+
+async def test_a_switched_off_threshold_gives_the_gift_to_nobody(repos, db):
+    """Ноль — это «не дарить», а не «дарить всем»: обратное прочтение стоило
+    бы подарка каждому, у кого есть хоть один билет."""
+    payments, users = repos
+    await friend(users, 1, referrer=None)
+    await three_friends(repos, owner=1, count=3, start_id=60)
+
+    assert admin.reached(await collect(repos), 0) == []
+
+
+async def test_the_summary_says_how_many_reached_the_threshold(repos, db):
+    """Единственный расход акции, который не разыгрывается, а причитается, —
+    его цену надо видеть до розыгрыша."""
+    payments, users = repos
+    await friend(users, 1, referrer=None)
+    await three_friends(repos, owner=1, count=3, start_id=60)
+
+    text = admin.summary(await collect(repos), bonus_tickets=3, bonus_days=7)
+
+    assert 'Порог 3 билета прошли: <b>1</b> — им +7 дн.' in text
+
+
+async def test_the_summary_keeps_quiet_when_the_gift_is_off(repos, db):
+    payments, users = repos
+    await friend(users, 1, referrer=None)
+    await three_friends(repos, owner=1, count=3, start_id=60)
+
+    assert 'Порог' not in admin.summary(await collect(repos))
+
+
+async def test_the_gift_list_names_everyone_to_credit(admin_env):
+    dp, bot, session, container = admin_env
+    await container.settings.set('raffle.start', '01.10.2026')
+    await container.settings.set('raffle.end', '22.10.2026')
+    await container.users.create({'user_data': {'user_id': ADMIN.id}})
+    for index in range(3):
+        friend_id = 700 + index
+        await container.users.create({
+            'user_data': {'user_id': friend_id, 'referrer': ADMIN.id,
+                          'date_joined': now()},
+            'vpn': {'uuid': f'u-{friend_id}', 'expireAt': now() + timedelta(days=10)},
+        })
+        await container.db['payments'].insert_one({
+            'txid': f'tx-{friend_id}', 'user_id': friend_id, 'amount': 300,
+            'status': 'done', 'payload': {}, 'created_at': START.replace(day=4 + index),
+        })
+
+    await dp.feed_update(bot, message('/rafflebonus'))
+
+    assert str(ADMIN.id) in session.last_text
+
+
+async def test_the_gift_list_says_when_nobody_reached_it(admin_env):
+    dp, bot, session, container = admin_env
+    await container.settings.set('raffle.start', '01.10.2026')
+    await container.settings.set('raffle.end', '22.10.2026')
+
+    await dp.feed_update(bot, message('/rafflebonus'))
+
+    assert 'никто не прошёл' in session.last_text
+
+
+async def test_the_gift_list_says_when_the_gift_is_switched_off(admin_env):
+    dp, bot, session, container = admin_env
+    await container.settings.set('raffle.bonus_tickets', 0)
+
+    await dp.feed_update(bot, message('/rafflebonus'))
+
+    assert 'выключен' in session.last_text
+
+
 # ── команды целиком ─────────────────────────────────────────────────────────
 async def test_the_command_answers_with_the_summary(admin_env):
     dp, bot, session, container = admin_env
