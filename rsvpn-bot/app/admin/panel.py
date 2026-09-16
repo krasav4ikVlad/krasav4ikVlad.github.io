@@ -17,6 +17,7 @@ from app.admin import broadcast
 from app.admin import commands as admin_commands
 from app.admin import money as admin_money
 from app.admin import partner_bots as admin_partner_bots
+from app.admin import raffle as admin_raffle
 from app.admin import ref_tags as admin_ref_tags
 from app.admin import diag as admin_diag
 from app.admin import private_servers as admin_private
@@ -457,5 +458,6 @@ def create_router(admin_ids) -> Router:
     admin_commands.register(router)
     admin_money.register(router)
     admin_ref_tags.register(router)
+    admin_raffle.register(router)
     admin_partner_bots.register(router)
     return router
