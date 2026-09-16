@@ -683,12 +683,20 @@ async def delete_server(message: types.Message, command, c, settings) -> None:
 # сколько машин поднять и каких. Ответ считается из самих заявок, а не
 # ведётся руками.
 
-async def queue_text(c) -> str:
+async def queue_text(c, settings=None) -> str:
     queue = await c.private.queue()
     pool = await c.private.pool_rows()
     free = [row for row in pool if row['free']]
 
     lines = [f'{e("private")} <b>Серверы: очередь и запас</b>', '']
+
+    # Закрытую продажу видно первой строкой: новых заявок не будет, и пустая
+    # очередь снизу это не «спрос кончился», а «мы не продаём».
+    if settings is not None and not await settings.flag('private.enabled'):
+        lines.append(f'{e("cross")} <b>Продажа закрыта.</b> Вместо тарифов '
+                     f'люди видят «серверы закончились». Уже работающие '
+                     f'серверы это не трогает.')
+        lines.append('')
 
     if not queue:
         lines.append(f'{e("ok")} Заявок в работе нет.')
@@ -777,6 +785,7 @@ async def queue_screen(call: types.CallbackQuery, c, settings) -> None:
     from app.bot.callbacks import Admin as PanelAdm
 
     waiting = len(await c.private.servers.pending())
+    selling = await settings.flag('private.enabled')
 
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(
@@ -785,9 +794,28 @@ async def queue_screen(call: types.CallbackQuery, c, settings) -> None:
         kb.row(types.InlineKeyboardButton(
             text=f'{e("cross")} Отказать всем ({waiting}) — серверы закончились',
             callback_data=PanelAdm(act='srvout').pack()))
+    # Рядом с отказом всем нарочно: это два шага одного решения — вернуть
+    # деньги тем, кто ждёт, и перестать продавать то, чего нет.
+    kb.row(types.InlineKeyboardButton(
+        text=(f'{e("lock")} Закрыть продажу' if selling
+              else f'{e("ok")} Открыть продажу'),
+        callback_data=PanelAdm(act='srvsale').pack()))
     kb.row(types.InlineKeyboardButton(
         text=f'{e("back")} Назад', callback_data=PanelAdm(act='main').pack()))
-    await edit(call, await queue_text(c), kb)
+    await edit(call, await queue_text(c, settings), kb)
+
+
+async def sale_toggle(call: types.CallbackQuery, c, settings) -> None:
+    """Закрыть или открыть продажу одним нажатием.
+
+    То же делает тумблер «Приём заявок» в настройках, но искать его там в
+    момент, когда машины кончились, — лишние четыре нажатия.
+    """
+    on = await settings.toggle('private.enabled', admin_id=call.from_user.id)
+    await call.answer('Продажа открыта' if on else
+                      'Продажа закрыта: вместо тарифов люди видят '
+                      '«серверы закончились»', show_alert=True)
+    await queue_screen(call, c, settings)
 
 
 # ── отказать всем ───────────────────────────────────────────────────────────
@@ -872,7 +900,15 @@ async def sold_out_go(call: types.CallbackQuery, c, settings) -> None:
             lost += 1
         await edit_card(call.bot, c, result.server, cancel_note(result))
 
+    # Вернуть деньги и продолжать продавать — это снова очередь под машины,
+    # которых нет, поэтому кнопка предлагается здесь же, пока решение свежее.
+    selling = await settings.flag('private.enabled')
+
     kb = InlineKeyboardBuilder()
+    if selling:
+        kb.row(types.InlineKeyboardButton(
+            text=f'{e("lock")} Закрыть продажу',
+            callback_data=PanelAdm(act='srvsale').pack()))
     kb.row(types.InlineKeyboardButton(
         text=f'{e("back")} К очереди', callback_data=PanelAdm(act='srvq').pack()))
     await edit(call,
@@ -882,12 +918,16 @@ async def sold_out_go(call: types.CallbackQuery, c, settings) -> None:
                + (f'Не удалось отменить: <b>{report["failed"]}</b>\n'
                   if report['failed'] else '')
                + (f'\n{e("attention")} Не доставлено: <b>{lost}</b> — эти люди '
-                  f'закрыли бота. Деньги и прибавка начислены всё равно.'
-                  if lost else ''), kb)
+                  f'закрыли бота. Деньги и прибавка начислены всё равно.\n'
+                  if lost else '')
+               + (f'\n{e("warning")} Продажа открыта: новые заявки придут в ту '
+                  f'же пустую очередь. Закройте её, пока машин нет.'
+                  if selling else
+                  f'\n{e("lock")} Продажа закрыта — новых заявок не будет.'), kb)
 
 
 async def queue_command(message: types.Message, c, settings) -> None:
-    await message.answer(await queue_text(c))
+    await message.answer(await queue_text(c, settings))
 
 
 async def pool_add(message: types.Message, command, c, settings) -> None:
@@ -1122,3 +1162,4 @@ def register(router: Router) -> None:
     router.callback_query.register(
         sold_out_go, PanelAdm.filter(F.act == 'srvout'), PanelAdm.filter(F.a == 'go'))
     router.callback_query.register(sold_out_ask, PanelAdm.filter(F.act == 'srvout'))
+    router.callback_query.register(sale_toggle, PanelAdm.filter(F.act == 'srvsale'))

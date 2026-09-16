@@ -24,7 +24,7 @@ from app.domain import private_servers as ps
 INVITES_ENABLED = 'info.server_invites_enabled'
 
 ERRORS = {
-    'disabled': 'Личные серверы временно недоступны.',
+    'disabled': 'Серверы закончились.',
     'already_has': 'У вас уже есть сервер.',
     'no_funds': 'На балансе не хватает {amount}₽.',
     'unknown_plan': 'Такого тарифа нет.',
@@ -62,8 +62,40 @@ def _btn(text: str, action: str, value: str = '') -> types.InlineKeyboardButton:
         text=text, callback_data=Server(action=action, value=value).pack())
 
 
+# ── серверы закончились ─────────────────────────────────────────────────────
+#
+# Выключенный приём заявок раньше выглядел так: тарифы на месте, локации и
+# протоколы выбираются, и только на списании всплывало «временно
+# недоступны». Человек проходил всю покупку, чтобы получить отказ за свой же
+# выбор. Поэтому выключатель убирает витрину целиком, а не ответ в конце.
+
+SOLD_OUT = ('Свободные серверы закончились. Поднимем новые — продажа '
+            'откроется снова.')
+
+
+async def selling(settings) -> bool:
+    """Продаём ли сейчас. Выключатель — «Приём заявок» в /admin или /queue."""
+    return bool(await settings.flag('private.enabled'))
+
+
+async def sold_out(event, c, user: dict, settings) -> None:
+    """Экран вместо витрины: серверы закончились, кнопок покупки нет."""
+    kb = InlineKeyboardBuilder()
+    await footer(kb, settings, back='profile')
+
+    note = str(await settings.get('private.sold_out_note') or '').strip()
+    text = (profile_caption(user, f'{e("private")} Серверы закончились')
+            + f'<blockquote>{note or SOLD_OUT}</blockquote>')
+    await render(event, Screen(text=text, markup=kb.as_markup(),
+                               image=c.media('profile')))
+
+
 # ── витрина ─────────────────────────────────────────────────────────────────
 async def shop(event, c, user: dict, settings, note: str = '') -> None:
+    if not await selling(settings):
+        await sold_out(event, c, user, settings)
+        return
+
     # Тарифов четыре, и раньше каждый занимал две плотные строки, из которых
     # три четверти повторяли друг друга («сервер целиком ваш» трижды подряд).
     # Читается это как сплошной текст, а выбирают тут по двум числам: цена и
@@ -129,6 +161,12 @@ def _pick(*parts: str) -> str:
 
 async def choose_location(call: types.CallbackQuery, callback_data: Server, c,
                           user: dict, settings) -> None:
+    # Экран с тарифами мог остаться открытым с той минуты, когда серверы ещё
+    # были: проверяем на каждом шаге, а не только на первом.
+    if not await selling(settings):
+        await sold_out(call, c, user, settings)
+        return
+
     plan = ps.BY_CODE.get(callback_data.value)
     if not plan:
         await call.answer(ERRORS['unknown_plan'], show_alert=True)
@@ -175,6 +213,10 @@ async def choose_location(call: types.CallbackQuery, callback_data: Server, c,
 
 async def choose_profile(call: types.CallbackQuery, callback_data: Server, c,
                          user: dict, settings) -> None:
+    if not await selling(settings):
+        await sold_out(call, c, user, settings)
+        return
+
     plan_code, _, location_code = callback_data.value.partition(PICK)
     plan, location = ps.BY_CODE.get(plan_code), ps.BY_LOCATION.get(location_code)
     if not plan or not location:
@@ -213,6 +255,10 @@ async def choose_profile(call: types.CallbackQuery, callback_data: Server, c,
 
 async def buy_confirm(call: types.CallbackQuery, callback_data: Server, c, user: dict,
                       settings) -> None:
+    if not await selling(settings):
+        await sold_out(call, c, user, settings)
+        return
+
     parts = callback_data.value.split(PICK)
     plan = ps.BY_CODE.get(parts[0] if parts else '')
     location = ps.BY_LOCATION.get(parts[1] if len(parts) > 1 else '')
@@ -266,6 +312,12 @@ async def order(call: types.CallbackQuery, callback_data: Server, c, user: dict,
         location=parts[1] if len(parts) > 1 else '',
         profile=parts[2] if len(parts) > 2 else ps.DEFAULT_PROFILE)
     if not result.ok:
+        # Продажу могли закрыть ровно между экраном и нажатием. Всплывающее
+        # «серверы закончились» на экране «Оплатить 990₽» читается как сбой,
+        # поэтому показываем тот же экран, что и все остальные.
+        if result.reason == 'disabled':
+            await sold_out(call, c, user, settings)
+            return
         await call.answer(ERRORS.get(result.reason, 'Не получилось').format(
             amount=result.amount), show_alert=True)
         return
