@@ -46,8 +46,11 @@ async def test_moves_expired_user_to_backup_squad(db, user_factory, lifeline):
 
 
 async def test_second_expiry_only_extends_grace(db, user_factory, lifeline):
+    """Пока человек на запасном сервере недолго, окно продлевается.
+    Предел на «недолго» проверяется в test_freebies.py."""
     service, vpn = lifeline
     user = await user_factory(**{'vpn.uuid': 'u-1', 'vpn.in_lifeline': True,
+                                 'vpn.lifeline_at': now(),
                                  'vpn.activeInternalSquads': ['base']})
 
     assert (await service.on_expired(user))['note'] == 'grace_extended'

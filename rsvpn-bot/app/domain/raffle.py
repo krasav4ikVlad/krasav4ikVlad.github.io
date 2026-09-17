@@ -21,6 +21,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.core.time import MSK, parse_dt
+from app.domain.payments import fingerprint  # noqa: F401  (используется сервисом)
 
 # ── почему оплата не даёт билета ────────────────────────────────────────────
 NO_REFERRER = 'без пригласившего'
@@ -42,12 +43,6 @@ NEVER_CONNECTED = 'ни разу не подключался'
 BATCH_SIZE = 3
 BATCH_WINDOW = timedelta(hours=1)
 
-# Из чего собираем отпечаток плательщика. Ключи разные у разных провайдеров,
-# поэтому берём все, что встречаются, — совпадение хотя бы по одному уже
-# означает, что за двух разных людей платили с одного кошелька.
-PRINT_KEYS = ('email', 'payer_email', 'buyer_email', 'customer_email',
-              'phone', 'payer_phone', 'card', 'card_mask', 'pan',
-              'account', 'payer_id', 'wallet')
 
 
 def parse_day(text: str, end: bool = False) -> datetime | None:
@@ -70,23 +65,6 @@ def parse_day(text: str, end: bool = False) -> datetime | None:
 
     parsed = parse_dt(raw)
     return parsed
-
-
-def fingerprint(payload) -> str:
-    """Чем платили — одной строкой, чтобы заметить один кошелёк на многих.
-
-    Значения приводим к нижнему регистру: один и тот же адрес приходит от
-    провайдеров то так, то иначе, и без этого совпадение теряется.
-    """
-    if not isinstance(payload, dict):
-        return ''
-
-    parts = []
-    for key in PRINT_KEYS:
-        value = payload.get(key)
-        if isinstance(value, (str, int)) and str(value).strip():
-            parts.append(f'{key}={str(value).strip().lower()}')
-    return '|'.join(parts)
 
 
 def mark_batches(rows: list[dict]) -> None:

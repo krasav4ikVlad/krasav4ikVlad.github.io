@@ -43,7 +43,17 @@ class LifelineService:
         grace_until = plus_days(await self.settings.int('lifeline.grace_days'))
 
         if vpn.get('in_lifeline'):
-            # grace кончился, а человек не продлился — продлеваем окно молча
+            # grace кончился, а человек не продлился. Раньше окно продлевалось
+            # молча и на следующем событии истечения — тоже, то есть вечно:
+            # панель гасит подписку через три дня, присылает `user.expired`,
+            # и мы снова выдаём три дня. Запасной сервер, задуманный как
+            # «успеть открыть бота и продлить», превращался в бесплатную
+            # подписку навсегда для каждого, кто хоть раз платил.
+            if self._grace_over(vpn, await self.settings.int('lifeline.max_days')):
+                log.info('lifeline: %s сидит дольше предела — больше не продлеваем',
+                         uuid)
+                return {'note': 'grace_over'}
+
             await self.vpn.update_subscription(uuid, expire_at=grace_until, squads=[squad])
             return {'note': 'grace_extended'}
 
@@ -67,6 +77,23 @@ class LifelineService:
         )
         log.info('lifeline: %s переведён на запасной сервер до %s', uuid, grace_until)
         return {'note': 'moved', 'until': grace_until, 'original': original}
+
+    @staticmethod
+    def _grace_over(vpn: dict, max_days: int) -> bool:
+        """Дольше ли человек на запасном сервере, чем мы готовы его держать.
+
+        Считаем от первого перевода (`lifeline_at`), а не от последнего
+        продления: иначе предел никогда не наступит — каждое продление
+        обнуляло бы счёт. 0 — держать без ограничения, как было раньше.
+        """
+        if max_days <= 0:
+            return False
+        since = parse_dt(vpn.get('lifeline_at'))
+        if not since:
+            # Не знаем, когда перевели, — значит перевели давно, до того как
+            # мы начали это записывать. Держать вечно тем более незачем.
+            return True
+        return (now() - since).days > max_days
 
     async def restore(self, user_id: int) -> bool:
         """Вернуть родные сквады. Вызывается сразу после продления."""
