@@ -161,6 +161,33 @@ async def test_nothing_happens_while_the_panel_is_still_old(container, user_fact
     assert len(panel.asked) == 1, 'одна проверка версии, а не запрос на человека'
 
 
+async def test_the_hourly_task_does_not_walk_the_whole_base_on_an_old_panel(
+        container, user_factory, monkeypatch):
+    """Единственная работа при 2.x — найти следы отката, которого не было.
+    Ради неё задача перебирала всю базу каждый час."""
+    await user_factory(**{'vpn.uuid': V2_USER['uuid'], 'vpn.shortUuid': 's-1'})
+
+    async def explode(*args, **kwargs):
+        raise AssertionError('перебор базы при старой панели')
+
+    monkeypatch.setattr(panel_ids, 'find_stale', explode)
+    report = await panel_ids.migrate(container.users, Panel(V2_USER), apply=True,
+                                     scan_old=False)
+
+    assert report['panel'] == 'old'
+
+
+async def test_the_rollback_is_still_found_when_asked_by_hand(container, user_factory):
+    """Команда и скрипт ходят полным перебором: их зовут как раз тогда,
+    когда откат мог случиться."""
+    await user_factory(**{'user_data.user_id': 7, 'vpn.uuid': 4271,
+                          'vpn.shortUuid': 's-1'})
+
+    report = await panel_ids.migrate(container.users, Panel(V2_USER), apply=True)
+
+    assert report['direction'] == 'to_uuid' and report['moved'] == 1
+
+
 async def test_old_subscriptions_move_to_numeric_ids(container, db, user_factory):
     await user_factory(**{'user_data.user_id': 7, 'vpn.uuid': V2_USER['uuid'],
                           'vpn.shortUuid': 's-1'})

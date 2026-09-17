@@ -114,7 +114,8 @@ async def find_stale(users, numeric: bool = True, limit: int = 0) -> list[dict]:
     return rows
 
 
-async def migrate(users, panel, apply: bool = False, limit: int = 0) -> dict:
+async def migrate(users, panel, apply: bool = False, limit: int = 0,
+                  scan_old: bool = True) -> dict:
     """Привести ссылки на панель к тому виду, который она понимает.
 
     Сначала спрашиваем панель, чем она называет пользователя, и только
@@ -124,6 +125,13 @@ async def migrate(users, panel, apply: bool = False, limit: int = 0) -> dict:
 
     Без apply — только посчитать: переезд трогает панель одним запросом на
     подписку, и запускать его вслепую, не увидев масштаба, не стоит.
+
+    `scan_old=False` — не искать работу, когда панель прежняя. Смысл поиска
+    при 2.x только один: найти следы отката с 3.x. Ради него фоновая задача
+    перебирала всю базу каждый час, хотя отката не было ни разу, — час
+    работы на вопрос, ответ на который известен заранее. Команда и скрипт
+    ходят с полным перебором, потому что их зовут как раз в тот день, когда
+    ответ неизвестен.
     """
     report: dict = {'stale': 0, 'moved': 0, 'failed': 0, 'panel': '',
                     'direction': '', 'rows': []}
@@ -138,10 +146,13 @@ async def migrate(users, panel, apply: bool = False, limit: int = 0) -> dict:
         report['panel'] = 'unknown'
         return report
 
-    stale = await find_stale(users, numeric, limit)
-    report['stale'] = len(stale)
     report['panel'] = 'new' if numeric else 'old'
     report['direction'] = 'to_id' if numeric else 'to_uuid'
+    if not numeric and not scan_old:
+        return report
+
+    stale = await find_stale(users, numeric, limit)
+    report['stale'] = len(stale)
     if not stale:
         report['panel'] = 'nothing'
         return report

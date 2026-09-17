@@ -116,13 +116,22 @@ async def migrate_panel_ids(container) -> None:
     Пока панель до 3.0, задача выходит после одного запроса: ей нечего
     делать. После обновления она сама переведёт всех, и день обновления не
     превращается в день, когда надо вспомнить про команду.
+
+    Откат с 3.x обратно на 2.x она не разгребает — для этого есть команда
+    /panelids fix и скрипт. Искать следы отката сама она не может дёшево:
+    это перебор всей базы, и делать его каждый час ради события, которого
+    не было, — плата ни за что.
     """
     from app.services import panel_ids
 
     if container.vpn is None:
         return
 
-    report = await panel_ids.migrate(container.users, container.vpn, apply=True)
+    # scan_old=False: пока панель прежняя, задача и правда стоит одного
+    # запроса. Без этого она каждый час перебирала всю базу в поисках следов
+    # отката с 3.x — отката, которого не было.
+    report = await panel_ids.migrate(container.users, container.vpn, apply=True,
+                                     scan_old=False)
     if report['panel'] == 'old':
         return                      # панель прежняя — отмечать нечего
 
