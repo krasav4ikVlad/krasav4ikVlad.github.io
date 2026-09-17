@@ -20,7 +20,6 @@ from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import profile_caption
 from app.core.errors import VpnPanelError
 from app.core.time import fmt, now, parse_dt
-from app.integrations.vpn.links import LinkEncryptionError
 from app.content.emoji import e
 
 GB = 1024 ** 3
@@ -127,11 +126,11 @@ async def send_link(call: types.CallbackQuery, callback_data: Menu, c, user: dic
     link = c.users.pick(user, f'vpn.{cache_field}')
     if not link:
         raw_url = f'{await settings.get("link.connect_base")}{short}'
-        try:
-            link = await c.links.for_app(app, raw_url)
-        except LinkEncryptionError as exc:
-            await call.answer(exc.user_message, show_alert=True)
-            return
+        # Ошибку шифрования не перехватываем: человек увидит тот же текст,
+        # но теперь её поймает middleware и запишет в журнал (/errors) — с
+        # настоящей причиной. Пока она гасилась здесь, «воспользуйтесь Happ»
+        # приходило человеку и не оставляло следа нигде.
+        link = await c.links.for_app(app, raw_url)
         # ссылка детерминированная и не меняется — считаем один раз
         await c.users.set_vpn(call.from_user.id,
                               {cache_field: link, 'preferred_client': app})
