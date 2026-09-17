@@ -190,15 +190,22 @@ async def start_sending(call: types.CallbackQuery, state: FSMContext, c, setting
 
     await state.clear()
     audience = data.get('audience', 'all')
-    query = ({'growth.segment': audience} if data.get('one') else audience_query(audience))
 
     await call.message.edit_text(
         f'<b>{e("broadcast")} Собираю получателей…</b>', reply_markup=None)
     await call.answer('Пошла рассылка')
 
+    # Готовый список получателей приходит, когда аудиторию нельзя выразить
+    # сегментом: например, «кто приходил, пока бот молчал» (/outage). Тогда
+    # он уже собран и отфильтрован — пересобирать его запросом нечем.
+    #
     # Список — заранее и целиком: курсор, открытый на всю отправку, сервер
     # закроет по таймауту, и рассылка оборвётся на середине.
-    recipients = await _recipients(c, query)
+    recipients = [int(user_id) for user_id in (data.get('recipients') or [])]
+    if not recipients:
+        query = ({'growth.segment': audience} if data.get('one')
+                 else audience_query(audience))
+        recipients = await _recipients(c, query)
     job = {
         '_id': f'{call.from_user.id}-{int(now().timestamp())}',
         'audience': audience, 'text': text, 'recipients': recipients,
