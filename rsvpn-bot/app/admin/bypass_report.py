@@ -20,7 +20,7 @@ from aiogram.filters import Command
 from app.content.emoji import e
 from app.core.time import fmt, now
 from app.integrations.vpn.links import LinkEncryptionError
-from app.services import bypass_plan, bypass_usage
+from app.services import bypass_arpu, bypass_plan, bypass_usage
 
 DEFAULT_DAYS = 30
 TEST_URL = 'https://example.com/sub/test'
@@ -112,6 +112,74 @@ def render(data: dict) -> str:
                  'период. Если у нод включён коэффициент, панель показывает '
                  'то, что реально прошло через канал, а бот списывает с '
                  'лимита долю от этого.</blockquote>')
+    return '\n'.join(lines)
+
+
+# ── средний заработок с активного ───────────────────────────────────────────
+async def average(message: types.Message, command, c, settings) -> None:
+    """`/bypassavg [дней]` — сколько приносит активный покупатель ByPass."""
+    raw = (command.args or '').strip()
+    days = int(raw) if raw.isdigit() and int(raw) > 0 else bypass_arpu.ACTIVE_DAYS
+
+    await message.answer(f'{e("refresh")} Считаю…')
+    await message.answer(render_average(
+        await bypass_arpu.collect(c.balance_log, active_days=days)))
+
+
+def render_average(data: dict) -> str:
+    lines = [f'{e("bypass")} <b>ByPass: сколько приносит покупатель</b>',
+             f'Активными считаем тех, кто покупал за последние '
+             f'{data["active_days"]} дн.', '']
+
+    if not data['active']:
+        lines.append('Активных покупателей нет.')
+        return '\n'.join(lines)
+
+    lines.append(f'{e("referrals")} Активных покупателей: <b>{data["active"]}</b>')
+    lines.append(f'{e("money")} <b>В среднем {data["average"]}₽ в месяц</b> '
+                 f'с человека')
+    lines.append(f'   медиана: <b>{data["median"]}₽</b>, '
+                 f'трафика {data["gb_average"]} Гб в месяц')
+    lines.append(f'   за последние 30 дней они заплатили '
+                 f'<b>{data["revenue_30"]}₽</b> — это '
+                 f'<b>{data["simple"]}₽</b> на человека')
+    lines.append('')
+
+    if data['gap']:
+        lines.append(f'{e("calendar")} Докупают в среднем раз в '
+                     f'<b>{data["gap"]}</b> дн., покупок за всё время: '
+                     f'{data["purchases"]}')
+        lines.append('')
+
+    lines.append('<b>Сколько платят в месяц</b>')
+    for row in data['buckets']:
+        if not row['people']:
+            continue
+        title = (f'{row["from"]}–{row["to"]}₽' if row['to']
+                 else f'{row["from"]}₽ и больше')
+        lines.append(f'   {title}: <b>{row["people"]}</b> чел.')
+    lines.append('')
+
+    if data['gone']:
+        lines.append(f'{e("cross")} Отсеяны как ушедшие: <b>{data["gone"]}</b> '
+                     f'(покупали, но давно)')
+        for row in data['gone_buckets']:
+            title = (f'{row["from"]}–{row["to"]} дн. назад' if row['to']
+                     else f'больше {row["from"]} дн. назад')
+            lines.append(f'   {title}: {row["people"]} чел.')
+        lines.append(f'   <i>Если бы считали вместе с ними, вышло бы '
+                     f'{round((data["average"] * data["active"] + data["gone_rate"] * data["gone"]) / (data["active"] + data["gone"]))}₽ '
+                     f'вместо {data["average"]}₽.</i>')
+        lines.append('')
+
+    lines.append('<blockquote>Ставка считается по каждому за его собственный '
+                 'срок: сколько заплатил с первой покупки, приведённое к '
+                 'месяцу. Иначе тот, кто взял 100 ГБ на два месяца, в один '
+                 'месяц выглядел бы богачом, а в другой — нулём, хотя платит '
+                 'ровно столько же.\n\nСрок берётся не меньше месяца: '
+                 'вчерашняя покупка на 500₽ — это не 15 000₽ в месяц, а '
+                 'человек, который только начал.\n\nПанель здесь не '
+                 'спрашивается вовсе — только деньги из журнала.</blockquote>')
     return '\n'.join(lines)
 
 
@@ -404,5 +472,6 @@ async def incy_reset(message: types.Message, command, c, settings) -> None:
 def register(router: Router) -> None:
     router.message.register(usage, Command('bypassuse'))
     router.message.register(plan, Command('bypassplan'))
+    router.message.register(average, Command('bypassavg'))
     router.message.register(incy, Command('incy'))
     router.message.register(incy_reset, Command('incyreset'))
