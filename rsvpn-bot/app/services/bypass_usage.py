@@ -34,7 +34,7 @@ FIELDS = {'user_data.user_id': 1, 'vpn.bypass_uuid': 1,
 async def collect(users, journal, panel, squad: str, start: datetime,
                   end: datetime) -> dict:
     subscribers, limits = await _subscribers(users)
-    traffic = await _traffic(panel, squad, subscribers, start, end)
+    traffic, panel_info = await _traffic(panel, squad, subscribers, start, end)
     money = await _money(journal, start, end)
 
     spenders = sorted((row for row in traffic.items() if row[1] > 0),
@@ -58,9 +58,12 @@ async def collect(users, journal, panel, squad: str, start: datetime,
         'purchases': sum(row['count'] for row in money.values()),
         'median_paid': _median([row['spent'] for row in money.values()
                                 if row['spent'] > 0]),
-        # ── остатки на руках: оплаченные, но не съеденные гигабайты
-        'left_bytes': sum(limits.values()),
+        # Лимит, выданный в панель за всё время: начальный подарок плюс все
+        # покупки. Это НЕ остаток — сколько из него съедено, знает панель,
+        # а бот своё число только наращивает.
+        'limit_bytes': sum(limits.values()),
         'squad': squad,
+        'panel': panel_info,
     }
 
 
@@ -79,32 +82,57 @@ async def _subscribers(users) -> tuple[set[int], dict[int, int]]:
     return found, limits
 
 
-async def _traffic(panel, squad: str, subscribers: set[int],
-                   start: datetime, end: datetime) -> dict[int, int]:
-    """Расход по скваду ByPass: {telegram id: байты}.
+def telegram_id(key) -> int | None:
+    """Telegram id из ключа расхода — или None, если это не он.
 
-    Панель отдаёт расход и по своему числовому id, и по username — а
-    username у нас telegram id. Берём только по нему: иначе один и тот же
-    человек посчитается дважды, и средний расход удвоится.
+    У ByPass своя запись в панели, и зовут её `<id>_bypass`: под этим
+    именем создаётся подписка. Первая версия отчёта брала только ключи из
+    одних цифр — и отбрасывала ровно всех, кого считала. Отчёт показывал
+    честный ноль там, где трафик шёл терабайтами.
     """
+    text = str(key)
+    if text.isdigit():
+        return int(text)
+    head, _, tail = text.partition('_')
+    if tail == 'bypass' and head.isdigit():
+        return int(head)
+    return None
+
+
+async def _traffic(panel, squad: str, subscribers: set[int],
+                   start: datetime, end: datetime) -> tuple[dict[int, int], dict]:
+    """Расход по скваду ByPass: {telegram id: байты} и что ответила панель.
+
+    Второй словарь нужен, чтобы пустой результат было чем объяснить: «панель
+    промолчала», «ответила, но никого из наших в ответе нет» и «никто не
+    качал» — три разные беды, а на экране они выглядели одинаково.
+    """
+    info = {'rows': 0, 'sample': [], 'error': '', 'asked': bool(squad)}
     if not squad:
-        return {}
+        info['error'] = 'сквад ByPass не задан'
+        return {}, info
 
     try:
         usage = await panel.squad_usage(squad, start, end)
     except Exception as exc:                     # noqa: BLE001 — отчёт, не платёж
         log.warning('расход сквада ByPass не получен: %s', exc)
-        return {}
+        info['error'] = str(exc)
+        return {}, info
+
+    usage = usage or {}
+    info['rows'] = len(usage)
+    info['sample'] = [str(key) for key in list(usage)[:3]]
 
     found: dict[int, int] = {}
-    for key, value in (usage or {}).items():
-        text = str(key)
-        if not text.isdigit():
+    for key, value in usage.items():
+        user_id = telegram_id(key)
+        if user_id is None or user_id not in subscribers:
             continue
-        user_id = int(text)
-        if user_id in subscribers:
-            found[user_id] = int(value or 0)
-    return found
+        # Панель отдаёт одного человека дважды: под своим числовым id и под
+        # username. Берём большее — оба числа про один и тот же расход, а
+        # складывать их значило бы удвоить его.
+        found[user_id] = max(found.get(user_id, 0), int(value or 0))
+    return found, info
 
 
 async def _money(journal, start: datetime, end: datetime) -> dict[int, dict]:

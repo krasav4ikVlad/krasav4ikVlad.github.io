@@ -61,7 +61,8 @@ async def collect(users, journal, panel, squad: str, start: datetime,
         }
 
     await _fill_money(journal, people, start, end)
-    for user_id, used in (await _traffic(panel, squad, set(people), start, end)).items():
+    traffic, panel_info = await _traffic(panel, squad, set(people), start, end)
+    for user_id, used in traffic.items():
         people[user_id]['used_bytes'] = used
 
     days = max(1, (end - start).days)
@@ -83,7 +84,7 @@ async def collect(users, journal, panel, squad: str, start: datetime,
 
     return {
         'rows': rows, 'days': days, 'start': start, 'end': end,
-        'buyers': buyers,
+        'buyers': buyers, 'panel': panel_info,
         'free_users': len(freeloaders),
         'free_gb_month': round(sum(row['used_gb_month'] for row in freeloaders), 1),
         'paid_gb_month': round(sum(row['used_gb_month'] for row in buyers), 1),

@@ -52,10 +52,9 @@ def render(data: dict) -> str:
     lines.append(f'{e("card")} Покупали гигабайты: <b>{data["payers"]}</b>')
     lines.append('')
 
-    if not data['spenders'] and not data['squad']:
-        lines.append(f'{e("warning")} Сквад ByPass не задан в настройках — '
-                     f'расход спросить не у кого.')
-        return '\n'.join(lines)
+    if not data['spenders']:
+        lines.append(panel_trouble(data['panel']))
+        lines.append('')
 
     # ── расход
     lines.append('<b>Сколько качают</b>')
@@ -88,9 +87,10 @@ def render(data: dict) -> str:
     if data['gb_bought']:
         lines.append(f'Вышло по <b>{round(data["paid"] / data["gb_bought"], 1)}₽</b> '
                      f'за гигабайт')
-    lines.append(f'{e("traffic")} Не съедено на руках: '
-                 f'<b>{gb(data["left_bytes"])} Гб</b> — это оплаченный трафик, '
-                 f'который ещё предстоит прокачать')
+    lines.append(f'{e("traffic")} Лимита выдано за всё время: '
+                 f'<b>{gb(data["limit_bytes"])} Гб</b> — это подарочные '
+                 f'гигабайты плюс все покупки. Сколько из них съедено, знает '
+                 f'только панель: бот своё число не уменьшает')
     lines.append('')
 
     # ── главное
@@ -113,6 +113,23 @@ def render(data: dict) -> str:
                  'то, что реально прошло через канал, а бот списывает с '
                  'лимита долю от этого.</blockquote>')
     return '\n'.join(lines)
+
+
+def panel_trouble(info: dict) -> str:
+    """Почему расход нулевой. Три разные беды выглядели одинаково."""
+    if not info or not info.get('asked'):
+        return (f'{e("warning")} Сквад ByPass не задан в настройках — расход '
+                f'спросить не у кого.')
+    if info.get('error'):
+        return f'{e("warning")} Панель не ответила: <code>{info["error"]}</code>'
+    if not info.get('rows'):
+        return (f'{e("warning")} Панель ответила пустым списком: либо у сквада '
+                f'нет расхода за период, либо ручка расхода на этой версии '
+                f'панели не работает.')
+    sample = ', '.join(f'<code>{key}</code>' for key in info.get('sample') or [])
+    return (f'{e("warning")} Панель вернула {info["rows"]} строк, но никого из '
+            f'наших в них нет. Так выглядят её ключи: {sample} — значит имена '
+            f'подписок разошлись с тем, что бот ждёт.')
 
 
 # ── под безлимитный тариф ───────────────────────────────────────────────────

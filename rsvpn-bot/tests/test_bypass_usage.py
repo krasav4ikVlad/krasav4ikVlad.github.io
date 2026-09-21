@@ -159,12 +159,13 @@ async def test_purchases_outside_the_period_are_not_counted(repos, db):
     assert (await collect(repos, Panel()))['paid'] == 0
 
 
-async def test_unspent_gigabytes_are_visible(repos, db):
-    """Оплаченный, но не прокачанный трафик — обязательство, а не выручка."""
+async def test_the_limit_handed_out_is_visible(repos, db):
+    """Это не остаток: бот своё число только наращивает, а сколько съедено,
+    знает панель. Подпись в отчёте обещала остаток — и врала."""
     users, journal = repos
     await subscriber(users, 10, left_gb=12)
 
-    assert bypass_usage.gb((await collect(repos, Panel()))['left_bytes']) == 12.0
+    assert bypass_usage.gb((await collect(repos, Panel()))['limit_bytes']) == 12.0
 
 
 # ── приведение к месяцу ─────────────────────────────────────────────────────
@@ -209,3 +210,68 @@ async def test_the_report_shows_the_monthly_average_per_person(repos, db):
 
     assert '30.0 Гб</b> в месяц' in text
     assert '300₽</b> в месяц' in text
+
+
+# ── имена подписок ──────────────────────────────────────────────────────────
+def test_a_bypass_subscription_is_named_with_a_suffix():
+    """У ByPass своя запись в панели, и зовут её `<id>_bypass`. Отчёт брал
+    только ключи из одних цифр — и отбрасывал ровно всех, кого считал."""
+    assert bypass_usage.telegram_id('802421217_bypass') == 802421217
+    assert bypass_usage.telegram_id('802421217') == 802421217
+
+
+def test_a_name_that_is_not_an_id_is_not_guessed():
+    assert bypass_usage.telegram_id('vasya_bypass') is None
+    assert bypass_usage.telegram_id('802421217_extra') is None
+    assert bypass_usage.telegram_id('') is None
+
+
+async def test_the_traffic_of_bypass_subscriptions_is_counted(repos, db):
+    """Главная проверка: отчёт показывал честный ноль там, где трафик шёл
+    терабайтами."""
+    users, journal = repos
+    await subscriber(users, 10)
+
+    data = await collect(repos, Panel({'10_bypass': 7 * GB}))
+
+    assert data['spenders'] == 1 and bypass_usage.gb(data['used_bytes']) == 7.0
+
+
+async def test_both_names_of_one_person_are_one_person(repos, db):
+    """Панель отдаёт и числовой id, и username — это один и тот же расход."""
+    users, journal = repos
+    await subscriber(users, 10)
+
+    data = await collect(repos, Panel({4271: 7 * GB, '10_bypass': 7 * GB}))
+
+    assert data['spenders'] == 1 and bypass_usage.gb(data['used_bytes']) == 7.0
+
+
+# ── почему расход нулевой ───────────────────────────────────────────────────
+async def test_a_silent_panel_is_named_as_the_reason(repos, db):
+    users, journal = repos
+    await subscriber(users, 10)
+
+    text = admin.render(await collect(repos, Panel(broken=True)))
+
+    assert 'Панель не ответила' in text
+
+
+async def test_an_empty_answer_is_named_as_the_reason(repos, db):
+    users, journal = repos
+    await subscriber(users, 10)
+
+    text = admin.render(await collect(repos, Panel()))
+
+    assert 'пустым списком' in text
+
+
+async def test_names_that_do_not_match_are_named_as_the_reason(repos, db):
+    """Самый коварный случай: панель отвечает, данные есть, а ноль — потому
+    что имена разошлись. Раньше это выглядело как «никто не качал»."""
+    users, journal = repos
+    await subscriber(users, 10)
+
+    text = admin.render(await collect(repos, Panel({'vasya': 5 * GB})))
+
+    assert 'никого из наших' in text and 'vasya' in text
