@@ -151,11 +151,11 @@ async def plan(message: types.Message, command, c, settings) -> None:
                     f'Всё приведено к месяцу.')
         return
 
-    cost = float(await settings.get('bypass.cost_per_gb') or 0)
-    await message.answer(render_plan(data, cost))
+    await message.answer(render_plan(
+        data, cost_month=await settings.int('bypass.cost_month')))
 
 
-def render_plan(data: dict, cost_per_gb: float) -> str:
+def render_plan(data: dict, cost_month: int = 0) -> str:
     rows, days = data['rows'], data['days']
     buyers = data['buyers']
 
@@ -205,6 +205,33 @@ def render_plan(data: dict, cost_per_gb: float) -> str:
                      f'(в среднем {round(sum(subs) / len(subs))}₽)')
         lines.append('')
 
+    # ── сходится ли вообще
+    money = bypass_plan.economics(data, cost_month)
+    cost_per_gb = money['cost_per_real_gb']
+
+    if cost_month:
+        lines.append('<b>Сходится ли ByPass</b>')
+        lines.append(f'Выручка за трафик: <b>{money["revenue_month"]}₽</b> в месяц')
+        lines.append(f'Серверы: <b>−{money["cost_month"]}₽</b> в месяц')
+        lines.append(f'Итого: <b>{money["profit"]:+d}₽</b>')
+        lines.append('')
+        if money['real_gb']:
+            lines.append(f'Прокачано всего: <b>{money["real_gb"]} Гб</b> в месяц, '
+                         f'из них бесплатными <b>{money["free_share"]}%</b> '
+                         f'({data["free_users"]} чел. на подарочных гигабайтах)')
+            lines.append(f'Настоящий гигабайт обходится в '
+                         f'<b>{money["cost_per_real_gb"]}₽</b>')
+        if money['cost_per_sold_gb']:
+            lines.append(f'Проданный гигабайт обходится в '
+                         f'<b>{money["cost_per_sold_gb"]}₽</b>, а продаётся по '
+                         f'<b>{money["price_per_sold_gb"]}₽</b>')
+            if money['cost_per_sold_gb'] > money['price_per_sold_gb']:
+                lines.append(f'{e("attention")} <b>Продаём дешевле, чем '
+                             f'обходится.</b> Разницу создаёт коэффициент: '
+                             f'с лимита списывается доля того, что реально '
+                             f'уходит в канал, а платим мы за всё.')
+        lines.append('')
+
     # ── цена безлимита
     lines.append('<b>Что будет при безлимите</b>')
     lines.append('<i>цена → перейдут → выручка за трафик в месяц</i>')
@@ -216,10 +243,12 @@ def render_plan(data: dict, cost_per_gb: float) -> str:
         lines.append(line)
     lines.append('')
 
-    if not cost_per_gb:
-        lines.append(f'{e("attention")} Цена гигабайта для вас не задана '
-                     f'(/admin → ByPass → «Себестоимость гигабайта»), поэтому '
-                     f'расход не посчитан — только выручка.')
+    if not cost_month:
+        lines.append(f'{e("attention")} Стоимость серверов не задана '
+                     f'(/admin → ByPass → «Серверы ByPass в месяц»), поэтому '
+                     f'расход не посчитан — только выручка. Без неё цену '
+                     f'безлимита не поставить: гигабайт вам стоит не ноль, '
+                     f'а «плата за серверы, делённая на прокачанное».')
         lines.append('')
 
     lines.append('<blockquote>Переходят те, кому это выгодно: у кого траты за '

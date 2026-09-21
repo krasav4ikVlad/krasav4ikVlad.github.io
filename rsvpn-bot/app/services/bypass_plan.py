@@ -74,8 +74,49 @@ async def collect(users, journal, panel, squad: str, start: datetime,
         row['gap_days'] = _gap(row, days)
 
     rows.sort(key=lambda item: -item['spent_month'])
-    return {'rows': rows, 'days': days, 'start': start, 'end': end,
-            'buyers': [row for row in rows if row['purchases']]}
+    buyers = [row for row in rows if row['purchases']]
+    # Те, кто ничего не покупал, но качает: это бесплатный гигабайт при
+    # подключении. На одного человека мелочь, на сто тысяч — основной расход,
+    # и увидеть его можно только отдельной строкой.
+    freeloaders = [row for row in rows if not row['purchases']
+                   and row['used_gb_month'] > 0]
+
+    return {
+        'rows': rows, 'days': days, 'start': start, 'end': end,
+        'buyers': buyers,
+        'free_users': len(freeloaders),
+        'free_gb_month': round(sum(row['used_gb_month'] for row in freeloaders), 1),
+        'paid_gb_month': round(sum(row['used_gb_month'] for row in buyers), 1),
+        'sold_gb_month': round(sum(row['gb_month'] for row in buyers), 1),
+        'revenue_month': sum(row['spent_month'] for row in buyers),
+    }
+
+
+def economics(data: dict, cost_month: int) -> dict:
+    """Сходится ли ByPass как бизнес и почём обходится гигабайт.
+
+    Серверы оплачиваются помесячно и независимо от того, сколько по ним
+    прокачали, поэтому себестоимость гигабайта здесь не задаётся, а
+    выводится: расход за месяц поделить на прокачанное за месяц. Пока
+    трафика мало, гигабайт дорогой; чем плотнее забиты те же серверы, тем
+    он дешевле — и это главное, что нужно знать перед безлимитом.
+    """
+    real = data['free_gb_month'] + data['paid_gb_month']
+    sold = data['sold_gb_month']
+
+    return {
+        'cost_month': int(cost_month),
+        'revenue_month': data['revenue_month'],
+        'profit': data['revenue_month'] - int(cost_month),
+        'real_gb': round(real, 1),
+        'cost_per_real_gb': round(cost_month / real, 2) if real else 0.0,
+        # Сколько стоит гигабайт, который мы продаём. При коэффициенте 0.1
+        # это десять настоящих, поэтому число получается в разы больше
+        # цены пакета — и именно оно сравнивается с ценой.
+        'cost_per_sold_gb': round(cost_month / sold, 2) if sold else 0.0,
+        'price_per_sold_gb': round(data['revenue_month'] / sold, 2) if sold else 0.0,
+        'free_share': round(100 * data['free_gb_month'] / real) if real else 0,
+    }
 
 
 async def _fill_money(journal, people: dict[int, dict], start: datetime,

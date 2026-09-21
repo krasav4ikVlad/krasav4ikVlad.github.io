@@ -241,19 +241,21 @@ async def test_the_report_says_when_nobody_buys(repos, db):
     users, journal = repos
     await subscriber(users, 10)
 
-    text = admin.render_plan(await collect(repos), 0.0)
+    text = admin.render_plan(await collect(repos))
 
     assert 'цену безлимита считать не из чего' in text
 
 
-async def test_the_report_warns_that_the_cost_is_unknown(repos, db):
+async def test_the_report_warns_that_the_server_cost_is_unknown(repos, db):
+    """Без платы за серверы цену безлимита не поставить: гигабайт стоит не
+    ноль, а «плата за серверы, делённая на прокачанное»."""
     users, journal = repos
     await subscriber(users, 10)
     await bought(journal, 10, 90, 15)
 
-    text = admin.render_plan(await collect(repos), 0.0)
+    text = admin.render_plan(await collect(repos))
 
-    assert 'Себестоимость гигабайта' in text
+    assert 'Серверы ByPass в месяц' in text
 
 
 async def test_the_report_shows_the_price_table(repos, db):
@@ -261,7 +263,7 @@ async def test_the_report_shows_the_price_table(repos, db):
     await subscriber(users, 10)
     await bought(journal, 10, 900, 100)
 
-    text = admin.render_plan(await collect(repos), 2.0)
+    text = admin.render_plan(await collect(repos), cost_month=50000)
 
     assert 'Что будет при безлимите' in text
     assert '700₽</b> → перейдут 1' in text
@@ -278,3 +280,66 @@ async def test_the_csv_has_a_line_per_person(repos, db):
 
     assert lines[0].startswith('id;username')
     assert len(lines) == 3
+
+
+# ── сходится ли ByPass ──────────────────────────────────────────────────────
+async def test_free_gigabytes_are_counted_separately(repos, db):
+    """Подарочный гигабайт при подключении: на одного мелочь, на сто тысяч —
+    основной расход, и увидеть его можно только отдельной строкой."""
+    users, journal = repos
+    await subscriber(users, 10)
+    await subscriber(users, 11)
+    await bought(journal, 10, 90, 15)
+
+    data = await collect(repos, Panel({'10': 15 * GB, '11': 40 * GB}))
+
+    assert data['free_users'] == 1 and data['free_gb_month'] == 40.0
+    assert data['paid_gb_month'] == 15.0
+
+
+async def test_the_cost_of_a_gigabyte_is_derived_not_asked(repos, db):
+    """Серверы оплачиваются помесячно, а не за гигабайт: себестоимость
+    выводится делением, и чем плотнее забиты те же серверы, тем она ниже."""
+    users, journal = repos
+    await subscriber(users, 10)
+    await bought(journal, 10, 500, 100)
+
+    money = bypass_plan.economics(
+        await collect(repos, Panel({'10': 1000 * GB})), cost_month=10000)
+
+    assert money['cost_per_real_gb'] == 10.0     # 10 000₽ на 1000 настоящих Гб
+    assert money['cost_per_sold_gb'] == 100.0    # но продали-то всего 100
+
+
+async def test_the_report_says_when_we_sell_below_cost(repos, db):
+    """Ровно то, что делает коэффициент: продаём один гигабайт, а в канал
+    уходит десять, и платим мы за десять."""
+    users, journal = repos
+    await subscriber(users, 10)
+    await bought(journal, 10, 500, 100)
+
+    text = admin.render_plan(
+        await collect(repos, Panel({'10': 1000 * GB})), cost_month=10000)
+
+    assert 'Продаём дешевле, чем обходится' in text
+
+
+async def test_a_profitable_bypass_is_not_scolded(repos, db):
+    users, journal = repos
+    await subscriber(users, 10)
+    await bought(journal, 10, 500, 100)
+
+    text = admin.render_plan(
+        await collect(repos, Panel({'10': 100 * GB})), cost_month=100)
+
+    assert 'Продаём дешевле' not in text
+    assert 'Итого: <b>+400₽</b>' in text
+
+
+def test_economics_survives_a_month_without_traffic():
+    data = {'free_gb_month': 0.0, 'paid_gb_month': 0.0, 'sold_gb_month': 0.0,
+            'revenue_month': 0, 'free_users': 0}
+
+    money = bypass_plan.economics(data, cost_month=250000)
+
+    assert money['cost_per_real_gb'] == 0.0 and money['profit'] == -250000

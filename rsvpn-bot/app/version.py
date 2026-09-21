@@ -11,11 +11,11 @@
 
 from __future__ import annotations
 
-VERSION = '130'
+VERSION = '131'
 
 # Что появилось в этой сборке — короткой строкой, чтобы по логу было понятно
 # не только «другая», но и «та ли самая».
-BUILD = '/bypassplan: под цену безлимитного ByPass'
+BUILD = 'ByPass считается по плате за серверы, а не за гигабайт'
 
 
 def version_line() -> str:
