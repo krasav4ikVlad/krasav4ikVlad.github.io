@@ -51,6 +51,13 @@ def render_average(data: dict) -> str:
         lines.append('Активных покупателей нет.')
         return '\n'.join(lines)
 
+    lines.append('<b>Сколько купили гигабайт</b>')
+    for row in data['sold']:
+        lines.append(f'   {row["title"]}: <b>{row["gb"]} Гб</b> на '
+                     f'<b>{row["money"]}₽</b> — {row["purchases"]} покупок, '
+                     f'{row["people"]} чел.')
+    lines.append('')
+
     lines.append(f'{e("referrals")} Активных покупателей: <b>{data["active"]}</b>')
     lines.append(f'{e("money")} <b>В среднем {data["average"]}₽ в месяц</b> '
                  f'с человека')

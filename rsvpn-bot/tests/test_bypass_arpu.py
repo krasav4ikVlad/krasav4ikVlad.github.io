@@ -179,3 +179,46 @@ async def test_the_report_shows_what_the_gone_would_have_done(journal, db):
 
     assert 'Отсеяны как ушедшие' in text
     assert 'вместо 600₽' in text
+
+
+# ── сколько купили за период ────────────────────────────────────────────────
+async def test_purchases_are_totalled_by_window(journal, db):
+    """Сутки, неделя, месяц, два месяца — касса за период, без приведения
+    к месяцу: сравнивать их друг с другом — дело читателя."""
+    await bought(journal, 10, 50, days_ago=0, gb=5)
+    await bought(journal, 11, 90, days_ago=3, gb=15)
+    await bought(journal, 12, 170, days_ago=20, gb=30)
+    await bought(journal, 13, 500, days_ago=50, gb=100)
+
+    windows = {row['days']: row for row in (await bypass_arpu.collect(journal))['sold']}
+
+    assert (windows[1]['gb'], windows[1]['money']) == (5, 50)
+    assert (windows[7]['gb'], windows[7]['money']) == (20, 140)
+    assert (windows[30]['gb'], windows[30]['money']) == (50, 310)
+    assert (windows[60]['gb'], windows[60]['money']) == (150, 810)
+
+
+async def test_a_window_counts_people_not_purchases(journal, db):
+    """Один человек с тремя покупками за сутки — это один человек."""
+    for _ in range(3):
+        await bought(journal, 10, 50, days_ago=0, gb=5)
+
+    day = next(row for row in (await bypass_arpu.collect(journal))['sold']
+               if row['days'] == 1)
+
+    assert day['purchases'] == 3 and day['people'] == 1
+
+
+async def test_older_purchases_stay_outside_every_window(journal, db):
+    await bought(journal, 10, 500, days_ago=100, gb=100)
+
+    assert all(row['gb'] == 0 for row in (await bypass_arpu.collect(journal))['sold'])
+
+
+async def test_the_report_shows_the_windows(journal, db):
+    await bought(journal, 10, 90, days_ago=2, gb=15)
+
+    text = admin.render_average(await bypass_arpu.collect(journal))
+
+    assert 'за сутки: <b>0 Гб</b>' in text
+    assert 'за неделю: <b>15 Гб</b> на <b>90₽</b>' in text

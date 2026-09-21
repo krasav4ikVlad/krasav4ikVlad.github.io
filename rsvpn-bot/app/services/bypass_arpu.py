@@ -44,11 +44,18 @@ HISTORY_DAYS = 365
 RATE_BUCKETS = ((0, 100), (100, 300), (300, 600), (600, 0))
 GONE_BUCKETS = ((0, 30), (30, 60), (60, 90), (90, 180), (180, 0))
 
+# Окна для строки «сколько купили»: сутки, неделя, месяц, два месяца.
+# Считаются как есть, без приведения к месяцу: это касса за период, и
+# сравнивать их друг с другом — работа читателя, а не отчёта.
+WINDOWS = ((1, 'за сутки'), (7, 'за неделю'), (30, 'за месяц'),
+           (60, 'за два месяца'))
+
 
 async def collect(journal, active_days: int = ACTIVE_DAYS,
                   now: datetime | None = None) -> dict:
     moment = now or time_now()
-    people = await _people(journal, moment - timedelta(days=HISTORY_DAYS), moment)
+    people, sold = await _people(journal, moment - timedelta(days=HISTORY_DAYS),
+                                 moment)
 
     active, gone = [], []
     for row in people.values():
@@ -63,6 +70,7 @@ async def collect(journal, active_days: int = ACTIVE_DAYS,
 
     return {
         'active_days': active_days,
+        'sold': sold,
         'active': len(active),
         'gone': len(gone),
         'rows': sorted(active, key=lambda row: -row['rate']),
@@ -86,10 +94,18 @@ async def collect(journal, active_days: int = ACTIVE_DAYS,
     }
 
 
-async def _people(journal, start: datetime, end: datetime) -> dict[int, dict]:
-    """Покупки трафика по людям: суммы, даты, число и средний промежуток."""
+async def _people(journal, start: datetime,
+                  end: datetime) -> tuple[dict[int, dict], list[dict]]:
+    """Покупки трафика по людям и итоги по окнам — одним проходом.
+
+    Итоги считаются здесь же, а не вторым запросом: журнал и так читается
+    целиком, а «сколько купили за сутки» — тот же самый список строк,
+    отобранный по дате.
+    """
     rows: dict[int, dict] = {}
     month_ago = end - timedelta(days=30)
+    sold = [{'days': days, 'title': title, 'gb': 0, 'money': 0,
+             'purchases': 0, 'people': set()} for days, title in WINDOWS]
 
     async for row in journal.iterate(
             {'kind': 'bypass', 'at': {'$gte': start, '$lte': end}},
@@ -111,11 +127,22 @@ async def _people(journal, start: datetime, end: datetime) -> dict[int, dict]:
         if at >= month_ago:
             entry['spent_30'] += amount
 
+        gb = int((row.get('meta') or {}).get('gb') or 0)
+        for window in sold:
+            if at >= end - timedelta(days=window['days']):
+                window['gb'] += gb
+                window['money'] += amount
+                window['purchases'] += 1
+                window['people'].add(int(user_id))
+
     for entry in rows.values():
         if entry['count'] > 1:
             span = (entry['last'] - entry['first']).total_seconds() / 86400
             entry['gap'] = round(span / (entry['count'] - 1), 1)
-    return rows
+
+    for window in sold:
+        window['people'] = len(window['people'])
+    return rows, sold
 
 
 def _median(values: list) -> float:
