@@ -8,6 +8,8 @@ ByPass». Первая отвечает деньгами и гигабайтам
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 import shutil
 from datetime import timedelta
@@ -18,7 +20,7 @@ from aiogram.filters import Command
 from app.content.emoji import e
 from app.core.time import fmt, now
 from app.integrations.vpn.links import LinkEncryptionError
-from app.services import bypass_usage
+from app.services import bypass_plan, bypass_usage
 
 DEFAULT_DAYS = 30
 TEST_URL = 'https://example.com/sub/test'
@@ -111,6 +113,139 @@ def render(data: dict) -> str:
                  'то, что реально прошло через канал, а бот списывает с '
                  'лимита долю от этого.</blockquote>')
     return '\n'.join(lines)
+
+
+# ── под безлимитный тариф ───────────────────────────────────────────────────
+PRICES = (150, 250, 350, 500, 700, 1000)
+
+PLAN_COLUMNS = ('id', 'username', 'гб_куплено_в_мес', 'руб_в_мес',
+                'покупок', 'дней_между_покупками', 'гб_прокачано_в_мес',
+                'за_обычную_подписку_в_мес', 'остаток_гб')
+
+
+async def plan(message: types.Message, command, c, settings) -> None:
+    """`/bypassplan [дней] [csv]` — человек за человеком, под цену безлимита."""
+    parts = (command.args or '').lower().split()
+    days = next((int(part) for part in parts if part.isdigit() and int(part) > 0),
+                DEFAULT_DAYS)
+    as_csv = 'csv' in parts
+
+    end = now()
+    start = end - timedelta(days=days)
+
+    await message.answer(f'{e("refresh")} Считаю…')
+    data = await bypass_plan.collect(
+        c.users, c.balance_log, c.vpn,
+        str(await settings.get('bypass.squad_uuid') or ''), start, end)
+
+    if as_csv:
+        if not data['rows']:
+            await message.answer(f'{e("cross")} Выгружать нечего: ByPass никто '
+                                 f'не подключал.')
+            return
+        await message.answer_document(
+            types.BufferedInputFile(
+                plan_csv(data),
+                filename=f'bypass-{fmt(start, "%d.%m.%Y")}-{fmt(end, "%d.%m.%Y")}.csv'),
+            caption=f'{e("bypass")} Строка на каждого, у кого подключён ByPass. '
+                    f'Всё приведено к месяцу.')
+        return
+
+    cost = float(await settings.get('bypass.cost_per_gb') or 0)
+    await message.answer(render_plan(data, cost))
+
+
+def render_plan(data: dict, cost_per_gb: float) -> str:
+    rows, days = data['rows'], data['days']
+    buyers = data['buyers']
+
+    lines = [f'{e("bypass")} <b>ByPass: кто сколько покупает</b>',
+             f'{fmt(data["start"], "%d.%m.%Y")} — {fmt(data["end"], "%d.%m.%Y")} '
+             f'({days} дн., всё приведено к месяцу)', '']
+
+    lines.append(f'Подключили ByPass: <b>{len(rows)}</b>')
+    lines.append(f'Покупали гигабайты: <b>{len(buyers)}</b>')
+    if not buyers:
+        lines.append('')
+        lines.append('<i>Никто ничего не покупал — цену безлимита считать '
+                     'не из чего.</i>')
+        return '\n'.join(lines)
+
+    repeat = [row for row in buyers if row['purchases'] > 1]
+    lines.append(f'Докупали больше одного раза: <b>{len(repeat)}</b>'
+                 + (f' — в среднем раз в '
+                    f'<b>{round(sum(row["gap_days"] for row in repeat) / len(repeat))}</b> дн.'
+                    if repeat else ''))
+    lines.append('')
+
+    # ── распределение
+    lines.append('<b>Сколько гигабайт в месяц покупают</b>')
+    for row in bypass_plan.buckets(buyers):
+        title = (f'{row["from"]}–{row["to"]} Гб' if row['to']
+                 else f'{row["from"]}+ Гб')
+        if row['people']:
+            lines.append(f'   {title}: <b>{row["people"]}</b> чел., '
+                         f'платят {row["spent"]}₽/мес')
+    lines.append('')
+
+    spend = [row['spent_month'] for row in buyers]
+    volume = [row['gb_month'] for row in buyers]
+    lines.append('<b>Сколько платят за трафик</b>')
+    for share in (50, 75, 90, 95):
+        lines.append(f'   {share}% укладываются в '
+                     f'<b>{round(bypass_plan.percentile(spend, share))}₽</b> '
+                     f'и <b>{bypass_plan.percentile(volume, share)} Гб</b> в месяц')
+    lines.append(f'   Всего за трафик: <b>{sum(spend)}₽</b> в месяц')
+    lines.append('')
+
+    subs = [row['sub_month'] for row in buyers if row['sub_month']]
+    if subs:
+        lines.append(f'{e("card")} За обычную подписку те же люди платят '
+                     f'<b>{sum(subs)}₽</b> в месяц '
+                     f'(в среднем {round(sum(subs) / len(subs))}₽)')
+        lines.append('')
+
+    # ── цена безлимита
+    lines.append('<b>Что будет при безлимите</b>')
+    lines.append('<i>цена → перейдут → выручка за трафик в месяц</i>')
+    for row in bypass_plan.simulate(buyers, list(PRICES), cost_per_gb):
+        line = (f'   <b>{row["price"]}₽</b> → перейдут {row["switchers"]} → '
+                f'<b>{row["revenue"]}₽</b> ({row["delta"]:+d}₽)')
+        if cost_per_gb:
+            line += f', трафик {row["traffic_gb"]} Гб = {row["cost"]}₽'
+        lines.append(line)
+    lines.append('')
+
+    if not cost_per_gb:
+        lines.append(f'{e("attention")} Цена гигабайта для вас не задана '
+                     f'(/admin → ByPass → «Себестоимость гигабайта»), поэтому '
+                     f'расход не посчитан — только выручка.')
+        lines.append('')
+
+    lines.append('<blockquote>Переходят те, кому это выгодно: у кого траты за '
+                 'месяц выше новой цены. Остальные остаются на пакетах — '
+                 'поэтому выручка почти не растёт, а на дорогих ценах не '
+                 'меняется вовсе.\n\nТрафик перешедших считается вдвое выше '
+                 'нынешнего: счётчик перестаёт мешать, и люди перестают '
+                 'экономить. Новых покупателей, которых безлимит приведёт, '
+                 'модель не знает — её ответ это «не хуже чем», а не '
+                 'прогноз.\n\nСтрока на каждого: '
+                 '<code>/bypassplan csv</code>.</blockquote>')
+    return '\n'.join(lines)
+
+
+def plan_csv(data: dict) -> bytes:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=';', lineterminator='\r\n')
+    writer.writerow(PLAN_COLUMNS)
+    for row in data['rows']:
+        writer.writerow([
+            row['user_id'], row['username'], row['gb_month'],
+            row['spent_month'], row['purchases'], row['gap_days'] or '',
+            row['used_gb_month'], row['sub_month'],
+            bypass_usage.gb(row['left_bytes']),
+        ])
+    return buffer.getvalue().encode('utf-8-sig')
 
 
 # ── почему не работает INCY ─────────────────────────────────────────────────
@@ -222,5 +357,6 @@ async def incy_reset(message: types.Message, command, c, settings) -> None:
 
 def register(router: Router) -> None:
     router.message.register(usage, Command('bypassuse'))
+    router.message.register(plan, Command('bypassplan'))
     router.message.register(incy, Command('incy'))
     router.message.register(incy_reset, Command('incyreset'))
