@@ -1,9 +1,14 @@
-"""`/bypassuse` — сколько ByPass ест и сколько приносит, и `/incy` — почему
-не выдаётся ссылка INCY.
+"""ByPass в цифрах: средняя ставка, разбор под безлимит и диагностика INCY.
 
-Две команды в одном файле, потому что вопрос у них один: «что происходит с
-ByPass». Первая отвечает деньгами и гигабайтами, вторая — тем, почему
+Три команды об одном — что происходит с ByPass. `/bypassavg` отвечает одной
+цифрой «сколько приносит активный покупатель», `/bypassplan` раскладывает
+её по людям и по ценам будущего безлимита, `/incy` объясняет, почему
 человек вместо ссылки видит «воспользуйтесь Happ».
+
+Панель ни одна из них не спрашивает. Расход по скваду она отдаёт под
+своими внутренними номерами, а не под telegram id, свести их не с чем — и
+не нужно: гигабайты покупают впрок и тратят до лимита, поэтому проданное и
+есть прокачанное, с задержкой в несколько дней.
 """
 
 from __future__ import annotations
@@ -20,99 +25,10 @@ from aiogram.filters import Command
 from app.content.emoji import e
 from app.core.time import fmt, now
 from app.integrations.vpn.links import LinkEncryptionError
-from app.services import bypass_arpu, bypass_plan, bypass_usage
+from app.services import bypass_arpu, bypass_plan
 
 DEFAULT_DAYS = 30
 TEST_URL = 'https://example.com/sub/test'
-
-
-# ── расход и выручка ────────────────────────────────────────────────────────
-async def usage(message: types.Message, command, c, settings) -> None:
-    raw = (command.args or '').strip()
-    days = int(raw) if raw.isdigit() and int(raw) > 0 else DEFAULT_DAYS
-    end = now()
-    start = end - timedelta(days=days)
-
-    await message.answer(f'{e("refresh")} Считаю…')
-    data = await bypass_usage.collect(
-        c.users, c.balance_log, c.vpn,
-        str(await settings.get('bypass.squad_uuid') or ''), start, end)
-
-    await message.answer(render(data))
-
-
-def render(data: dict) -> str:
-    days, gb = data['days'], bypass_usage.gb
-    lines = [f'{e("bypass")} <b>ByPass: расход и выручка</b>',
-             f'{fmt(data["start"], "%d.%m.%Y")} — {fmt(data["end"], "%d.%m.%Y")} '
-             f'({days} дн.)', '']
-
-    lines.append(f'{e("referrals")} Подключили ByPass: <b>{data["subscribers"]}</b>')
-    lines.append(f'{e("traffic")} Из них качали за период: <b>{data["spenders"]}</b>')
-    lines.append(f'{e("card")} Покупали гигабайты: <b>{data["payers"]}</b>')
-    lines.append('')
-
-    if not data['spenders']:
-        lines.append(panel_trouble(data['panel']))
-        lines.append('')
-
-    # ── расход
-    lines.append('<b>Сколько качают</b>')
-    if data['spenders']:
-        avg = data['used_bytes'] / data['spenders']
-        lines.append(f'Всего: <b>{gb(data["used_bytes"])} Гб</b>')
-        lines.append(f'В среднем на качающего: <b>{gb(avg)} Гб</b> за {days} дн. '
-                     f'= <b>{bypass_usage.per_month(gb(avg), days)} Гб</b> в месяц')
-        lines.append(f'Медиана: <b>{gb(data["median_bytes"])} Гб</b> — по ней и '
-                     f'считайте типичного человека, среднее задирают верхние')
-        lines.append('')
-        lines.append('<b>Едят больше всех</b>')
-        for row in data['top']:
-            lines.append(f'   <code>{row["user_id"]}</code> — '
-                         f'<b>{gb(row["bytes"])} Гб</b>')
-    else:
-        lines.append('Панель не показала расход за период.')
-    lines.append('')
-
-    # ── деньги
-    lines.append('<b>Сколько платят</b>')
-    lines.append(f'Куплено: <b>{data["gb_bought"]} Гб</b> на '
-                 f'<b>{data["paid"]}₽</b> за {data["purchases"]} покупок')
-    if data['payers']:
-        average = data['paid'] / data['payers']
-        monthly = round(bypass_usage.per_month(average, days))
-        lines.append(f'В среднем на платящего: <b>{round(average)}₽</b> '
-                     f'за {days} дн. = <b>{monthly}₽</b> в месяц')
-        lines.append(f'Медиана: <b>{data["median_paid"]}₽</b>')
-    if data['gb_bought']:
-        lines.append(f'Вышло по <b>{round(data["paid"] / data["gb_bought"], 1)}₽</b> '
-                     f'за гигабайт')
-    lines.append(f'{e("traffic")} Лимита выдано за всё время: '
-                 f'<b>{gb(data["limit_bytes"])} Гб</b> — это подарочные '
-                 f'гигабайты плюс все покупки. Сколько из них съедено, знает '
-                 f'только панель: бот своё число не уменьшает')
-    lines.append('')
-
-    # ── главное
-    if data['spenders'] and data['gb_bought']:
-        real = gb(data['used_bytes'])
-        lines.append(f'{e("attention")} <b>Прокачано {real} Гб, оплачено '
-                     f'{data["gb_bought"]} Гб.</b>')
-        if real > data['gb_bought'] * 1.5:
-            lines.append('Расход обгоняет оплату — так и должно быть при '
-                         'коэффициенте 0.1: с лимита списывается десятая часть '
-                         'того, что реально уходит в канал. Возвращать '
-                         'коэффициент к 1.0 стоит с оглядкой на эту разницу.')
-
-    lines.append('')
-    lines.append('<blockquote>Среднее считается по тем, кто качал, а не по '
-                 'всем подключившим: ByPass подключают бесплатно и часто '
-                 'забывают, и «среднее по всем» получается втрое меньше '
-                 'настоящего.\n\nРасход — из панели, по скваду ByPass за '
-                 'период. Если у нод включён коэффициент, панель показывает '
-                 'то, что реально прошло через канал, а бот списывает с '
-                 'лимита долю от этого.</blockquote>')
-    return '\n'.join(lines)
 
 
 # ── средний заработок с активного ───────────────────────────────────────────
@@ -161,6 +77,9 @@ def render_average(data: dict) -> str:
     lines.append('')
 
     if data['gone']:
+        together = round((data['average'] * data['active']
+                          + data['gone_rate'] * data['gone'])
+                         / (data['active'] + data['gone']))
         lines.append(f'{e("cross")} Отсеяны как ушедшие: <b>{data["gone"]}</b> '
                      f'(покупали, но давно)')
         for row in data['gone_buckets']:
@@ -168,8 +87,7 @@ def render_average(data: dict) -> str:
                      else f'больше {row["from"]} дн. назад')
             lines.append(f'   {title}: {row["people"]} чел.')
         lines.append(f'   <i>Если бы считали вместе с ними, вышло бы '
-                     f'{round((data["average"] * data["active"] + data["gone_rate"] * data["gone"]) / (data["active"] + data["gone"]))}₽ '
-                     f'вместо {data["average"]}₽.</i>')
+                     f'{together}₽ вместо {data["average"]}₽.</i>')
         lines.append('')
 
     lines.append('<blockquote>Ставка считается по каждому за его собственный '
@@ -178,34 +96,16 @@ def render_average(data: dict) -> str:
                  'месяц выглядел бы богачом, а в другой — нулём, хотя платит '
                  'ровно столько же.\n\nСрок берётся не меньше месяца: '
                  'вчерашняя покупка на 500₽ — это не 15 000₽ в месяц, а '
-                 'человек, который только начал.\n\nПанель здесь не '
-                 'спрашивается вовсе — только деньги из журнала.</blockquote>')
+                 'человек, который только начал.</blockquote>')
     return '\n'.join(lines)
-
-
-def panel_trouble(info: dict) -> str:
-    """Почему расход нулевой. Три разные беды выглядели одинаково."""
-    if not info or not info.get('asked'):
-        return (f'{e("warning")} Сквад ByPass не задан в настройках — расход '
-                f'спросить не у кого.')
-    if info.get('error'):
-        return f'{e("warning")} Панель не ответила: <code>{info["error"]}</code>'
-    if not info.get('rows'):
-        return (f'{e("warning")} Панель ответила пустым списком: либо у сквада '
-                f'нет расхода за период, либо ручка расхода на этой версии '
-                f'панели не работает.')
-    sample = ', '.join(f'<code>{key}</code>' for key in info.get('sample') or [])
-    return (f'{e("warning")} Панель вернула {info["rows"]} строк, но никого из '
-            f'наших в них нет. Так выглядят её ключи: {sample} — значит имена '
-            f'подписок разошлись с тем, что бот ждёт.')
 
 
 # ── под безлимитный тариф ───────────────────────────────────────────────────
 PRICES = (150, 250, 350, 500, 700, 1000)
 
 PLAN_COLUMNS = ('id', 'username', 'гб_куплено_в_мес', 'руб_в_мес',
-                'покупок', 'дней_между_покупками', 'гб_прокачано_в_мес',
-                'за_обычную_подписку_в_мес', 'остаток_гб')
+                'покупок', 'дней_между_покупками',
+                'за_обычную_подписку_в_мес', 'лимит_выдан_гб')
 
 
 async def plan(message: types.Message, command, c, settings) -> None:
@@ -219,9 +119,7 @@ async def plan(message: types.Message, command, c, settings) -> None:
     start = end - timedelta(days=days)
 
     await message.answer(f'{e("refresh")} Считаю…')
-    data = await bypass_plan.collect(
-        c.users, c.balance_log, c.vpn,
-        str(await settings.get('bypass.squad_uuid') or ''), start, end)
+    data = await bypass_plan.collect(c.users, c.balance_log, start, end)
 
     if as_csv:
         if not data['rows']:
@@ -237,10 +135,12 @@ async def plan(message: types.Message, command, c, settings) -> None:
         return
 
     await message.answer(render_plan(
-        data, cost_month=await settings.int('bypass.cost_month')))
+        data,
+        cost_month=await settings.int('bypass.cost_month'),
+        rate=float(await settings.get('bypass.traffic_rate') or 1.0)))
 
 
-def render_plan(data: dict, cost_month: int = 0) -> str:
+def render_plan(data: dict, cost_month: int = 0, rate: float = 1.0) -> str:
     rows, days = data['rows'], data['days']
     buyers = data['buyers']
 
@@ -283,47 +183,46 @@ def render_plan(data: dict, cost_month: int = 0) -> str:
     lines.append(f'   Всего за трафик: <b>{sum(spend)}₽</b> в месяц')
     lines.append('')
 
-    subs = [row['sub_month'] for row in buyers if row['sub_month']]
-    if subs:
-        lines.append(f'{e("card")} За обычную подписку те же люди платят '
-                     f'<b>{sum(subs)}₽</b> в месяц '
-                     f'(в среднем {round(sum(subs) / len(subs))}₽)')
+    if data['sub_payers']:
+        lines.append(f'{e("card")} За обычную подписку те же люди заплатили '
+                     f'<b>{data["sub_month"]}₽</b> в месяц — '
+                     f'{data["sub_payers"]} чел. по '
+                     f'{round(data["sub_month"] / data["sub_payers"])}₽')
+        lines.append(f'   <i>Считаются только платежи внутри периода: кто '
+                     f'оплатил полгода вперёд до его начала, здесь выглядит '
+                     f'как ноль.</i>')
         lines.append('')
 
     # ── сходится ли вообще
-    money = bypass_plan.economics(data, cost_month)
-    cost_per_gb = money['cost_per_real_gb']
-
+    money = bypass_plan.economics(data, cost_month, rate)
     if cost_month:
         lines.append('<b>Сходится ли ByPass</b>')
         lines.append(f'Выручка за трафик: <b>{money["revenue_month"]}₽</b> в месяц')
         lines.append(f'Серверы: <b>−{money["cost_month"]}₽</b> в месяц')
         lines.append(f'Итого: <b>{money["profit"]:+d}₽</b>')
         lines.append('')
-        if money['real_gb']:
-            lines.append(f'Прокачано всего: <b>{money["real_gb"]} Гб</b> в месяц, '
-                         f'из них бесплатными <b>{money["free_share"]}%</b> '
-                         f'({data["free_users"]} чел. на подарочных гигабайтах)')
-            lines.append(f'Настоящий гигабайт обходится в '
-                         f'<b>{money["cost_per_real_gb"]}₽</b>')
-        if money['cost_per_sold_gb']:
-            lines.append(f'Проданный гигабайт обходится в '
-                         f'<b>{money["cost_per_sold_gb"]}₽</b>, а продаётся по '
-                         f'<b>{money["price_per_sold_gb"]}₽</b>')
-            if money['cost_per_sold_gb'] > money['price_per_sold_gb']:
-                lines.append(f'{e("attention")} <b>Продаём дешевле, чем '
-                             f'обходится.</b> Разницу создаёт коэффициент: '
-                             f'с лимита списывается доля того, что реально '
-                             f'уходит в канал, а платим мы за всё.')
+        lines.append(f'Продано <b>{money["sold_gb"]} Гб</b> в месяц; при '
+                     f'коэффициенте {money["rate"]} в канал ушло '
+                     f'<b>{money["real_gb"]} Гб</b>')
+        lines.append(f'Настоящий гигабайт обходится в '
+                     f'<b>{money["cost_per_real_gb"]}₽</b>, проданный — в '
+                     f'<b>{money["cost_per_sold_gb"]}₽</b> при цене '
+                     f'<b>{money["price_per_sold_gb"]}₽</b>')
+        if money['cost_per_sold_gb'] > money['price_per_sold_gb']:
+            lines.append(f'{e("attention")} <b>Продаём дешевле, чем '
+                         f'обходится.</b> Разницу создаёт коэффициент: с '
+                         f'лимита списывается доля того, что уходит в канал, '
+                         f'а платим мы за всё.')
         lines.append('')
 
     # ── цена безлимита
     lines.append('<b>Что будет при безлимите</b>')
     lines.append('<i>цена → перейдут → выручка за трафик в месяц</i>')
-    for row in bypass_plan.simulate(buyers, list(PRICES), cost_per_gb):
+    for row in bypass_plan.simulate(buyers, list(PRICES),
+                                    money['cost_per_real_gb'], rate):
         line = (f'   <b>{row["price"]}₽</b> → перейдут {row["switchers"]} → '
                 f'<b>{row["revenue"]}₽</b> ({row["delta"]:+d}₽)')
-        if cost_per_gb:
+        if cost_month:
             line += f', трафик {row["traffic_gb"]} Гб = {row["cost"]}₽'
         lines.append(line)
     lines.append('')
@@ -331,9 +230,7 @@ def render_plan(data: dict, cost_month: int = 0) -> str:
     if not cost_month:
         lines.append(f'{e("attention")} Стоимость серверов не задана '
                      f'(/admin → ByPass → «Серверы ByPass в месяц»), поэтому '
-                     f'расход не посчитан — только выручка. Без неё цену '
-                     f'безлимита не поставить: гигабайт вам стоит не ноль, '
-                     f'а «плата за серверы, делённая на прокачанное».')
+                     f'расход не посчитан — только выручка.')
         lines.append('')
 
     lines.append('<blockquote>Переходят те, кому это выгодно: у кого траты за '
@@ -343,7 +240,8 @@ def render_plan(data: dict, cost_month: int = 0) -> str:
                  'нынешнего: счётчик перестаёт мешать, и люди перестают '
                  'экономить. Новых покупателей, которых безлимит приведёт, '
                  'модель не знает — её ответ это «не хуже чем», а не '
-                 'прогноз.\n\nСтрока на каждого: '
+                 'прогноз.\n\nПанель не спрашивается: всё из журнала '
+                 'списаний. Строка на каждого — '
                  '<code>/bypassplan csv</code>.</blockquote>')
     return '\n'.join(lines)
 
@@ -356,8 +254,7 @@ def plan_csv(data: dict) -> bytes:
         writer.writerow([
             row['user_id'], row['username'], row['gb_month'],
             row['spent_month'], row['purchases'], row['gap_days'] or '',
-            row['used_gb_month'], row['sub_month'],
-            bypass_usage.gb(row['left_bytes']),
+            row['sub_month'], round(row['limit_bytes'] / bypass_plan.GB, 1),
         ])
     return buffer.getvalue().encode('utf-8-sig')
 
@@ -470,8 +367,7 @@ async def incy_reset(message: types.Message, command, c, settings) -> None:
 
 
 def register(router: Router) -> None:
-    router.message.register(usage, Command('bypassuse'))
-    router.message.register(plan, Command('bypassplan'))
     router.message.register(average, Command('bypassavg'))
+    router.message.register(plan, Command('bypassplan'))
     router.message.register(incy, Command('incy'))
     router.message.register(incy_reset, Command('incyreset'))

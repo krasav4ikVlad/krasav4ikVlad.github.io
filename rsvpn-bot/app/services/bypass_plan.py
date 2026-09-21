@@ -1,23 +1,20 @@
 """Под безлимитный ByPass: сколько каждый покупает и как часто.
 
-Отличие от bypass_usage: там средние по всем, здесь — человек за человеком.
-Цену безлимита нельзя поставить по среднему, потому что решение принимает
-не средний человек, а каждый за себя: тот, кто сейчас тратит больше новой
-цены, перейдёт (и вы потеряете разницу), тот, кто тратит меньше, —
-останется на пакетах. Значит нужно распределение и перцентили, а не одно
-число.
+Отличие от bypass_arpu: там одна цифра — средняя ставка, здесь человек за
+человеком и распределение. Цену безлимита нельзя поставить по среднему,
+потому что решение принимает не средний человек, а каждый за себя: тот,
+кто сейчас тратит больше новой цены, перейдёт (и вы потеряете разницу),
+тот, кто тратит меньше, — останется на пакетах.
 
-Считается на человека:
+**Панель не спрашивается.** Сначала расход брался у неё, но ByPass-подписки
+она отдаёт под своими внутренними номерами, а не под telegram id, и свести
+их не с чем. Да и незачем: гигабайты здесь покупают впрок и тратят до
+лимита, а потом докупают — значит проданное и есть прокачанное, с задержкой
+в несколько дней. Всё считается по журналу списаний.
 
-  * сколько гигабайт купил за период и на сколько рублей;
-  * сколько раз докупал и с каким средним промежутком — привычка докупать
-    и есть то, что безлимит заменяет;
-  * сколько прокачал на самом деле (панель) — это расход, и при безлимите
-    он вырастет, потому что счётчик перестанет мешать;
-  * сколько платит за обычную подписку — чтобы видеть, кому безлимит
-    продаётся вдобавок, а кому вместо.
-
-Всё приводится к месяцу: отчёт зовут и за неделю, и за квартал.
+Настоящий трафик выводится из проданного через коэффициент списания: при
+0.1 за каждый проданный гигабайт в канал уходит десять. Это и есть разница
+между «продали на 528 тысяч» и «серверы забиты под завязку».
 """
 
 from __future__ import annotations
@@ -26,9 +23,10 @@ import logging
 from datetime import datetime
 
 from app.core.time import parse_dt
-from app.services.bypass_usage import GB, _traffic
 
 log = logging.getLogger(__name__)
+
+GB = 1024 ** 3
 
 FIELDS = {'user_data.user_id': 1, 'user_data.username': 1,
           'vpn.bypass_uuid': 1, 'vpn.bypass_trafficLimitBytes': 1}
@@ -41,8 +39,7 @@ SUBSCRIPTION_KINDS = ('plan', 'renewal')
 BUCKETS = ((0, 1), (1, 5), (5, 15), (15, 30), (30, 60), (60, 0))
 
 
-async def collect(users, journal, panel, squad: str, start: datetime,
-                  end: datetime) -> dict:
+async def collect(users, journal, start: datetime, end: datetime) -> dict:
     """Строка на каждого, у кого подключён ByPass."""
     people: dict[int, dict] = {}
 
@@ -56,67 +53,61 @@ async def collect(users, journal, panel, squad: str, start: datetime,
             'username': users.pick(doc, 'user_data.username') or '',
             'gb': 0, 'spent': 0, 'purchases': 0,
             'first': None, 'last': None,
-            'sub_paid': 0, 'used_bytes': 0,
-            'left_bytes': int(users.pick(doc, 'vpn.bypass_trafficLimitBytes', 0) or 0),
+            'sub_paid': 0,
+            'limit_bytes': int(users.pick(doc, 'vpn.bypass_trafficLimitBytes', 0) or 0),
         }
 
     await _fill_money(journal, people, start, end)
-    traffic, panel_info = await _traffic(panel, squad, set(people), start, end)
-    for user_id, used in traffic.items():
-        people[user_id]['used_bytes'] = used
 
     days = max(1, (end - start).days)
     rows = list(people.values())
     for row in rows:
         row['gb_month'] = round(row['gb'] * 30 / days, 1)
         row['spent_month'] = round(row['spent'] * 30 / days)
-        row['used_gb_month'] = round(row['used_bytes'] / GB * 30 / days, 1)
         row['sub_month'] = round(row['sub_paid'] * 30 / days)
         row['gap_days'] = _gap(row, days)
 
     rows.sort(key=lambda item: -item['spent_month'])
     buyers = [row for row in rows if row['purchases']]
-    # Те, кто ничего не покупал, но качает: это бесплатный гигабайт при
-    # подключении. На одного человека мелочь, на сто тысяч — основной расход,
-    # и увидеть его можно только отдельной строкой.
-    freeloaders = [row for row in rows if not row['purchases']
-                   and row['used_gb_month'] > 0]
 
     return {
         'rows': rows, 'days': days, 'start': start, 'end': end,
-        'buyers': buyers, 'panel': panel_info,
-        'free_users': len(freeloaders),
-        'free_gb_month': round(sum(row['used_gb_month'] for row in freeloaders), 1),
-        'paid_gb_month': round(sum(row['used_gb_month'] for row in buyers), 1),
+        'buyers': buyers,
         'sold_gb_month': round(sum(row['gb_month'] for row in buyers), 1),
         'revenue_month': sum(row['spent_month'] for row in buyers),
+        'sub_month': sum(row['sub_month'] for row in buyers),
+        'sub_payers': len([row for row in buyers if row['sub_month']]),
+        'limit_gb': round(sum(row['limit_bytes'] for row in rows) / GB, 1),
     }
 
 
-def economics(data: dict, cost_month: int) -> dict:
-    """Сходится ли ByPass как бизнес и почём обходится гигабайт.
+def economics(data: dict, cost_month: int, rate: float = 0.1) -> dict:
+    """Сходится ли ByPass и почём обходится гигабайт.
 
-    Серверы оплачиваются помесячно и независимо от того, сколько по ним
-    прокачали, поэтому себестоимость гигабайта здесь не задаётся, а
-    выводится: расход за месяц поделить на прокачанное за месяц. Пока
-    трафика мало, гигабайт дорогой; чем плотнее забиты те же серверы, тем
-    он дешевле — и это главное, что нужно знать перед безлимитом.
+    Себестоимость гигабайта не спрашивается, а выводится: серверы
+    оплачиваются помесячно и независимо от прокачанного, поэтому цена
+    гигабайта — это плата за месяц, делённая на объём. Чем плотнее забиты
+    те же серверы, тем гигабайт дешевле.
+
+    Считаются оба гигабайта, и путать их дорого: настоящий — тот, что
+    уходит в канал, проданный — тот, за который платят. При коэффициенте
+    0.1 второй в десять раз крупнее, и сравнивать с ценой пакета надо
+    именно его.
     """
-    real = data['free_gb_month'] + data['paid_gb_month']
     sold = data['sold_gb_month']
+    rate = float(rate) if rate and rate > 0 else 1.0
+    real = round(sold / rate, 1)
 
     return {
         'cost_month': int(cost_month),
         'revenue_month': data['revenue_month'],
         'profit': data['revenue_month'] - int(cost_month),
-        'real_gb': round(real, 1),
+        'rate': rate,
+        'sold_gb': sold,
+        'real_gb': real,
         'cost_per_real_gb': round(cost_month / real, 2) if real else 0.0,
-        # Сколько стоит гигабайт, который мы продаём. При коэффициенте 0.1
-        # это десять настоящих, поэтому число получается в разы больше
-        # цены пакета — и именно оно сравнивается с ценой.
         'cost_per_sold_gb': round(cost_month / sold, 2) if sold else 0.0,
         'price_per_sold_gb': round(data['revenue_month'] / sold, 2) if sold else 0.0,
-        'free_share': round(100 * data['free_gb_month'] / real) if real else 0,
     }
 
 
@@ -177,8 +168,8 @@ def percentile(values: list[float], share: int) -> float:
     return ordered[index]
 
 
-def simulate(rows: list[dict], prices: list[int], cost_per_gb: float = 0.0,
-             growth: float = 2.0) -> list[dict]:
+def simulate(rows: list[dict], prices: list[int], cost_per_real_gb: float = 0.0,
+             rate: float = 0.1, growth: float = 2.0) -> list[dict]:
     """Что будет при безлимите по такой-то цене.
 
     Модель нарочно простая и пессимистичная к нам:
@@ -187,14 +178,16 @@ def simulate(rows: list[dict], prices: list[int], cost_per_gb: float = 0.0,
         Остальные остаются на пакетах и платят как платили;
       * трафик перешедших растёт: счётчик больше не мешает. Множитель
         задаётся, по умолчанию вдвое;
-      * расход считается по настоящему трафику из панели, а не по
-        оплаченному: платим мы за первое.
+      * расход считается по настоящему трафику — проданное, делённое на
+        коэффициент: платим мы за то, что ушло в канал, а не за то, что
+        списали с лимита.
 
     Чего модель не знает — новых покупателей, которых безлимит приведёт.
     Поэтому её ответ это «не хуже чем», а не прогноз.
     """
     buyers = [row for row in rows if row['spent_month'] > 0]
     now_revenue = sum(row['spent_month'] for row in buyers)
+    rate = float(rate) if rate and rate > 0 else 1.0
 
     found = []
     for price in prices:
@@ -202,8 +195,8 @@ def simulate(rows: list[dict], prices: list[int], cost_per_gb: float = 0.0,
         stayers = [row for row in buyers if row['spent_month'] <= price]
 
         revenue = price * len(switchers) + sum(row['spent_month'] for row in stayers)
-        traffic = sum(row['used_gb_month'] for row in switchers) * growth
-        cost = round(traffic * cost_per_gb)
+        traffic = sum(row['gb_month'] for row in switchers) / rate * growth
+        cost = round(traffic * cost_per_real_gb)
 
         found.append({
             'price': price,

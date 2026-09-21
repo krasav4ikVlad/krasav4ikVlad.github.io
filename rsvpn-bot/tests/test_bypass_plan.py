@@ -15,19 +15,11 @@ from app.core.time import now
 from app.repositories.balance_log import BalanceLogRepository
 from app.repositories.users import UsersRepository
 from app.services import bypass_plan
-from app.services.bypass_usage import GB
+from app.services.bypass_plan import GB
 
 SQUAD = 'bypass-squad'
 END = now()
 START = END - timedelta(days=30)
-
-
-class Panel:
-    def __init__(self, usage=None):
-        self.usage = usage or {}
-
-    async def squad_usage(self, squad, start, end, **kwargs):
-        return dict(self.usage)
 
 
 @pytest.fixture
@@ -59,10 +51,9 @@ async def paid_subscription(journal, user_id: int, price: int,
         'description': 'Покупка подписки'})
 
 
-async def collect(repos, panel=None):
+async def collect(repos):
     users, journal = repos
-    return await bypass_plan.collect(users, journal, panel or Panel(), SQUAD,
-                                     START, END)
+    return await bypass_plan.collect(users, journal, START, END)
 
 
 # ── строка на человека ──────────────────────────────────────────────────────
@@ -110,14 +101,17 @@ async def test_extra_devices_are_not_a_subscription_payment(repos, db):
     assert (await collect(repos))['rows'][0]['sub_month'] == 0
 
 
-async def test_the_real_traffic_comes_from_the_panel(repos, db):
+async def test_the_real_traffic_is_derived_from_the_rate(repos, db):
+    """Панель ByPass-подписки отдаёт под своими номерами, свести их не с чем.
+    Да и незачем: гигабайты покупают впрок и тратят до лимита, поэтому
+    проданное и есть прокачанное — делённое на коэффициент."""
     users, journal = repos
     await subscriber(users, 10)
     await bought(journal, 10, 50, 5)
 
-    row = (await collect(repos, Panel({'10': 50 * GB})))['rows'][0]
+    money = bypass_plan.economics(await collect(repos), cost_month=0, rate=0.1)
 
-    assert row['gb_month'] == 5 and row['used_gb_month'] == 50.0
+    assert money['sold_gb'] == 5 and money['real_gb'] == 50.0
 
 
 # ── привычка докупать ───────────────────────────────────────────────────────
@@ -149,7 +143,7 @@ async def test_everything_is_scaled_to_a_month(repos, db):
     await bought(journal, 10, 50, 5, days_ago=2)
 
     users_, journal_ = repos
-    data = await bypass_plan.collect(users_, journal_, Panel(), SQUAD,
+    data = await bypass_plan.collect(users_, journal_,
                                      END - timedelta(days=15), END)
 
     assert data['rows'][0]['gb_month'] == 10.0 and data['rows'][0]['spent_month'] == 100
@@ -181,8 +175,8 @@ def test_an_empty_list_has_no_percentile():
 
 
 # ── модель цены ─────────────────────────────────────────────────────────────
-def person(spent: int, used: float = 0.0) -> dict:
-    return {'spent_month': spent, 'used_gb_month': used, 'purchases': 1}
+def person(spent: int, gb: float = 0.0) -> dict:
+    return {'spent_month': spent, 'gb_month': gb, 'purchases': 1}
 
 
 def test_only_those_who_pay_more_than_the_price_switch():
@@ -220,18 +214,20 @@ def test_a_cheap_price_costs_us_money():
     assert result['delta'] == 300 * 2 - 1700
 
 
-def test_the_traffic_of_switchers_is_counted_with_growth():
-    """Счётчик перестаёт мешать — расход растёт, и это расход, а не выручка."""
-    rows = [person(900, used=50.0)]
+def test_the_traffic_of_switchers_is_counted_with_growth_and_rate():
+    """Счётчик перестаёт мешать — расход растёт. И считается он по
+    настоящему трафику: проданное, делённое на коэффициент."""
+    rows = [person(900, gb=5.0)]
 
-    result = bypass_plan.simulate(rows, [300], cost_per_gb=2.0, growth=2.0)[0]
+    result = bypass_plan.simulate(rows, [300], cost_per_real_gb=2.0,
+                                  rate=0.1, growth=2.0)[0]
 
     assert result['traffic_gb'] == 100.0 and result['cost'] == 200
     assert result['profit'] == 300 - 200
 
 
 def test_without_a_cost_per_gigabyte_only_revenue_is_shown():
-    result = bypass_plan.simulate([person(900, used=50.0)], [300])[0]
+    result = bypass_plan.simulate([person(900, gb=50.0)], [300])[0]
 
     assert result['cost'] == 0 and result['profit'] == 300
 
@@ -283,18 +279,14 @@ async def test_the_csv_has_a_line_per_person(repos, db):
 
 
 # ── сходится ли ByPass ──────────────────────────────────────────────────────
-async def test_free_gigabytes_are_counted_separately(repos, db):
-    """Подарочный гигабайт при подключении: на одного мелочь, на сто тысяч —
-    основной расход, и увидеть его можно только отдельной строкой."""
+async def test_the_limit_handed_out_is_kept_for_reference(repos, db):
+    """Это не остаток: бот своё число только наращивает, а тратит человек
+    в панели. В таблице оно нужно как справка, не как деньги."""
     users, journal = repos
-    await subscriber(users, 10)
-    await subscriber(users, 11)
-    await bought(journal, 10, 90, 15)
+    await subscriber(users, 10, left_gb=3)
+    await subscriber(users, 11, left_gb=9)
 
-    data = await collect(repos, Panel({'10': 15 * GB, '11': 40 * GB}))
-
-    assert data['free_users'] == 1 and data['free_gb_month'] == 40.0
-    assert data['paid_gb_month'] == 15.0
+    assert (await collect(repos))['limit_gb'] == 12.0
 
 
 async def test_the_cost_of_a_gigabyte_is_derived_not_asked(repos, db):
@@ -305,7 +297,7 @@ async def test_the_cost_of_a_gigabyte_is_derived_not_asked(repos, db):
     await bought(journal, 10, 500, 100)
 
     money = bypass_plan.economics(
-        await collect(repos, Panel({'10': 1000 * GB})), cost_month=10000)
+        await collect(repos), cost_month=10000)
 
     assert money['cost_per_real_gb'] == 10.0     # 10 000₽ на 1000 настоящих Гб
     assert money['cost_per_sold_gb'] == 100.0    # но продали-то всего 100
@@ -318,8 +310,7 @@ async def test_the_report_says_when_we_sell_below_cost(repos, db):
     await subscriber(users, 10)
     await bought(journal, 10, 500, 100)
 
-    text = admin.render_plan(
-        await collect(repos, Panel({'10': 1000 * GB})), cost_month=10000)
+    text = admin.render_plan(await collect(repos), cost_month=10000, rate=0.1)
 
     assert 'Продаём дешевле, чем обходится' in text
 
@@ -329,16 +320,14 @@ async def test_a_profitable_bypass_is_not_scolded(repos, db):
     await subscriber(users, 10)
     await bought(journal, 10, 500, 100)
 
-    text = admin.render_plan(
-        await collect(repos, Panel({'10': 100 * GB})), cost_month=100)
+    text = admin.render_plan(await collect(repos), cost_month=100, rate=1.0)
 
     assert 'Продаём дешевле' not in text
     assert 'Итого: <b>+400₽</b>' in text
 
 
 def test_economics_survives_a_month_without_traffic():
-    data = {'free_gb_month': 0.0, 'paid_gb_month': 0.0, 'sold_gb_month': 0.0,
-            'revenue_month': 0, 'free_users': 0}
+    data = {'sold_gb_month': 0.0, 'revenue_month': 0}
 
     money = bypass_plan.economics(data, cost_month=250000)
 
