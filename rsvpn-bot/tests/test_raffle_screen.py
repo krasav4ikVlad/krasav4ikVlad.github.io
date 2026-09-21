@@ -11,7 +11,7 @@ import pytest
 
 from app.bot.handlers import raffle as screen
 from app.core.time import now
-from app.repositories.payments import PaymentsRepository
+from app.repositories.balance_log import BalanceLogRepository
 from app.repositories.users import UsersRepository
 from app.services import raffle
 from app.services import raffle_prizes as prizes
@@ -23,7 +23,7 @@ END = now() + timedelta(days=4)
 
 @pytest.fixture
 def repos(db):
-    return PaymentsRepository(db['payments']), UsersRepository(db['users'])
+    return BalanceLogRepository(db['balance_log']), UsersRepository(db['users'])
 
 
 @pytest.fixture
@@ -44,89 +44,96 @@ async def person(users, user_id: int, referrer=None, *, alive: bool = True):
     })
 
 
-async def paid(payments, user_id: int, amount: int, at) -> None:
-    await payments.col.insert_one({
-        'txid': f'tx-{user_id}-{at.timestamp()}', 'user_id': user_id,
-        'amount': amount, 'status': 'done', 'created_at': at, 'payload': {}})
+async def bought(journal, user_id: int, at, *, months: int = 1,
+                 kind: str = 'plan') -> None:
+    """Покупка подписки — единственное, что даёт билет."""
+    await journal.col.insert_one({
+        'user_id': user_id, 'amount': -150 * months, 'kind': kind, 'at': at,
+        'meta': {'days': months * 30}, 'description': 'Покупка подписки'})
 
 
 async def mine(repos, user_id: int = 1, **kwargs):
-    payments, users = repos
-    return await raffle.for_user(payments, users, user_id, start=START,
+    journal, users = repos
+    return await raffle.for_user(journal, users, user_id, start=START,
                                  end=END, **kwargs)
 
 
 # ── билеты одного человека ──────────────────────────────────────────────────
-async def test_a_friend_who_paid_gives_me_a_ticket(repos, db):
-    payments, users = repos
+async def test_a_new_friend_gives_me_three_tickets(repos, db):
+    journal, users = repos
     await person(users, 1)
     await person(users, 20, referrer=1)
-    await paid(payments, 20, 300, now() - timedelta(days=1))
+    await bought(journal, 20, now() - timedelta(days=1))
 
-    assert (await mine(repos))['tickets'] == 1
+    assert (await mine(repos))['tickets'] == 3
 
 
-async def test_a_friend_of_someone_else_does_not(repos, db):
-    payments, users = repos
+async def test_my_own_subscription_gives_a_ticket_per_month(repos, db):
+    journal, users = repos
+    await person(users, 1)
+    await bought(journal, 1, now() - timedelta(days=1), months=6)
+
+    row = await mine(repos)
+
+    assert row['tickets'] == 6 and row['own_months'] == 6
+
+
+async def test_a_friend_who_bought_before_the_contest_does_not(repos, db):
+    """То же правило, что и в таблице: друг должен быть новым."""
+    journal, users = repos
+    await person(users, 1)
+    await person(users, 20, referrer=1)
+    await bought(journal, 20, START - timedelta(days=10))
+    await bought(journal, 20, now() - timedelta(days=1), kind='renewal')
+
+    assert (await mine(repos))['tickets'] == 0
+
+
+async def test_a_friend_of_someone_else_gives_me_nothing(repos, db):
+    journal, users = repos
     await person(users, 1)
     await person(users, 20, referrer=999)
-    await paid(payments, 20, 300, now() - timedelta(days=1))
+    await bought(journal, 20, now() - timedelta(days=1))
 
     assert (await mine(repos))['tickets'] == 0
-
-
-async def test_a_friend_who_paid_before_the_contest_does_not(repos, db):
-    """То же правило, что и в таблице: считается первая в жизни оплата."""
-    payments, users = repos
-    await person(users, 1)
-    await person(users, 20, referrer=1)
-    await paid(payments, 20, 300, START - timedelta(days=10))
-    await paid(payments, 20, 300, now() - timedelta(days=1))
-
-    assert (await mine(repos))['tickets'] == 0
-
-
-async def test_a_friend_who_paid_too_little_does_not(repos, db):
-    payments, users = repos
-    await person(users, 1)
-    await person(users, 20, referrer=1)
-    await paid(payments, 20, 100, now() - timedelta(days=1))
-
-    assert (await mine(repos, min_payment=199))['tickets'] == 0
 
 
 async def test_a_friend_whose_subscription_died_does_not(repos, db):
-    payments, users = repos
+    journal, users = repos
     await person(users, 1)
     await person(users, 20, referrer=1, alive=False)
-    await paid(payments, 20, 300, now() - timedelta(days=1))
+    await bought(journal, 20, now() - timedelta(days=1))
 
     assert (await mine(repos, require_active=True))['tickets'] == 0
 
 
-async def test_inviting_yourself_gives_nothing(repos, db):
-    payments, users = repos
+async def test_inviting_yourself_gives_only_my_own_tickets(repos, db):
+    """Себя привести нельзя, но свою же подписку никто не отнимает."""
+    journal, users = repos
     await person(users, 1, referrer=1)
-    await paid(payments, 1, 300, now() - timedelta(days=1))
+    await bought(journal, 1, now() - timedelta(days=1), months=2)
 
-    assert (await mine(repos))['tickets'] == 0
+    row = await mine(repos)
+
+    assert row['friends'] == 0 and row['tickets'] == 2
 
 
 async def test_the_screen_matches_the_table(repos, db):
     """Главная проверка: экран и таблица считают одно и то же."""
-    payments, users = repos
+    journal, users = repos
     await person(users, 1)
-    for friend_id in (20, 21, 22):
+    await bought(journal, 1, now() - timedelta(days=2), months=2)
+    for friend_id in (20, 21):
         await person(users, friend_id, referrer=1)
-        await paid(payments, friend_id, 300, now() - timedelta(days=1))
+        await bought(journal, friend_id, now() - timedelta(days=1))
     await person(users, 30, referrer=1, alive=False)
-    await paid(payments, 30, 300, now() - timedelta(days=1))
+    await bought(journal, 30, now() - timedelta(days=1))
 
-    table = await raffle.collect(payments, users, start=START, end=END,
-                                 min_payment=199, require_active=True)
-    screen_count = await mine(repos, min_payment=199, require_active=True)
+    table = await raffle.collect(journal, users, start=START, end=END)
+    screen_count = await mine(repos)
+    owner = next(row for row in table['participants'] if row['user_id'] == 1)
 
-    assert screen_count['tickets'] == table['participants'][0]['tickets'] == 3
+    assert screen_count['tickets'] == owner['tickets'] == 2 + 3 + 3
 
 
 # ── когда показывать кнопку ─────────────────────────────────────────────────

@@ -1,18 +1,22 @@
-"""Билеты розыгрыша: считаются по платежам, а не по счётчикам.
+"""Билеты розыгрыша: считаются по покупкам подписок, а не по пополнениям.
 
-Счётчик приглашённых в документе человека для розыгрыша не годится: он
-пожизненный и ничего не знает о периоде акции. Билеты считаются от самих
-платежей — это единственные настоящие деньги в системе, и у каждого есть
-дата.
+Источников билета два, и оба про подписку, а не про деньги на балансе:
 
-Проход один и полный: нужна первая в жизни оплата каждого плательщика, а
-«первую» нельзя узнать, глядя только внутрь периода. Поэтому команда
-считает всю коллекцию платежей — это медленно, зато не врёт.
+  * **новый приглашённый друг** купил подписку от месяца — участнику три
+    билета. Три, а не один: привести человека, который заплатит, тяжелее,
+    чем продлиться самому, и разница должна быть видна. За второго и
+    третьего друга — ещё по три; за повторные покупки того же друга не
+    даётся ничего, иначе билеты набирались бы на одном и том же человеке;
+  * **своя покупка** — билет за каждый месяц. Купил полгода — шесть
+    билетов. Это то, что превращает акцию из «приведи друзей» в «продлись
+    сейчас», а вторых у нас гораздо больше.
 
-Отсюда же берётся таблица для розыгрыша: билеты выгружаются как есть, с
-датами и пометками подозрений, и победителей выбирают по ней. Отказавшиеся
-оплаты из таблицы не выбрасываются, а помечаются причиной — иначе на вопрос
-«а почему у меня не засчиталось» отвечать будет нечем.
+Считается всё по журналу баланса: покупка и продление подписки лежат там
+с кодами `plan` и `renewal` и с длиной в `meta.days`. Пополнение баланса
+билетов не даёт вовсе — деньги на балансе это ещё не подписка.
+
+Проход по журналу полный, потому что «первая в жизни покупка» иначе не
+определяется: нужно знать, покупал ли друг когда-нибудь раньше.
 """
 
 from __future__ import annotations
@@ -26,117 +30,153 @@ from app.domain import raffle as domain
 
 log = logging.getLogger(__name__)
 
-PAYMENT_FIELDS = {'user_id': 1, 'amount': 1, 'created_at': 1, 'payload': 1,
-                  'status': 1}
+# Покупка и продление подписки. Пополнение баланса (`topup`) сюда не идёт:
+# деньги на балансе — ещё не подписка, и билет за них давать не за что.
+KINDS = ('plan', 'renewal')
+
+JOURNAL_FIELDS = {'user_id': 1, 'amount': 1, 'kind': 1, 'meta': 1, 'at': 1}
 USER_FIELDS = {'user_data.user_id': 1, 'user_data.username': 1,
-               'user_data.referrer': 1, 'user_data.date_joined': 1,
-               'vpn.uuid': 1, 'vpn.expireAt': 1}
+               'user_data.referrer': 1, 'vpn.uuid': 1, 'vpn.expireAt': 1}
 CHUNK = 500
+DAYS_IN_MONTH = 30
 
 
-async def collect(payments, users, *, start: datetime, end: datetime,
-                  min_payment: int = 0, require_active: bool = True,
+def months(days) -> int:
+    """Сколько месяцев в покупке. Меньше месяца — ноль, а не «почти месяц»."""
+    try:
+        value = int(days or 0)
+    except (TypeError, ValueError):
+        return 0
+    return value // DAYS_IN_MONTH
+
+
+async def collect(journal, users, *, start: datetime, end: datetime,
+                  friend_tickets: int = 3, self_per_month: int = 1,
+                  min_months: int = 1, require_active: bool = True,
                   now: datetime | None = None) -> dict:
     """Все билеты за период плюс то, что в зачёт не пошло, и почему."""
     moment = now or time_now()
-    first, in_window = await _payments(payments, start, end)
+    first, inside = await _purchases(journal, start, end)
 
-    # Новые плательщики: те, чья первая в жизни оплата попала в период.
-    # Старый плательщик, оплативший ещё раз, билета не даёт — за продления
-    # своих же друзей билеты не выдаём.
-    newcomers = [user_id for user_id, record in first.items()
-                 if start <= record['at'] <= end]
-
-    friends = await _docs(users, newcomers)
+    buyers = list(inside)
+    docs = await _docs(users, buyers)
     referrer_ids = {users.pick(doc, 'user_data.referrer')
-                    for doc in friends.values()
+                    for doc in docs.values()
                     if users.pick(doc, 'user_data.referrer')}
     referrers = await _docs(users, [int(ref) for ref in referrer_ids
                                     if str(ref).lstrip('-').isdigit()])
 
-    rows = []
-    for user_id in newcomers:
-        record = first[user_id]
-        doc = friends.get(user_id) or {}
-        referrer = users.pick(doc, 'user_data.referrer')
-        referrer = int(referrer) if str(referrer or '').lstrip('-').isdigit() else None
-        paid = int(in_window.get(user_id, 0))
+    events: list[dict] = []
+    for user_id in buyers:
+        purchases = inside[user_id]
+        doc = docs.get(user_id) or {}
 
-        row = {
-            'ticket': 0,
-            'at': record['at'],
-            'friend_id': user_id,
-            'friend_username': users.pick(doc, 'user_data.username') or '',
-            'friend_joined': parse_dt(users.pick(doc, 'user_data.date_joined')),
-            'amount': paid,
-            'referrer_id': referrer,
-            'referrer_username': '',
-            'print': record['print'],
-            'valid': False,
-            'why': '',
-            'flags': [],
-        }
+        # ── свои покупки: билет за каждый месяц
+        own = sum(months(row['days']) for row in purchases) * int(self_per_month)
+        if own > 0:
+            events.append({
+                'kind': domain.SELF, 'owner': user_id,
+                'owner_username': users.pick(doc, 'user_data.username') or '',
+                'friend': 0, 'friend_username': '',
+                'at': min(row['at'] for row in purchases),
+                'tickets': own, 'valid': True, 'why': '',
+                'detail': f'своя подписка, {sum(months(row["days"]) for row in purchases)} мес.',
+            })
 
-        if not referrer:
-            row['why'] = domain.NO_REFERRER
-        elif referrer == user_id:
-            row['why'] = domain.SELF_INVITE
-        elif referrer not in referrers:
-            row['why'] = domain.UNKNOWN_REFERRER
-        elif paid < int(min_payment):
-            row['why'] = domain.TOO_SMALL
-        elif require_active and not _active(users, doc, moment):
-            row['why'] = domain.NOT_ACTIVE
-        else:
-            row['valid'] = True
+        # ── он же как приглашённый друг: три билета тому, кто его привёл
+        events.append(_friend_event(
+            users, user_id, doc, purchases, first.get(user_id), referrers,
+            start=start, end=end, friend_tickets=friend_tickets,
+            min_months=min_months, require_active=require_active,
+            moment=moment))
 
-        if referrer in referrers:
-            row['referrer_username'] = users.pick(
-                referrers[referrer], 'user_data.username') or ''
-        if row['valid'] and not users.pick(doc, 'vpn.uuid'):
-            # Заплатил, но подписки в панели нет — значит и не подключался.
-            domain.add_flag(row, domain.NEVER_CONNECTED)
-
-        rows.append(row)
-
-    good = [row for row in rows if row['valid']]
-    domain.mark_batches(good)
-    domain.mark_same_payer(good)
-    domain.number(rows)
+    events = [row for row in events if row]
+    tickets = domain.number_tickets(events)
 
     return {
-        'start': start, 'end': end, 'min_payment': int(min_payment),
+        'start': start, 'end': end,
+        'friend_tickets': int(friend_tickets),
+        'self_per_month': int(self_per_month),
+        'min_months': int(min_months),
         'require_active': bool(require_active),
-        'rows': rows,
-        'tickets': len(good),
-        'revenue': sum(row['amount'] for row in good),
-        'participants': _participants(good),
-        'flagged': len([row for row in good if row['flags']]),
-        'skipped': _skipped(rows),
-        'payers': len(first),
+        'events': events,
+        'rows': tickets,
+        'tickets': len(tickets),
+        'revenue': sum(row['amount'] for group in inside.values() for row in group),
+        'participants': _participants(events),
+        'skipped': _skipped(events),
     }
 
 
-async def _payments(payments, start: datetime, end: datetime) -> tuple[dict, dict]:
-    """Первая в жизни оплата каждого плательщика и сумма его оплат за период."""
-    first: dict[int, dict] = {}
-    in_window: dict[int, int] = {}
+def _friend_event(users, user_id: int, doc: dict, purchases: list[dict],
+                  first_ever, referrers: dict, *, start, end, friend_tickets,
+                  min_months, require_active, moment) -> dict | None:
+    """Билеты тому, кто привёл этого человека, — если он новый и купил месяц."""
+    referrer = users.pick(doc, 'user_data.referrer')
+    referrer = int(referrer) if str(referrer or '').lstrip('-').isdigit() else None
 
-    async for row in payments.iterate({'status': 'done'}, PAYMENT_FIELDS):
+    row = {
+        'kind': domain.FRIEND, 'owner': referrer or 0,
+        'owner_username': (users.pick(referrers.get(referrer) or {},
+                                      'user_data.username') or ''
+                           if referrer else ''),
+        'friend': user_id,
+        'friend_username': users.pick(doc, 'user_data.username') or '',
+        'at': min(item['at'] for item in purchases),
+        'tickets': int(friend_tickets), 'valid': False, 'why': '',
+        'detail': '',
+    }
+    bought = max(months(item['days']) for item in purchases)
+    row['detail'] = f'подписка {bought} мес.'
+
+    if not referrer:
+        row['why'] = domain.NO_REFERRER
+    elif referrer == user_id:
+        row['why'] = domain.SELF_INVITE
+    elif referrer not in referrers:
+        row['why'] = domain.UNKNOWN_REFERRER
+    elif bought < int(min_months):
+        row['why'] = domain.TOO_SHORT
+    elif not first_ever or not (start <= first_ever <= end):
+        # Друг покупал и раньше — он не новый, и билетов за него уже не дают.
+        row['why'] = domain.NOT_NEW
+    elif require_active and not _alive(users, doc, moment):
+        row['why'] = domain.NOT_ACTIVE
+    else:
+        row['valid'] = True
+
+    return row
+
+
+async def _purchases(journal, start: datetime,
+                     end: datetime) -> tuple[dict, dict]:
+    """Первая в жизни покупка подписки и всё, что куплено за период."""
+    first: dict[int, datetime] = {}
+    inside: dict[int, list[dict]] = {}
+
+    async for row in journal.iterate({'kind': {'$in': list(KINDS)}},
+                                     JOURNAL_FIELDS):
         user_id = row.get('user_id')
-        moment = parse_dt(row.get('created_at'))
-        if not user_id or not moment:
+        at = parse_dt(row.get('at'))
+        if user_id is None or at is None:
             continue
 
-        amount = int(row.get('amount') or 0)
-        seen = first.get(user_id)
-        if seen is None or moment < seen['at']:
-            first[user_id] = {'at': moment, 'amount': amount,
-                              'print': domain.fingerprint(row.get('payload'))}
-        if start <= moment <= end:
-            in_window[user_id] = in_window.get(user_id, 0) + amount
+        user_id = int(user_id)
+        days = (row.get('meta') or {}).get('days')
+        if months(days) <= 0:
+            # Покупка короче месяца (тестовый тариф, доплата) — не покупка
+            # подписки в смысле акции, и «первой» она тоже не считается.
+            continue
 
-    return first, in_window
+        seen = first.get(user_id)
+        if seen is None or at < seen:
+            first[user_id] = at
+        if start <= at <= end:
+            inside.setdefault(user_id, []).append(
+                {'at': at, 'days': days,
+                 'amount': abs(int(row.get('amount') or 0))})
+
+    return first, inside
 
 
 async def _docs(users, ids: list[int]) -> dict[int, dict]:
@@ -154,28 +194,34 @@ async def _docs(users, ids: list[int]) -> dict[int, dict]:
     return found
 
 
-def _active(users, doc: dict, moment: datetime) -> bool:
+def _alive(users, doc: dict, moment: datetime) -> bool:
     expires = parse_dt(users.pick(doc, 'vpn.expireAt'))
     return bool(expires and expires > moment)
 
 
-def _participants(rows: list[dict]) -> list[dict]:
-    """Участники с их числом билетов — от большего к меньшему."""
+def _participants(events: list[dict]) -> list[dict]:
+    """Участники с их билетами — от большего к меньшему."""
     counts: dict[int, dict] = {}
-    for row in rows:
-        entry = counts.setdefault(row['referrer_id'],
-                                  {'user_id': row['referrer_id'],
-                                   'username': row['referrer_username'],
-                                   'tickets': 0, 'amount': 0})
-        entry['tickets'] += 1
-        entry['amount'] += row['amount']
+    for row in events:
+        if not row['valid'] or not row['owner']:
+            continue
+        entry = counts.setdefault(row['owner'],
+                                  {'user_id': row['owner'],
+                                   'username': row['owner_username'],
+                                   'tickets': 0, 'friends': 0, 'own': 0})
+        entry['tickets'] += row['tickets']
+        if row['kind'] == domain.FRIEND:
+            entry['friends'] += 1
+        else:
+            entry['own'] += row['tickets']
 
-    return sorted(counts.values(), key=lambda item: (-item['tickets'], item['user_id']))
+    return sorted(counts.values(), key=lambda item: (-item['tickets'],
+                                                     item['user_id']))
 
 
-def _skipped(rows: list[dict]) -> dict[str, int]:
+def _skipped(events: list[dict]) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for row in rows:
+    for row in events:
         if not row['valid']:
             counts[row['why']] = counts.get(row['why'], 0) + 1
     return counts
@@ -183,24 +229,25 @@ def _skipped(rows: list[dict]) -> dict[str, int]:
 
 # ── билеты одного человека ──────────────────────────────────────────────────
 #
-# Экран в боте не может позволить себе проход по всей коллекции платежей:
-# его открывают тысячи людей. Поэтому для одного участника считаем иначе —
-# сначала его друзья (один запрос), потом их платежи (второй), — но по тем
-# же правилам, что и таблица для розыгрыша. Иначе бот показывал бы человеку
-# одно число, а в списке билетов стояло другое, и правым был бы он.
+# Экран в боте не может позволить себе проход по всему журналу: его
+# открывают тысячи людей. Поэтому для одного участника считаем иначе —
+# сначала его друзья, потом покупки его и их, — но по тем же правилам, что
+# и таблица для розыгрыша. Иначе бот показывал бы одно число, а в списке
+# билетов стояло другое, и правым был бы человек.
 
 MAX_FRIENDS = 1000
 MINE_FIELDS = {'user_data.user_id': 1, 'vpn.expireAt': 1}
 
 
-async def for_user(payments, users, user_id: int, *, start: datetime,
-                   end: datetime, min_payment: int = 0,
+async def for_user(journal, users, user_id: int, *, start: datetime,
+                   end: datetime, friend_tickets: int = 3,
+                   self_per_month: int = 1, min_months: int = 1,
                    require_active: bool = True,
                    now: datetime | None = None) -> dict:
-    """Сколько билетов у этого человека и кто их принёс."""
+    """Сколько билетов у этого человека и из чего они сложились."""
     moment = now or time_now()
-    friends: dict[int, dict] = {}
 
+    friends: dict[int, dict] = {}
     cursor = users.col.find({'user_data.referrer': int(user_id)}, MINE_FIELDS)
     async for doc in cursor:
         friend_id = users.pick(doc, 'user_data.user_id')
@@ -210,42 +257,46 @@ async def for_user(payments, users, user_id: int, *, start: datetime,
         if len(friends) >= MAX_FRIENDS:
             break
 
-    if not friends:
-        return {'tickets': 0, 'friends': len(friends), 'rows': []}
-
-    # Платежи всех друзей сразу: первая в жизни оплата каждого — это и есть
-    # правило билета, и узнать её можно только по всей его истории.
-    first: dict[int, dict] = {}
-    paid: dict[int, int] = {}
-    async for row in payments.iterate(
-            {'status': 'done', 'user_id': {'$in': list(friends)}},
-            {'user_id': 1, 'amount': 1, 'created_at': 1}):
-        friend_id = int(row.get('user_id') or 0)
-        at = parse_dt(row.get('created_at'))
-        if friend_id not in friends or at is None:
+    first: dict[int, datetime] = {}
+    inside: dict[int, list[dict]] = {}
+    async for row in journal.iterate(
+            {'kind': {'$in': list(KINDS)},
+             'user_id': {'$in': [int(user_id), *friends]}},
+            JOURNAL_FIELDS):
+        owner = row.get('user_id')
+        at = parse_dt(row.get('at'))
+        days = (row.get('meta') or {}).get('days')
+        if owner is None or at is None or months(days) <= 0:
             continue
-        amount = int(row.get('amount') or 0)
-        seen = first.get(friend_id)
-        if seen is None or at < seen['at']:
-            first[friend_id] = {'at': at, 'amount': amount}
+        owner = int(owner)
+        seen = first.get(owner)
+        if seen is None or at < seen:
+            first[owner] = at
         if start <= at <= end:
-            paid[friend_id] = paid.get(friend_id, 0) + amount
+            inside.setdefault(owner, []).append({'at': at, 'days': days})
 
-    rows = []
-    for friend_id, record in first.items():
-        if not (start <= record['at'] <= end):
+    own = sum(months(row['days']) for row in inside.get(int(user_id), []))
+    own_tickets = own * int(self_per_month)
+
+    good_friends = 0
+    for friend_id, doc in friends.items():
+        purchases = inside.get(friend_id)
+        if not purchases:
             continue
-        if paid.get(friend_id, 0) < int(min_payment):
+        if max(months(row['days']) for row in purchases) < int(min_months):
             continue
-        if require_active and not _alive(users, friends[friend_id], moment):
+        came = first.get(friend_id)
+        if not came or not (start <= came <= end):
             continue
-        rows.append({'friend_id': friend_id, 'at': record['at'],
-                     'amount': paid.get(friend_id, 0)})
+        if require_active and not _alive(users, doc, moment):
+            continue
+        good_friends += 1
 
-    rows.sort(key=lambda row: row['at'])
-    return {'tickets': len(rows), 'friends': len(friends), 'rows': rows}
-
-
-def _alive(users, doc: dict, moment: datetime) -> bool:
-    expires = parse_dt(users.pick(doc, 'vpn.expireAt'))
-    return bool(expires and expires > moment)
+    return {
+        'tickets': own_tickets + good_friends * int(friend_tickets),
+        'own_months': own,
+        'own_tickets': own_tickets,
+        'friends': good_friends,
+        'friend_tickets': good_friends * int(friend_tickets),
+        'invited': len(friends),
+    }

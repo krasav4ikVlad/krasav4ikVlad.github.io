@@ -83,8 +83,10 @@ async def screen(event, c, user: dict, settings) -> None:
 
     user_id = int(((user or {}).get('user_data') or {}).get('user_id') or 0)
     mine = await service.for_user(
-        c.payments_repo, c.users, user_id, start=start, end=end,
-        min_payment=await settings.int('raffle.min_payment'),
+        c.balance_log, c.users, user_id, start=start, end=end,
+        friend_tickets=await settings.int('raffle.friend_tickets'),
+        self_per_month=await settings.int('raffle.self_per_month'),
+        min_months=await settings.int('raffle.min_months'),
         require_active=await settings.flag('raffle.require_active'))
 
     tickets = mine['tickets']
@@ -93,7 +95,17 @@ async def screen(event, c, user: dict, settings) -> None:
     left = max(0, (end - now()).days)
     over = now() > end
 
-    lines = [f'<b>{e("cart")} Ваших билетов: {tickets}</b>', '']
+    lines = [f'<b>{e("cart")} Ваших билетов: {tickets}</b>']
+    if tickets:
+        parts = []
+        if mine['friends']:
+            parts.append(f'за друзей — {mine["friend_tickets"]} '
+                         f'({mine["friends"]} чел.)')
+        if mine['own_tickets']:
+            parts.append(f'за свою подписку — {mine["own_tickets"]} '
+                         f'({mine["own_months"]} мес.)')
+        lines.append('   ' + ', '.join(parts))
+    lines.append('')
 
     if over:
         lines.append('Приём билетов закончен — ждём розыгрыша.')
@@ -107,8 +119,8 @@ async def screen(event, c, user: dict, settings) -> None:
                      f'после розыгрыша. Каждый следующий друг — ещё один '
                      f'билет.')
     elif not tickets:
-        lines.append('Билетов пока нет: они начисляются за друзей, которые '
-                     'пришли по вашей ссылке и оплатили подписку.')
+        lines.append('Билетов пока нет: три билета даёт новый друг, купивший '
+                     'подписку, и один — каждый месяц вашей собственной.')
 
     if not over:
         lines.append('')

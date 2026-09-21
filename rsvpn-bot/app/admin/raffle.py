@@ -30,17 +30,16 @@ USAGE = (
     f'<code>/raffletickets</code> — таблица билетов файлом (CSV)\n'
     f'<code>/rafflebonus</code> — кому причитается подарок за порог билетов\n'
     f'<code>/raffle 01.10.2026 22.10.2026</code> — за другой период\n\n'
-    f'<blockquote>Даты акции и минимальную оплату друга задайте один раз в '
+    f'<blockquote>Даты акции и цену билета задайте один раз в '
     f'/admin → Розыгрыш — тогда команды можно звать без аргументов.\n\n'
-    f'Билет даётся за друга, который пришёл по ссылке участника и '
-    f'<b>впервые</b> заплатил настоящими деньгами в период акции. '
-    f'Продления старых друзей билетов не дают, иначе их набрал бы тот, кто '
-    f'ничего для акции не делал.</blockquote>'
+    f'Три билета за нового приглашённого друга, купившего подписку от '
+    f'месяца, и один билет за каждый месяц своей подписки. Повторные '
+    f'покупки того же друга билетов не дают, пополнение баланса — тоже: '
+    f'деньги на балансе ещё не подписка.</blockquote>'
 )
 
 COLUMNS = ('билет', 'дата', 'время', 'участник_id', 'участник_username',
-           'друг_id', 'друг_username', 'оплатил', 'подозрение', 'в_зачёт',
-           'почему_нет')
+           'за_что', 'подробности', 'друг_id')
 
 
 async def period(command, settings) -> tuple:
@@ -66,8 +65,10 @@ async def report(message: types.Message, command, c, settings) -> dict | None:
     # без этой строки кажется, что бот не ответил.
     await message.answer(f'{e("refresh")} Считаю билеты…')
     return await raffle.collect(
-        c.payments_repo, c.users, start=start, end=end,
-        min_payment=await settings.int('raffle.min_payment'),
+        c.balance_log, c.users, start=start, end=end,
+        friend_tickets=await settings.int('raffle.friend_tickets'),
+        self_per_month=await settings.int('raffle.self_per_month'),
+        min_months=await settings.int('raffle.min_months'),
         require_active=await settings.flag('raffle.require_active'))
 
 
@@ -85,17 +86,18 @@ def summary(data: dict, bonus_tickets: int = 0, bonus_days: int = 0) -> str:
     if not data['tickets']:
         lines.append('Билетов пока ни одного.')
         lines.append('')
-        lines.append('<i>Это не обязательно поломка: билет даётся за друга, '
-                     'который заплатил <b>впервые</b> в период акции. Если '
-                     'акция только началась, так и должно быть.</i>')
+        lines.append('<i>Это не обязательно поломка: билет даётся за '
+                     'купленную подписку — свою или нового друга. Если акция '
+                     'только началась, так и должно быть.</i>')
         return '\n'.join(lines)
 
-    lines.append(f'{e("cart")} Билетов: <b>{data["tickets"]}</b>')
+    by_friends = sum(row['tickets'] for row in data['events']
+                     if row['valid'] and row['kind'] == domain.FRIEND)
+    lines.append(f'{e("cart")} Билетов: <b>{data["tickets"]}</b> — '
+                 f'за друзей {by_friends}, за свои подписки '
+                 f'{data["tickets"] - by_friends}')
     lines.append(f'{e("referrals")} Участников: <b>{len(data["participants"])}</b>')
-    lines.append(f'{e("money")} Принесли денег: <b>{data["revenue"]}₽</b>')
-    if data['flagged']:
-        lines.append(f'{e("warning")} С пометкой подозрения: '
-                     f'<b>{data["flagged"]}</b>')
+    lines.append(f'{e("money")} Куплено подписок на: <b>{data["revenue"]}₽</b>')
 
     # Подарок за порог — единственный расход акции, который не разыгрывается,
     # а причитается. Его цену нужно видеть до розыгрыша, а не после.
@@ -110,7 +112,8 @@ def summary(data: dict, bonus_tickets: int = 0, bonus_days: int = 0) -> str:
     for place, item in enumerate(data['participants'][:10], start=1):
         who = f'@{item["username"]}' if item['username'] else 'без юзернейма'
         lines.append(f'{place}. <code>{item["user_id"]}</code> ({who}) — '
-                     f'<b>{item["tickets"]}</b> {_tickets(item["tickets"])}')
+                     f'<b>{item["tickets"]}</b> {_tickets(item["tickets"])} '
+                     f'(друзей {item["friends"]}, своих {item["own"]})')
     lines.append('')
 
     if data['skipped']:
@@ -120,12 +123,13 @@ def summary(data: dict, bonus_tickets: int = 0, bonus_days: int = 0) -> str:
             lines.append(f'{why} — {count}')
         lines.append('')
 
-    lines.append(f'<blockquote>Считались оплаты от '
-                 f'{data["min_payment"]}₽; подписка друга на сейчас '
-                 + ('обязана быть активной' if data['require_active']
-                    else 'может быть любой') + '. '
-                 f'Таблица для розыгрыша — <code>/raffletickets</code>: там '
-                 f'каждый билет с датой, и отказы с причиной.</blockquote>')
+    lines.append(f'<blockquote>{data["friend_tickets"]} билета за нового '
+                 f'друга, купившего подписку от {data["min_months"]} мес., и '
+                 f'{data["self_per_month"]} билет за каждый месяц своей '
+                 f'подписки. Пополнение баланса билетов не даёт: деньги на '
+                 f'балансе — ещё не подписка.\n\nТаблица для розыгрыша — '
+                 f'<code>/raffletickets</code>: там каждый билет отдельной '
+                 f'строкой.</blockquote>')
     return '\n'.join(lines)
 
 
@@ -151,17 +155,14 @@ def to_csv(data: dict) -> bytes:
 
     for row in data['rows']:
         writer.writerow([
-            row['ticket'] or '',
+            row['ticket'],
             fmt(row['at'], '%d.%m.%Y'),
             fmt(row['at'], '%H:%M:%S'),
-            row['referrer_id'] or '',
-            row['referrer_username'] or '',
-            row['friend_id'],
-            row['friend_username'] or '',
-            row['amount'],
-            ', '.join(row['flags']),
-            'да' if row['valid'] else 'нет',
-            row['why'],
+            row['owner'],
+            row['owner_username'],
+            row['kind'],
+            row['detail'],
+            row['friend'] or '',
         ])
     return buffer.getvalue().encode('utf-8-sig')
 
@@ -194,14 +195,12 @@ async def tickets(message: types.Message, command, c, settings) -> None:
         types.BufferedInputFile(to_csv(data), filename=filename(data)),
         caption=(
             f'{e("gift")} Билетов: <b>{data["tickets"]}</b>, участников: '
-            f'<b>{len(data["participants"])}</b>\n'
-            f'Строк в файле: {len(data["rows"])} — вместе с теми, что в зачёт '
-            f'не пошли (столбец «в_зачёт»).\n\n'
-            f'<blockquote>Билеты пронумерованы по дате оплаты: номер 1 — '
-            f'самый первый привод за акцию. Столбец «подозрение» — не '
-            f'приговор, а повод посмотреть глазами: там пачки оплат за час, '
-            f'один кошелёк на разных аккаунтах и те, кто заплатил, но так и '
-            f'не подключился.\n\n'
+            f'<b>{len(data["participants"])}</b>\n\n'
+            f'<blockquote>Одна строка — один билет, даже если друг принёс '
+            f'сразу три: розыгрыш идёт по номерам, и «билет №17» должен '
+            f'означать ровно одного человека.\n\n'
+            f'Пронумерованы по дате покупки: номер 1 — самая первая за '
+            f'акцию.\n\n'
             f'Этот файл имеет смысл выложить в канал до розыгрыша: список, '
             f'который нельзя поменять после публикации, — единственное, что '
             f'делает случайный выбор проверяемым.</blockquote>'))
