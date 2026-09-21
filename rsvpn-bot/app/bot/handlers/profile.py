@@ -45,6 +45,14 @@ async def profile_keyboard(user: dict, settings, trial=None,
     kb.row(types.InlineKeyboardButton(
         text=f'{e("money")} Пополнить баланс', callback_data=Menu(screen='payments').pack()))
 
+    # Розыгрыш — выше приглашения и только пока идёт: это та же рефералка,
+    # но с призом, и в дни акции человеку нужен именно он.
+    from app.bot.handlers.raffle import running
+
+    if await running(settings):
+        kb.row(types.InlineKeyboardButton(
+            text=f'{e("gift")} Розыгрыш', callback_data=Menu(screen='raffle').pack()))
+
     if await settings.flag('features.referrals_enabled'):
         kb.row(types.InlineKeyboardButton(
             text=f'{e("referrals")} Пригласить', callback_data=Menu(screen='referrals').pack()))

@@ -22,6 +22,7 @@ from app.content.emoji import e
 from app.core.time import fmt
 from app.domain import raffle as domain
 from app.services import raffle
+from app.services import raffle_prizes as prizes
 
 USAGE = (
     f'{e("gift")} <b>Розыгрыш</b>\n\n'
@@ -246,7 +247,70 @@ async def bonus(message: types.Message, command, c, settings) -> None:
     await message.answer('\n'.join(lines))
 
 
+WIN_USAGE = (
+    f'{e("gift")} <b>Выдача призов</b>\n\n'
+    f'Пришлите список победителей — по строке на человека:\n'
+    f'<code>802421217 5000</code> — деньги на баланс\n'
+    f'<code>802421217 30д</code> — дни подписки\n\n'
+    f'<blockquote>Можно одним сообщением: скопируйте столбец из таблицы, '
+    f'где выбирали победителей. Повторная выдача тому же человеку в рамках '
+    f'одного розыгрыша не пройдёт — отметка ставится в его карточке, и '
+    f'второе нажатие «на всякий случай» призы не удвоит.\n\n'
+    f'Каждому уйдёт письмо. Текст письма — в /admin → Розыгрыш.</blockquote>'
+)
+
+
+async def win(message: types.Message, command, c, settings) -> None:
+    """`/rafflewin` со списком победителей — начислить призы и написать им."""
+    raw = (command.args or '')
+    if not raw.strip():
+        await message.answer(WIN_USAGE)
+        return
+
+    winners, broken = prizes.parse_list(raw)
+    if broken:
+        await message.answer(
+            f'{e("cross")} Не понял строки — проверьте и пришлите заново:\n'
+            + '\n'.join(f'<code>{line}</code>' for line in broken[:10]))
+        return
+    if not winners:
+        await message.answer(WIN_USAGE)
+        return
+
+    await message.answer(f'{e("refresh")} Выдаю призы: {len(winners)}…')
+    mark = f'raffle_{domain.parse_day(str(await settings.get("raffle.end") or "")) or ""}'[:40]
+    report_data = await prizes.award(c.users, c.vpn, winners, mark=mark)
+
+    # Письма — через Sender: он знает про флуд-лимит и про тех, кто закрыл
+    # бота. Прямая отправка сорока подряд упирается в лимит.
+    from app.campaigns.sender import Sender
+
+    sender = Sender(on_blocked=c.users.mark_blocked)
+    text = str(await settings.get('raffle.win_text') or '').strip()
+    lost = 0
+    for winner in report_data['done']:
+        if not await sender.send(message.bot, winner['user_id'],
+                                 prizes.letter(winner, text)):
+            lost += 1
+
+    lines = [f'{e("ok")} <b>Призы выданы</b>', '',
+             f'Начислено: <b>{len(report_data["done"])}</b>']
+    if lost:
+        lines.append(f'{e("attention")} Не доставлено писем: <b>{lost}</b> — '
+                     f'эти люди закрыли бота. Приз начислен всё равно.')
+    if report_data['skipped']:
+        lines.append(f'Пропущено (уже получали): '
+                     f'<b>{len(report_data["skipped"])}</b>')
+    if report_data['failed']:
+        lines.append('')
+        lines.append(f'{e("cross")} <b>Не вышло: {len(report_data["failed"])}</b>')
+        for row in report_data['failed'][:10]:
+            lines.append(f'   <code>{row["user_id"]}</code> — {row["why"]}')
+    await message.answer('\n'.join(lines))
+
+
 def register(router: Router) -> None:
+    router.message.register(win, Command('rafflewin'))
     router.message.register(command, Command('raffle'))
     router.message.register(tickets, Command('raffletickets'))
     router.message.register(bonus, Command('rafflebonus'))

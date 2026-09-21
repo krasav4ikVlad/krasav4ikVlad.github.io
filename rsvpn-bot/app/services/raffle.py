@@ -179,3 +179,73 @@ def _skipped(rows: list[dict]) -> dict[str, int]:
         if not row['valid']:
             counts[row['why']] = counts.get(row['why'], 0) + 1
     return counts
+
+
+# ── билеты одного человека ──────────────────────────────────────────────────
+#
+# Экран в боте не может позволить себе проход по всей коллекции платежей:
+# его открывают тысячи людей. Поэтому для одного участника считаем иначе —
+# сначала его друзья (один запрос), потом их платежи (второй), — но по тем
+# же правилам, что и таблица для розыгрыша. Иначе бот показывал бы человеку
+# одно число, а в списке билетов стояло другое, и правым был бы он.
+
+MAX_FRIENDS = 1000
+MINE_FIELDS = {'user_data.user_id': 1, 'vpn.expireAt': 1}
+
+
+async def for_user(payments, users, user_id: int, *, start: datetime,
+                   end: datetime, min_payment: int = 0,
+                   require_active: bool = True,
+                   now: datetime | None = None) -> dict:
+    """Сколько билетов у этого человека и кто их принёс."""
+    moment = now or time_now()
+    friends: dict[int, dict] = {}
+
+    cursor = users.col.find({'user_data.referrer': int(user_id)}, MINE_FIELDS)
+    async for doc in cursor:
+        friend_id = users.pick(doc, 'user_data.user_id')
+        if friend_id is None or int(friend_id) == int(user_id):
+            continue
+        friends[int(friend_id)] = doc
+        if len(friends) >= MAX_FRIENDS:
+            break
+
+    if not friends:
+        return {'tickets': 0, 'friends': len(friends), 'rows': []}
+
+    # Платежи всех друзей сразу: первая в жизни оплата каждого — это и есть
+    # правило билета, и узнать её можно только по всей его истории.
+    first: dict[int, dict] = {}
+    paid: dict[int, int] = {}
+    async for row in payments.iterate(
+            {'status': 'done', 'user_id': {'$in': list(friends)}},
+            {'user_id': 1, 'amount': 1, 'created_at': 1}):
+        friend_id = int(row.get('user_id') or 0)
+        at = parse_dt(row.get('created_at'))
+        if friend_id not in friends or at is None:
+            continue
+        amount = int(row.get('amount') or 0)
+        seen = first.get(friend_id)
+        if seen is None or at < seen['at']:
+            first[friend_id] = {'at': at, 'amount': amount}
+        if start <= at <= end:
+            paid[friend_id] = paid.get(friend_id, 0) + amount
+
+    rows = []
+    for friend_id, record in first.items():
+        if not (start <= record['at'] <= end):
+            continue
+        if paid.get(friend_id, 0) < int(min_payment):
+            continue
+        if require_active and not _alive(users, friends[friend_id], moment):
+            continue
+        rows.append({'friend_id': friend_id, 'at': record['at'],
+                     'amount': paid.get(friend_id, 0)})
+
+    rows.sort(key=lambda row: row['at'])
+    return {'tickets': len(rows), 'friends': len(friends), 'rows': rows}
+
+
+def _alive(users, doc: dict, moment: datetime) -> bool:
+    expires = parse_dt(users.pick(doc, 'vpn.expireAt'))
+    return bool(expires and expires > moment)
