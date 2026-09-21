@@ -279,3 +279,36 @@ def test_the_letter_names_the_prize():
         {'amount': 5000, 'kind': 'money'}, 'Поздравляем!')
     assert '30 дней подписки' in prizes.letter(
         {'amount': 30, 'kind': 'days'}, '')
+
+
+async def test_the_screen_says_something_even_without_a_threshold_gift(repos, db,
+                                                                       settings):
+    """Порог можно выключить, но экран без единой строки после числа
+    выглядит недоделанным."""
+    journal, users = repos
+    await person(users, 1)
+    await bought(journal, 1, now() - timedelta(days=1), months=2)
+    await settings.set('raffle.bonus_tickets', 0)
+
+    captured = []
+
+    class Event:
+        from_user = type('U', (), {'id': 1})()
+
+        async def answer(self, text='', **kwargs):
+            captured.append(text)
+            return True
+
+    class Container:
+        def __init__(self, journal, users):
+            self.balance_log = journal
+            self.users = users
+
+        def media(self, key):
+            return None
+
+    await screen.screen(Event(), Container(journal, users),
+                        await users.get(1), settings)
+
+    assert 'Ваших билетов: 2' in captured[0]
+    assert 'ещё билеты' in captured[0]
