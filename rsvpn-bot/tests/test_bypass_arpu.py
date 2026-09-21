@@ -222,3 +222,66 @@ async def test_the_report_shows_the_windows(journal, db):
 
     assert 'за сутки: <b>0 Гб</b>' in text
     assert 'за неделю: <b>15 Гб</b> на <b>90₽</b>' in text
+
+
+# ── баланс против настоящих денег ───────────────────────────────────────────
+class Payments:
+    """Платежи провайдеру: сколько человек заплатил и сколько ему зачислили."""
+
+    def __init__(self, rows=()):
+        self.rows = list(rows)
+
+    async def iterate(self, query, projection=None):
+        for row in self.rows:
+            yield row
+
+
+def payment(paid: int, credited: int) -> dict:
+    return {'amount': paid, 'credited': credited, 'status': 'done',
+            'created_at': now()}
+
+
+async def test_balance_spent_is_not_money_earned(journal, db):
+    """Пополнил 100₽ — получил 120₽ баланса. Значит «продали на 120» и
+    «заработали 120» — разные суммы, и вторая меньше на бонус."""
+    await bought(journal, 10, 120, days_ago=2, gb=15)
+    payments = Payments([payment(100, 120)])
+
+    data = await bypass_arpu.collect(journal, payments=payments)
+    month = next(row for row in data['sold'] if row['days'] == 30)
+
+    assert data['cash']['ratio'] == 0.833 and month['cash'] == 100
+
+
+async def test_an_old_payment_without_the_field_is_not_invented(journal, db):
+    """Нет записи о зачисленном — считаем, что зачислили оплаченное.
+    Это завышает долю, но не выдумывает бонус, которого мы не знаем."""
+    await bought(journal, 10, 100, days_ago=2, gb=15)
+    payments = Payments([{'amount': 100, 'status': 'done', 'created_at': now()}])
+
+    assert (await bypass_arpu.collect(journal, payments=payments))['cash']['ratio'] == 1.0
+
+
+async def test_without_payments_the_share_is_unknown(journal, db):
+    await bought(journal, 10, 100, days_ago=2, gb=15)
+
+    assert (await bypass_arpu.collect(journal))['cash']['known'] is False
+
+
+async def test_the_report_counts_what_is_left_after_the_servers(journal, db):
+    await bought(journal, 10, 1200, days_ago=2, gb=200)
+    payments = Payments([payment(1000, 1200)])
+
+    text = admin.render_average(
+        await bypass_arpu.collect(journal, payments=payments), cost_month=400)
+
+    assert 'Из них настоящих денег: <b>1000₽</b>' in text
+    assert 'Остаётся: +600₽ в месяц' in text
+
+
+async def test_the_report_admits_it_does_not_know_the_server_price(journal, db):
+    await bought(journal, 10, 100, days_ago=2, gb=15)
+
+    text = admin.render_average(await bypass_arpu.collect(journal))
+
+    assert 'Плата за серверы не задана' in text

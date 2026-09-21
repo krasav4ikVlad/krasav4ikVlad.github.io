@@ -38,11 +38,13 @@ async def average(message: types.Message, command, c, settings) -> None:
     days = int(raw) if raw.isdigit() and int(raw) > 0 else bypass_arpu.ACTIVE_DAYS
 
     await message.answer(f'{e("refresh")} Считаю…')
+    data = await bypass_arpu.collect(c.balance_log, active_days=days,
+                                     payments=c.payments_repo)
     await message.answer(render_average(
-        await bypass_arpu.collect(c.balance_log, active_days=days)))
+        data, cost_month=await settings.int('bypass.cost_month')))
 
 
-def render_average(data: dict) -> str:
+def render_average(data: dict, cost_month: int = 0) -> str:
     lines = [f'{e("bypass")} <b>ByPass: сколько приносит покупатель</b>',
              f'Активными считаем тех, кто покупал за последние '
              f'{data["active_days"]} дн.', '']
@@ -56,6 +58,8 @@ def render_average(data: dict) -> str:
         lines.append(f'   {row["title"]}: <b>{row["gb"]} Гб</b> на '
                      f'<b>{row["money"]}₽</b> — {row["purchases"]} покупок, '
                      f'{row["people"]} чел.')
+    lines.append('')
+    lines.append(earnings(data, cost_month))
     lines.append('')
 
     lines.append(f'{e("referrals")} Активных покупателей: <b>{data["active"]}</b>')
@@ -104,6 +108,42 @@ def render_average(data: dict) -> str:
                  'ровно столько же.\n\nСрок берётся не меньше месяца: '
                  'вчерашняя покупка на 500₽ — это не 15 000₽ в месяц, а '
                  'человек, который только начал.</blockquote>')
+    return '\n'.join(lines)
+
+
+def earnings(data: dict, cost_month: int = 0) -> str:
+    """Сколько это в настоящих деньгах и что остаётся после серверов.
+
+    Гигабайты покупают с баланса, а баланс приходит с бонусом: «продали на
+    530 тысяч» и «заработали 530 тысяч» — разные суммы.
+    """
+    cash = data['cash']
+    month = next((row for row in data['sold'] if row['days'] == 30), None)
+    if not month or not month['money']:
+        return f'{e("money")} За месяц трафика не покупали.'
+
+    lines = ['<b>Сколько это в деньгах</b>']
+    lines.append(f'Списано с балансов за месяц: <b>{month["money"]}₽</b>')
+
+    if cash['known']:
+        share = round(cash['ratio'] * 100)
+        lines.append(f'Из них настоящих денег: <b>{month["cash"]}₽</b> — '
+                     f'{share}% от списанного')
+        lines.append(f'   <i>баланс приходит с бонусом: за месяц люди '
+                     f'заплатили {cash["paid"]}₽, а зачислено им было '
+                     f'{cash["credited"]}₽</i>')
+    else:
+        lines.append('   <i>Доля настоящих денег не посчитана: платежей за '
+                     'месяц нет.</i>')
+
+    if cost_month:
+        profit = (month['cash'] if cash['known'] else month['money']) - cost_month
+        lines.append(f'Серверы ByPass: <b>−{cost_month}₽</b>')
+        lines.append(f'{e("money")} <b>Остаётся: {profit:+d}₽ в месяц</b>')
+    else:
+        lines.append(f'{e("attention")} Плата за серверы не задана '
+                     f'(/admin → ByPass), поэтому чистыми не посчитано.')
+
     return '\n'.join(lines)
 
 

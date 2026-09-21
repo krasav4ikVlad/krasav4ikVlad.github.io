@@ -52,10 +52,13 @@ WINDOWS = ((1, 'за сутки'), (7, 'за неделю'), (30, 'за меся
 
 
 async def collect(journal, active_days: int = ACTIVE_DAYS,
-                  now: datetime | None = None) -> dict:
+                  now: datetime | None = None, payments=None) -> dict:
     moment = now or time_now()
     people, sold = await _people(journal, moment - timedelta(days=HISTORY_DAYS),
                                  moment)
+    cash = await _cash_ratio(payments, moment - timedelta(days=30), moment)
+    for window in sold:
+        window['cash'] = round(window['money'] * cash['ratio'])
 
     active, gone = [], []
     for row in people.values():
@@ -71,6 +74,7 @@ async def collect(journal, active_days: int = ACTIVE_DAYS,
     return {
         'active_days': active_days,
         'sold': sold,
+        'cash': cash,
         'active': len(active),
         'gone': len(gone),
         'rows': sorted(active, key=lambda row: -row['rate']),
@@ -92,6 +96,38 @@ async def collect(journal, active_days: int = ACTIVE_DAYS,
         'gone_buckets': _gone_buckets(gone),
         'gone_rate': round(sum(row['rate'] for row in gone) / len(gone)) if gone else 0,
     }
+
+
+async def _cash_ratio(payments, start: datetime, end: datetime) -> dict:
+    """Какая доля баланса — настоящие деньги.
+
+    Гигабайты покупают с баланса, а баланс приходит с бонусом: пополнил
+    100₽ — получил 120₽. Значит «продали на 530 тысяч баланса» и «заработали
+    530 тысяч» — разные вещи, и вторая меньше на бонус.
+
+    Доля считается по платежам за тот же месяц: сколько человек заплатил
+    против того, сколько ему зачислили. Реферальные начисления и бонусы
+    кампаний сюда не входят вовсе — они зачисляются мимо платежей, поэтому
+    настоящая доля чуть ниже посчитанной. Это честнее, чем гадать.
+    """
+    found = {'paid': 0, 'credited': 0, 'ratio': 1.0, 'known': False}
+    if payments is None:
+        return found
+
+    async for row in payments.iterate(
+            {'status': 'done', 'created_at': {'$gte': start, '$lte': end}},
+            {'amount': 1, 'credited': 1}):
+        amount = int(row.get('amount') or 0)
+        found['paid'] += amount
+        # Нет поля credited — платёж старый, до того как его стали писать:
+        # считаем, что зачислили ровно оплаченное. Это завышает долю, но не
+        # выдумывает бонус, которого мы не знаем.
+        found['credited'] += int(row.get('credited') or amount)
+
+    if found['credited']:
+        found['ratio'] = round(found['paid'] / found['credited'], 3)
+        found['known'] = True
+    return found
 
 
 async def _people(journal, start: datetime,
