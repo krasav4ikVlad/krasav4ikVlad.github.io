@@ -284,6 +284,7 @@ async def tickets(message: types.Message, command, c, settings) -> None:
                              f'нет ни одного билета.')
         return
 
+    await remember_tickets(c, data)
     await send_table(
         message, data, what='raffle-tickets', columns=TICKET_COLUMNS,
         rows=ticket_rows(data), sheet='Билеты',
@@ -451,6 +452,48 @@ async def statistics(message: types.Message, command, c, settings) -> None:
                                                        data['participants'])))
 
 
+# ── снимок списка билетов ───────────────────────────────────────────────────
+#
+# Опубликованный файл — это обещание: «номер 1423 принадлежит вот этому
+# человеку». Держать его обещанием может только снимок. Пересчёт живьём
+# даёт другой список: подписка друга успевает истечь между публикацией и
+# розыгрышем, его билеты выпадают, и все следующие номера сдвигаются — то
+# есть на видео назовут номер, за которым стоит уже другой человек.
+#
+# Поэтому /raffletickets запоминает то, что отдал, а /rafflewho и
+# /raffledraw ищут в запомненном.
+
+MAX_SNAPSHOT = 50_000
+
+
+def period_key(data: dict) -> str:
+    return f'{fmt(data["start"], "%Y%m%d")}-{fmt(data["end"], "%Y%m%d")}'
+
+
+async def remember_tickets(c, data: dict) -> None:
+    """Запомнить выгруженный список — он и есть опубликованный."""
+    rows = data['rows'][:MAX_SNAPSHOT]
+    key = period_key(data)
+    await c.db[names.RAFFLE_TICKETS].delete_one({'_id': key})
+    await c.db[names.RAFFLE_TICKETS].insert_one({
+        '_id': key, 'at': time_now(), 'total': len(rows), 'rows': rows})
+    log.info('снимок билетов %s: %s строк', key, len(rows))
+
+
+async def published(c, data: dict) -> dict | None:
+    return await c.db[names.RAFFLE_TICKETS].find_one({'_id': period_key(data)})
+
+
+def snapshot_note(snap: dict | None) -> str:
+    if not snap:
+        return (f'{e("warning")} Список ещё не выгружали — номера считаются '
+                f'живьём и могут сдвинуться. Сделайте '
+                f'<code>/raffletickets</code> и выложите файл в канал: '
+                f'дальше номера будут браться из него.')
+    return (f'{e("ok")} Номера из выгруженного списка от '
+            f'{fmt(snap["at"])} — того самого, что в канале.')
+
+
 # ── кто выиграл по номеру ───────────────────────────────────────────────────
 #
 # Числа тянет генератор на видео, а не бот: зритель видит и опубликованный
@@ -470,8 +513,7 @@ WHO_USAGE = (
 )
 
 
-def who_text(data: dict, found: list[dict]) -> str:
-    total = data['tickets']
+def who_text(total: int, found: list[dict]) -> str:
     lines = [f'{e("gift")} <b>Кто выиграл</b>',
              f'Билетов всего: <b>{total}</b>', '']
 
@@ -505,13 +547,19 @@ async def who(message: types.Message, command, c, settings) -> None:
     if data is None:
         return
 
+    snap = await published(c, data)
+    rows = (snap.get('rows') if snap else None) or data['rows']
+    total = len(rows)
+
     if not numbers:
         await message.answer(
-            f'{e("cart")} Билетов сейчас <b>{data["tickets"]}</b> — '
-            f'генерируйте числа от 1 до {data["tickets"]}.\n\n' + WHO_USAGE)
+            f'{e("cart")} Билетов <b>{total}</b> — генерируйте числа '
+            f'от 1 до {total}.\n\n{snapshot_note(snap)}\n\n' + WHO_USAGE)
         return
 
-    await message.answer(who_text(data, domain.lookup(data['rows'], numbers)))
+    await message.answer(
+        who_text(total, domain.lookup(rows, numbers)) + '\n'
+        + snapshot_note(snap))
 
 
 # ── жребий ──────────────────────────────────────────────────────────────────
@@ -588,7 +636,9 @@ async def drawing(message: types.Message, command, c, settings) -> None:
         await message.answer(f'{e("cross")} Тащить не из чего: билетов нет.')
         return
 
-    winners = domain.draw(data['rows'], len(prize_list))
+    snap = await published(c, data)
+    winners = domain.draw((snap.get('rows') if snap else None) or data['rows'],
+                          len(prize_list))
     row = {
         '_id': key, 'at': time_now(), 'admin_id': message.from_user.id,
         'tickets_total': data['tickets'],

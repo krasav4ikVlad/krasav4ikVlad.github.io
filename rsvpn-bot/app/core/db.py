@@ -37,6 +37,8 @@ BROADCASTS = 'broadcasts'
 CHANNEL_POSTS = 'channel_posts'
 # проведённые жребии розыгрыша: см. app/admin/raffle.py
 RAFFLE_DRAWS = 'raffle_draws'
+# снимок списка билетов на момент публикации — по нему и ищут победителей
+RAFFLE_TICKETS = 'raffle_tickets'
 # личные серверы: см. app/services/private_servers.py
 PRIVATE_SERVERS = 'private_servers'
 # заранее поднятые машины, ждущие заявки

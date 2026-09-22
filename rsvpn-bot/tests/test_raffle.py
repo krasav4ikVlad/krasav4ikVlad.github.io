@@ -984,7 +984,6 @@ async def test_the_command_tells_the_range_without_arguments(admin_env):
 
     await dp.feed_update(bot, message('/rafflewho'))
 
-    assert 'Билетов сейчас' in session.last_text
     assert 'от 1 до 3' in session.last_text
 
 
@@ -1004,3 +1003,60 @@ async def test_the_command_says_when_the_number_is_out_of_range(admin_env):
     await dp.feed_update(bot, message('/rafflewho 999'))
 
     assert 'такого билета нет' in session.last_text
+
+
+# ── снимок списка ───────────────────────────────────────────────────────────
+#
+# Опубликованный файл — обещание: «номер 1423 принадлежит вот этому
+# человеку». Пересчёт живьём даёт другой список: подписка друга успевает
+# истечь между публикацией и розыгрышем, его билеты выпадают, и все
+# следующие номера сдвигаются. На видео назовут номер, за которым стоит уже
+# другой человек.
+
+async def test_the_lookup_uses_the_published_list(admin_env):
+    """Между публикацией и розыгрышем у друга кончилась подписка: живьём
+    его три билета выпадают и все следующие номера съезжают. По снимку —
+    нет, и назван будет тот же человек, что и в файле."""
+    dp, bot, session, container = admin_env
+    await container.settings.set('raffle.start', '01.10.2026')
+    await container.settings.set('raffle.end', '22.10.2026')
+    for user_id, referrer in ((1, None), (20, 1)):
+        await container.users.create({
+            'user_data': {'user_id': user_id, 'username': f'u{user_id}',
+                          'referrer': referrer},
+            'vpn': {'uuid': f'u-{user_id}', 'expireAt': now() + timedelta(days=30)}})
+    await container.db['balance_log'].insert_one({
+        'user_id': 20, 'amount': -150, 'kind': 'plan',
+        'at': START.replace(day=4), 'meta': {'days': 30},
+        'description': 'Покупка подписки'})
+
+    await dp.feed_update(bot, message('/raffletickets'))   # 4 билета: 3 + 1
+    await container.users.col.update_one(
+        {'user_data.user_id': 20},
+        {'$set': {'vpn.expireAt': now() - timedelta(days=1)}})
+
+    await dp.feed_update(bot, message('/rafflewho 4'))
+
+    assert 'такого билета нет' not in session.last_text
+    assert 'того самого' in session.last_text
+
+
+async def test_without_a_published_list_the_answer_warns(admin_env):
+    """Молчать нельзя: номера, посчитанные живьём, ещё могут сдвинуться."""
+    dp, bot, session, container = admin_env
+    await setup_draw(container, people=2)
+
+    await dp.feed_update(bot, message('/rafflewho 1'))
+
+    assert 'ещё не выгружали' in session.last_text
+
+
+async def test_a_second_export_replaces_the_snapshot(admin_env):
+    """Пока акция идёт, выгружать можно сколько угодно — в силе последняя."""
+    dp, bot, session, container = admin_env
+    await setup_draw(container, people=2)
+
+    await dp.feed_update(bot, message('/raffletickets'))
+    await dp.feed_update(bot, message('/raffletickets'))
+
+    assert await container.db['raffle_tickets'].count_documents({}) == 1
