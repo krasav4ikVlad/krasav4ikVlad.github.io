@@ -208,8 +208,11 @@ def _participants(events: list[dict]) -> list[dict]:
         entry = counts.setdefault(row['owner'],
                                   {'user_id': row['owner'],
                                    'username': row['owner_username'],
-                                   'tickets': 0, 'friends': 0, 'own': 0})
+                                   'tickets': 0, 'friends': 0, 'own': 0,
+                                   'first_at': row['at']})
         entry['tickets'] += row['tickets']
+        if row['at'] < entry['first_at']:
+            entry['first_at'] = row['at']
         if row['kind'] == domain.FRIEND:
             entry['friends'] += 1
         else:

@@ -1,34 +1,48 @@
-"""Розыгрыш: сводка и таблица билетов.
+"""Розыгрыш: сводка, выгрузки, жребий и выдача призов.
 
-Две команды на одну задачу. `/raffle` отвечает на вопрос «как идёт»:
-билетов, участников, сколько денег принесло и что в зачёт не пошло.
-`/raffletickets` отдаёт CSV — тот самый список, по которому выбирают
-победителей и который публикуется в канале до розыгрыша.
+Команды делят одну задачу на части, каждая из которых нужна в свой день:
 
-Сам розыгрыш бот не проводит нарочно. Список билетов, лежащий у всех на
-руках, и жребий на глазах — это проверяемо; кнопка «выбрать победителя»
-внутри бота проверяемой быть не может, что бы мы о ней ни написали.
+  * `/raffle` — как идёт: билеты, участники, деньги, что не в зачёт;
+  * `/raffleusers` — все участники таблицей: id, сколько билетов и откуда;
+  * `/raffletickets` — все билеты таблицей, по строке на билет. Этот файл
+    публикуется в канале **до** жребия;
+  * `/raffledraw` — жребий: кому какой приз. Результат приходит только
+    сюда, участникам бот ничего не пишет;
+  * `/rafflewin` — начислить деньги и дни победителям.
+
+Порядок «сначала публикуем билеты, потом тащим» здесь не формальность:
+проверяемым розыгрыш делает именно он. Поэтому жребий сохраняется один
+раз — повторный бросок, из которого выбирают понравившийся, розыгрышем уже
+не является, и чтобы его повторить, нужно сказать это прямо.
+
+Писем победителям бот не шлёт: поздравление — это разговор, и его пишет
+человек, а не рассылка.
 """
 
 from __future__ import annotations
 
-import csv
-import io
+import logging
 
 from aiogram import Router, types
 from aiogram.filters import Command
 
 from app.content.emoji import e
+from app.core import db as names
 from app.core.time import fmt
 from app.core.time import now as time_now
 from app.domain import raffle as domain
+from app.services import excel
 from app.services import raffle
 from app.services import raffle_prizes as prizes
+
+log = logging.getLogger(__name__)
 
 USAGE = (
     f'{e("gift")} <b>Розыгрыш</b>\n\n'
     f'<code>/raffle</code> — как идёт: билеты, участники, деньги\n'
-    f'<code>/raffletickets</code> — таблица билетов файлом (CSV)\n'
+    f'<code>/raffleusers</code> — все участники таблицей\n'
+    f'<code>/raffletickets</code> — все билеты, по строке на билет\n'
+    f'<code>/raffledraw</code> — жребий: кому какой приз\n'
     f'<code>/rafflebonus</code> — кому причитается подарок за порог билетов\n'
     f'<code>/raffle 01.10.2026 22.10.2026</code> — за другой период\n\n'
     f'<blockquote>Даты акции и цену билета задайте один раз в '
@@ -39,8 +53,11 @@ USAGE = (
     f'деньги на балансе ещё не подписка.</blockquote>'
 )
 
-COLUMNS = ('билет', 'дата', 'время', 'участник_id', 'участник_username',
-           'за_что', 'подробности', 'друг_id')
+TICKET_COLUMNS = ('билет', 'дата', 'время', 'участник_id', 'участник_username',
+                  'за_что', 'подробности', 'друг_id')
+
+USER_COLUMNS = ('участник_id', 'username', 'билетов', 'из_них_за_друзей',
+                'друзей', 'за_свою_подписку', 'первый_билет')
 
 NO_DATES = (
     f'{e("cross")} <b>Не вижу даты акции</b>\n\n'
@@ -174,34 +191,43 @@ def _tickets(count: int) -> str:
     return 'билетов'
 
 
-def to_csv(data: dict) -> bytes:
-    """CSV с BOM и точкой с запятой: так его открывает Excel без танцев.
-
-    Без BOM русские заголовки в Excel превращаются в кракозябры, а без
-    точки с запятой вся строка попадает в одну ячейку — и то и другое
-    человек чинит руками на каждой выгрузке.
-    """
-    buffer = io.StringIO()
-    writer = csv.writer(buffer, delimiter=';', lineterminator='\r\n')
-    writer.writerow(COLUMNS)
-
-    for row in data['rows']:
-        writer.writerow([
-            row['ticket'],
-            fmt(row['at'], '%d.%m.%Y'),
-            fmt(row['at'], '%H:%M:%S'),
-            row['owner'],
-            row['owner_username'],
-            row['kind'],
-            row['detail'],
-            row['friend'] or '',
-        ])
-    return buffer.getvalue().encode('utf-8-sig')
+def ticket_rows(data: dict) -> list[list]:
+    """Билеты строками: один билет — одна строка."""
+    return [[row['ticket'],
+             fmt(row['at'], '%d.%m.%Y'),
+             fmt(row['at'], '%H:%M:%S'),
+             row['owner'],
+             row['owner_username'],
+             row['kind'],
+             row['detail'],
+             row['friend'] or ''] for row in data['rows']]
 
 
-def filename(data: dict) -> str:
-    return (f'raffle-{fmt(data["start"], "%d.%m.%Y")}'
-            f'-{fmt(data["end"], "%d.%m.%Y")}.csv')
+def user_rows(data: dict) -> list[list]:
+    """Участники строками, от большего числа билетов к меньшему."""
+    return [[item['user_id'],
+             item['username'],
+             item['tickets'],
+             item['tickets'] - item['own'],
+             item['friends'],
+             item['own'],
+             fmt(item.get('first_at'))] for item in data['participants']]
+
+
+def filename(data: dict, what: str, ext: str) -> str:
+    return (f'{what}-{fmt(data["start"], "%d.%m.%Y")}'
+            f'-{fmt(data["end"], "%d.%m.%Y")}.{ext}')
+
+
+async def send_table(message: types.Message, data: dict, *, what: str,
+                     columns, rows: list[list], sheet: str, caption: str) -> None:
+    body, ext = excel.build(columns, rows, sheet)
+    await message.answer_document(
+        types.BufferedInputFile(body, filename=filename(data, what, ext)),
+        caption=caption + ('' if ext == 'xlsx' else
+                           f'\n\n{e("warning")} Отдал CSV: на сервере нет '
+                           f'openpyxl. Поставится сам при следующем '
+                           f'обновлении бота.'))
 
 
 async def command(message: types.Message, command, c, settings) -> None:
@@ -220,11 +246,12 @@ async def tickets(message: types.Message, command, c, settings) -> None:
 
     if not data['rows']:
         await message.answer(f'{e("cross")} Выгружать нечего: за этот период '
-                             f'нет ни одной оплаты новых плательщиков.')
+                             f'нет ни одного билета.')
         return
 
-    await message.answer_document(
-        types.BufferedInputFile(to_csv(data), filename=filename(data)),
+    await send_table(
+        message, data, what='raffle-tickets', columns=TICKET_COLUMNS,
+        rows=ticket_rows(data), sheet='Билеты',
         caption=(
             f'{e("gift")} Билетов: <b>{data["tickets"]}</b>, участников: '
             f'<b>{len(data["participants"])}</b>\n\n'
@@ -233,9 +260,37 @@ async def tickets(message: types.Message, command, c, settings) -> None:
             f'означать ровно одного человека.\n\n'
             f'Пронумерованы по дате покупки: номер 1 — самая первая за '
             f'акцию.\n\n'
-            f'Этот файл имеет смысл выложить в канал до розыгрыша: список, '
+            f'Этот файл имеет смысл выложить в канал до жребия: список, '
             f'который нельзя поменять после публикации, — единственное, что '
             f'делает случайный выбор проверяемым.</blockquote>'))
+
+
+async def users(message: types.Message, command, c, settings) -> None:
+    """`/raffleusers` — все участники одной таблицей.
+
+    Отдельно от билетов: в файле билетов человек с двадцатью билетами
+    занимает двадцать строк, и «сколько всего участников» по нему не
+    посчитать, не сводя таблицу руками.
+    """
+    data = await report(message, command, c, settings)
+    if data is None:
+        return
+
+    if not data['participants']:
+        await message.answer(f'{e("cross")} Участников пока нет.')
+        return
+
+    await send_table(
+        message, data, what='raffle-users', columns=USER_COLUMNS,
+        rows=user_rows(data), sheet='Участники',
+        caption=(
+            f'{e("referrals")} Участников: <b>{len(data["participants"])}</b>, '
+            f'билетов: <b>{data["tickets"]}</b>\n\n'
+            f'<blockquote>Одна строка — один человек. Отсортированы по числу '
+            f'билетов.\n\nШансы считаются по билетам, а не по строкам: у кого '
+            f'билетов вдвое больше, у того и шанс вдвое выше. Тащить жребий '
+            f'по этому файлу нельзя — для этого есть '
+            f'<code>/raffletickets</code>.</blockquote>'))
 
 
 async def bonus(message: types.Message, command, c, settings) -> None:
@@ -278,6 +333,113 @@ async def bonus(message: types.Message, command, c, settings) -> None:
     await message.answer('\n'.join(lines))
 
 
+# ── жребий ──────────────────────────────────────────────────────────────────
+#
+# Результат приходит только сюда. Участникам бот ничего не пишет: объявить
+# победителей — это разговор с людьми, и ведёт его человек, а не рассылка.
+
+DRAW_NO_PRIZES = (
+    f'{e("cross")} <b>Не вижу списка призов</b>\n\n'
+    f'Задайте его в /admin → Розыгрыш → «Призы», по одному в строке. '
+    f'Одинаковые пишутся с количеством:\n\n'
+    f'<code>iPhone 18 Pro\nAirPods 5\n5000₽ x10\nПодписка на месяц x25</code>\n\n'
+    f'<blockquote>Победителей будет столько же, сколько призов в списке: '
+    f'каждому в отчёте пишется его приз, а не номер строки.</blockquote>'
+)
+
+
+def draw_id(data: dict) -> str:
+    return (f'{fmt(data["start"], "%Y%m%d")}-{fmt(data["end"], "%Y%m%d")}')
+
+
+def draw_text(row: dict) -> str:
+    """Отчёт о жребии: кому какой приз и по какому билету."""
+    lines = [f'{e("gift")} <b>Розыгрыш проведён</b>',
+             f'{fmt(row["at"])} — билетов {row["tickets_total"]}, '
+             f'участников {row["participants"]}', '']
+
+    for place, winner in enumerate(row['winners'], start=1):
+        who = f' @{winner["username"]}' if winner['username'] else ''
+        lines.append(f'{place}. <b>{winner["prize"]}</b> — билет '
+                     f'№{winner["ticket"]}, <code>{winner["user_id"]}</code>{who}')
+
+    lines.append('')
+    lines.append(f'<blockquote>Победителям бот ничего не написал — это ваш '
+                 f'разговор с ними.\n\n'
+                 f'Деньги и дни начисляются отдельно: <code>/rafflewin</code> '
+                 f'со списком <code>id сумма</code> или <code>id 30д</code>.\n\n'
+                 f'Жребий сохранён и повторно не бросается: '
+                 f'<code>/raffledraw</code> без аргументов покажет этот же '
+                 f'результат. Пересдать — <code>/raffledraw заново</code>, '
+                 f'но если список билетов уже опубликован, пересдача перестаёт '
+                 f'быть розыгрышем.</blockquote>')
+    return '\n'.join(lines)
+
+
+async def saved_draw(c, key: str) -> dict | None:
+    return await c.db[names.RAFFLE_DRAWS].find_one({'_id': key})
+
+
+async def drawing(message: types.Message, command, c, settings) -> None:
+    """`/raffledraw` — вытащить победителей. Только в этот чат."""
+    again = 'заново' in (command.args or '').lower()
+
+    start, end = await period(_no_args(command), settings)
+    if not start or not end:
+        await message.answer(NO_DATES + USAGE)
+        return
+
+    key = draw_id({'start': start, 'end': end})
+    old = await saved_draw(c, key)
+    if old and not again:
+        await message.answer(draw_text(old))
+        return
+
+    prize_list = domain.parse_prizes(str(await settings.get('raffle.prizes') or ''))
+    if not prize_list:
+        await message.answer(DRAW_NO_PRIZES)
+        return
+
+    data = await report(message, _no_args(command), c, settings)
+    if data is None:
+        return
+    if not data['rows']:
+        await message.answer(f'{e("cross")} Тащить не из чего: билетов нет.')
+        return
+
+    winners = domain.draw(data['rows'], len(prize_list))
+    row = {
+        '_id': key, 'at': time_now(), 'admin_id': message.from_user.id,
+        'tickets_total': data['tickets'],
+        'participants': len(data['participants']),
+        'winners': [{'prize': prize, 'ticket': winner['ticket'],
+                     'user_id': winner['owner'],
+                     'username': winner['owner_username']}
+                    for prize, winner in zip(prize_list, winners)],
+    }
+    if len(winners) < len(prize_list):
+        row['short'] = len(prize_list) - len(winners)
+
+    # Пересдача заменяет прошлый бросок целиком: два жребия на один период
+    # — это уже выбор из двух результатов, а не розыгрыш.
+    await c.db[names.RAFFLE_DRAWS].delete_one({'_id': key})
+    await c.db[names.RAFFLE_DRAWS].insert_one(row)
+    log.info('жребий %s: победителей %s из %s участников',
+             key, len(row['winners']), len(data['participants']))
+
+    text = draw_text(row)
+    if row.get('short'):
+        text += (f'\n\n{e("warning")} Призов больше, чем участников: '
+                 f'{row["short"]} осталось без хозяина. Один человек берёт '
+                 f'не больше одного приза.')
+    await message.answer(text)
+
+
+def _no_args(command):
+    """Аргументы `/raffledraw` — про пересдачу, а не про даты периода."""
+    return type('Cmd', (), {'args': ''})()
+
+
 WIN_USAGE = (
     f'{e("gift")} <b>Выдача призов</b>\n\n'
     f'Пришлите список победителей — по строке на человека:\n'
@@ -287,12 +449,17 @@ WIN_USAGE = (
     f'где выбирали победителей. Повторная выдача тому же человеку в рамках '
     f'одного розыгрыша не пройдёт — отметка ставится в его карточке, и '
     f'второе нажатие «на всякий случай» призы не удвоит.\n\n'
-    f'Каждому уйдёт письмо. Текст письма — в /admin → Розыгрыш.</blockquote>'
+    f'Победителям бот ничего не пишет — только начисляет. '
+    f'Поздравить их вы напишете сами.</blockquote>'
 )
 
 
 async def win(message: types.Message, command, c, settings) -> None:
-    """`/rafflewin` со списком победителей — начислить призы и написать им."""
+    """`/rafflewin` со списком победителей — начислить деньги и дни.
+
+    Писем не шлёт: поздравление — это разговор, и его пишет человек. Бот
+    здесь отвечает только за то, чтобы деньги и дни дошли.
+    """
     raw = (command.args or '')
     if not raw.strip():
         await message.answer(WIN_USAGE)
@@ -312,23 +479,12 @@ async def win(message: types.Message, command, c, settings) -> None:
     mark = f'raffle_{domain.parse_day(str(await settings.get("raffle.end") or "")) or ""}'[:40]
     report_data = await prizes.award(c.users, c.vpn, winners, mark=mark)
 
-    # Письма — через Sender: он знает про флуд-лимит и про тех, кто закрыл
-    # бота. Прямая отправка сорока подряд упирается в лимит.
-    from app.campaigns.sender import Sender
-
-    sender = Sender(on_blocked=c.users.mark_blocked)
-    text = str(await settings.get('raffle.win_text') or '').strip()
-    lost = 0
-    for winner in report_data['done']:
-        if not await sender.send(message.bot, winner['user_id'],
-                                 prizes.letter(winner, text)):
-            lost += 1
-
-    lines = [f'{e("ok")} <b>Призы выданы</b>', '',
+    lines = [f'{e("ok")} <b>Призы начислены</b>', '',
              f'Начислено: <b>{len(report_data["done"])}</b>']
-    if lost:
-        lines.append(f'{e("attention")} Не доставлено писем: <b>{lost}</b> — '
-                     f'эти люди закрыли бота. Приз начислен всё равно.')
+    for row in report_data['done'][:40]:
+        what = (f'{row["amount"]}₽' if row['kind'] == 'money'
+                else f'+{row["amount"]} дн.')
+        lines.append(f'   <code>{row["user_id"]}</code> — {what}')
     if report_data['skipped']:
         lines.append(f'Пропущено (уже получали): '
                      f'<b>{len(report_data["skipped"])}</b>')
@@ -342,6 +498,8 @@ async def win(message: types.Message, command, c, settings) -> None:
 
 def register(router: Router) -> None:
     router.message.register(win, Command('rafflewin'))
+    router.message.register(drawing, Command('raffledraw'))
+    router.message.register(users, Command('raffleusers'))
     router.message.register(command, Command('raffle'))
     router.message.register(tickets, Command('raffletickets'))
     router.message.register(bonus, Command('rafflebonus'))

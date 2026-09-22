@@ -312,13 +312,6 @@ async def test_days_without_a_subscription_are_reported(repos, db):
     assert 'подписки нет' in report['failed'][0]['why']
 
 
-def test_the_letter_names_the_prize():
-    assert 'Ваш приз: 5000₽ на баланс.' in prizes.letter(
-        {'amount': 5000, 'kind': 'money'}, 'Поздравляем!')
-    assert '30 дней подписки' in prizes.letter(
-        {'amount': 30, 'kind': 'days'}, '')
-
-
 async def shown(repos, db, settings, user_id: int = 1) -> str:
     """Текст экрана розыгрыша так, как его увидит человек."""
     journal, users = repos

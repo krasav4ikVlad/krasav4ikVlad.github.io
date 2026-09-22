@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+import random
+import re
 from datetime import datetime
 
 from app.core.time import MSK, parse_dt
@@ -87,3 +89,58 @@ def number_tickets(events: list[dict]) -> list[dict]:
                 'friend': row.get('friend') or 0,
             })
     return tickets
+
+
+# ── призы и жребий ──────────────────────────────────────────────────────────
+#
+# Розыгрыш внутри бота проверяемым не сделать никаким кодом: снаружи видно
+# только результат. Проверяемым его делает порядок действий — список
+# билетов публикуется до жребия, и любой может пересчитать, что победивший
+# номер в нём был и принадлежал этому человеку. Поэтому жребий здесь
+# сохраняется один раз: повторный бросок, из которого выбирают
+# понравившийся, — это уже не розыгрыш.
+
+PRIZE_COUNT = re.compile(r'^(.*?)[\s]*[x×*]\s*(\d+)$', re.IGNORECASE)
+
+
+def parse_prizes(text: str) -> list[str]:
+    """«iPhone 18 Pro / 5000₽ x10» → список призов по одному на победителя.
+
+    Список нужен именно развёрнутым: победителей столько же, сколько
+    призов, и каждому в отчёте пишется его приз, а не номер строки.
+    """
+    prizes: list[str] = []
+    for line in (text or '').splitlines():
+        name = line.strip()
+        if not name:
+            continue
+        match = PRIZE_COUNT.match(name)
+        if match and match.group(1).strip():
+            prizes.extend([match.group(1).strip()] * min(int(match.group(2)), 500))
+        else:
+            prizes.append(name)
+    return prizes
+
+
+def draw(tickets: list[dict], count: int, rng=None) -> list[dict]:
+    """Вытащить `count` билетов. Один человек выигрывает не больше раза.
+
+    Шанс пропорционален числу билетов — тащим билет, а не участника.
+    Выигравший выбывает вместе со всеми своими билетами: иначе человек с
+    сотней билетов забрал бы половину призов, и это выглядело бы как
+    подтасовка, чем бы оно ни было на самом деле.
+    """
+    if not tickets or count <= 0:
+        return []
+
+    picker = rng or random.SystemRandom()
+    pool = list(tickets)
+    winners: list[dict] = []
+
+    while pool and len(winners) < count:
+        row = pool[picker.randrange(len(pool))]
+        winners.append(row)
+        owner = row['owner']
+        pool = [item for item in pool if item['owner'] != owner]
+
+    return winners

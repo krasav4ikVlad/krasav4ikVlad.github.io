@@ -125,10 +125,3 @@ async def _add_days(users, vpn, user: dict, days: int) -> None:
     from app.services import bypass
 
     await bypass.sync_expiry(users, vpn, user_id, new_expire, vpn=current)
-
-
-def letter(winner: dict, text: str) -> str:
-    """Письмо победителю: приз своими словами плюс ваш текст."""
-    prize = (f'{winner["amount"]}₽ на баланс' if winner['kind'] == MONEY
-             else f'{winner["amount"]} дней подписки')
-    return f'{text}\n\nВаш приз: {prize}.' if text else f'Ваш приз: {prize}.'

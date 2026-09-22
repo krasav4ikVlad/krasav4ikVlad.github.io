@@ -11,6 +11,7 @@ from datetime import timedelta
 import pytest
 
 from app.admin import raffle as admin
+from app.services import excel
 from app.core.time import now
 from app.domain import raffle as domain
 from app.repositories.balance_log import BalanceLogRepository
@@ -284,30 +285,48 @@ async def test_the_summary_survives_an_empty_contest(repos, db):
     assert 'ни одного' in admin.summary(await collect(repos))
 
 
-async def test_the_csv_has_a_line_per_ticket(repos, db):
+async def test_the_table_has_a_line_per_ticket(repos, db):
     journal, users = repos
     await person(users, 1)
     await bought(journal, 1, months=3)
 
-    text = admin.to_csv(await collect(repos)).decode('utf-8-sig')
-    lines = [line for line in text.splitlines() if line]
+    rows = admin.ticket_rows(await collect(repos))
 
-    assert lines[0].startswith('билет;дата')
-    assert len(lines) == 4
+    assert len(rows) == 3
+    assert [row[0] for row in rows] == [1, 2, 3]
 
 
-async def test_the_csv_opens_in_excel_without_fixing(repos, db):
+async def test_the_user_table_has_a_line_per_person(repos, db):
+    """В файле билетов человек с тремя билетами занимает три строки, и
+    «сколько всего участников» по нему не посчитать."""
+    journal, users = repos
+    await person(users, 1)
+    await person(users, 20, referrer=1)
+    await bought(journal, 1, months=3)
+    await bought(journal, 20)
+
+    rows = admin.user_rows(await collect(repos))
+
+    assert len(rows) == 2
+    owner = next(row for row in rows if row[0] == 1)
+    assert owner[2] == 6 and owner[3] == 3 and owner[4] == 1 and owner[5] == 3
+
+
+async def test_the_table_opens_in_excel(repos, db):
     journal, users = repos
     await person(users, 1)
     await bought(journal, 1, months=1)
 
-    raw = admin.to_csv(await collect(repos))
+    body, ext = excel.build(admin.TICKET_COLUMNS,
+                            admin.ticket_rows(await collect(repos)), 'Билеты')
 
-    assert raw.startswith(b'\xef\xbb\xbf') and b';' in raw
+    assert ext == 'xlsx' and body.startswith(b'PK')
 
 
 async def test_the_file_is_named_after_the_period(repos, db):
-    assert admin.filename(await collect(repos)) == 'raffle-01.10.2026-22.10.2026.csv'
+    name = admin.filename(await collect(repos), 'raffle-tickets', 'xlsx')
+
+    assert name == 'raffle-tickets-01.10.2026-22.10.2026.xlsx'
 
 
 def test_ticket_counts_are_declined_properly():
@@ -395,3 +414,159 @@ async def test_the_gift_list_names_everyone_to_credit(admin_env):
     await dp.feed_update(bot, message('/rafflebonus'))
 
     assert str(ADMIN.id) in session.last_text
+
+
+# ── призы и жребий ──────────────────────────────────────────────────────────
+#
+# Жребий внутри бота проверяемым не сделать кодом: снаружи видно только
+# результат. Проверяемым его делает порядок — список билетов публикуется
+# до броска, — поэтому здесь важно, что бросок один и что он сохраняется.
+
+def test_prizes_are_unrolled_one_per_winner():
+    prizes = domain.parse_prizes('iPhone 18 Pro\nAirPods 5\n5000₽ x10\n'
+                                 'Подписка на месяц x25')
+
+    assert len(prizes) == 37
+    assert prizes[0] == 'iPhone 18 Pro' and prizes[-1] == 'Подписка на месяц'
+
+
+def test_a_prize_without_a_count_is_one_prize():
+    assert domain.parse_prizes('\nPlayStation 5\n\n') == ['PlayStation 5']
+
+
+def test_a_price_in_the_name_is_not_a_count():
+    """«5000₽» — это название приза, а не «5000 штук»."""
+    assert domain.parse_prizes('5000₽') == ['5000₽']
+
+
+class Rng:
+    """Предсказуемый жребий: тащим всегда первый билет из оставшихся."""
+
+    @staticmethod
+    def randrange(size: int) -> int:
+        return 0
+
+
+def tickets_of(owner: int, count: int, start: int = 1) -> list[dict]:
+    return [{'ticket': start + index, 'owner': owner,
+             'owner_username': f'u{owner}'} for index in range(count)]
+
+
+def test_one_person_wins_only_once():
+    """Человек с сотней билетов иначе забрал бы половину призов — и это
+    выглядело бы подтасовкой, чем бы оно ни было."""
+    pool = tickets_of(1, 50) + tickets_of(2, 1, start=51)
+
+    winners = domain.draw(pool, 5, Rng())
+
+    assert [row['owner'] for row in winners] == [1, 2]
+
+
+def test_the_draw_stops_when_people_run_out():
+    assert domain.draw(tickets_of(1, 3), 10, Rng()) == tickets_of(1, 3)[:1]
+
+
+def test_nothing_is_drawn_from_an_empty_pool():
+    assert domain.draw([], 5, Rng()) == [] and domain.draw(tickets_of(1, 1), 0) == []
+
+
+def test_every_ticket_can_win():
+    """Тащим билет, а не участника: у кого билетов больше, у того и шанс
+    выше. Если бы тащили участника, билеты не значили бы ничего."""
+    pool = tickets_of(1, 1) + tickets_of(2, 1, start=2)
+    seen = {domain.draw(pool, 1)[0]['owner'] for _ in range(100)}
+
+    assert seen == {1, 2}
+
+
+async def setup_draw(container, people: int = 3) -> None:
+    await container.settings.set('raffle.start', '01.10.2026')
+    await container.settings.set('raffle.end', '22.10.2026')
+    for user_id in range(1, people + 1):
+        await container.users.create({
+            'user_data': {'user_id': user_id, 'username': f'u{user_id}'},
+            'vpn': {'uuid': f'u-{user_id}', 'expireAt': now() + timedelta(days=10)}})
+        await container.db['balance_log'].insert_one({
+            'user_id': user_id, 'amount': -150, 'kind': 'plan',
+            'at': START.replace(day=4), 'meta': {'days': 30},
+            'description': 'Покупка подписки'})
+
+
+async def test_the_draw_names_a_winner_for_every_prize(admin_env):
+    dp, bot, session, container = admin_env
+    await setup_draw(container)
+    await container.settings.set('raffle.prizes', 'iPhone 18 Pro\nAirPods 5')
+
+    await dp.feed_update(bot, message('/raffledraw'))
+
+    assert 'iPhone 18 Pro' in session.last_text and 'AirPods 5' in session.last_text
+    assert 'билет №' in session.last_text
+
+
+async def test_the_draw_is_not_thrown_twice(admin_env):
+    """Второй бросок, из которого выбирают понравившийся, — уже не
+    розыгрыш. Повтор показывает тот же результат."""
+    dp, bot, session, container = admin_env
+    await setup_draw(container, people=20)
+    await container.settings.set('raffle.prizes', 'iPhone 18 Pro')
+
+    await dp.feed_update(bot, message('/raffledraw'))
+    first = session.last_text
+    await dp.feed_update(bot, message('/raffledraw'))
+
+    assert session.last_text == first
+
+
+async def test_the_draw_can_be_thrown_again_on_purpose(admin_env):
+    dp, bot, session, container = admin_env
+    await setup_draw(container)
+    await container.settings.set('raffle.prizes', 'iPhone 18 Pro')
+
+    await dp.feed_update(bot, message('/raffledraw'))
+    saved = await container.db['raffle_draws'].find_one({})
+    await dp.feed_update(bot, message('/raffledraw заново'))
+    again = await container.db['raffle_draws'].find_one({})
+
+    assert again['at'] != saved['at']
+
+
+async def test_the_draw_writes_only_to_the_admin(admin_env):
+    """Победителям бот не пишет: поздравление — это разговор, и его ведёт
+    человек."""
+    dp, bot, session, container = admin_env
+    await setup_draw(container)
+    await container.settings.set('raffle.prizes', 'iPhone 18 Pro\nAirPods 5')
+
+    await dp.feed_update(bot, message('/raffledraw'))
+
+    assert len([name for name, _ in session.calls if name == 'SendMessage']) <= 2
+
+
+async def test_the_draw_asks_for_prizes_when_there_are_none(admin_env):
+    dp, bot, session, container = admin_env
+    await setup_draw(container)
+    await container.settings.set('raffle.prizes', '')
+
+    await dp.feed_update(bot, message('/raffledraw'))
+
+    assert 'списка призов' in session.last_text
+
+
+async def test_the_participants_file_is_sent(admin_env):
+    dp, bot, session, container = admin_env
+    await setup_draw(container)
+
+    await dp.feed_update(bot, message('/raffleusers'))
+
+    assert [name for name, _ in session.calls if name == 'SendDocument']
+
+
+async def test_prizes_are_credited_without_writing_to_the_winner(admin_env):
+    dp, bot, session, container = admin_env
+    await setup_draw(container, people=1)
+
+    await dp.feed_update(bot, message('/rafflewin 1 5000'))
+
+    assert (await container.users.get(1))['info']['balance'] == 5000
+    # два сообщения админу — «выдаю» и отчёт; победителю ни одного
+    assert len([name for name, _ in session.calls if name == 'SendMessage']) == 2

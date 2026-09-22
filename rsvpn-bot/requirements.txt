@@ -5,3 +5,5 @@ httpx>=0.27
 apscheduler>=3.10
 fastapi>=0.115
 uvicorn[standard]>=0.30
+# выгрузки для Excel: списки участников и билетов розыгрыша
+openpyxl>=3.1
