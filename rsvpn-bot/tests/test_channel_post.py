@@ -6,6 +6,7 @@
 бота поиском, а без метки на вопрос «что дал этот пост» отвечать нечем.
 """
 
+import asyncio
 from datetime import datetime
 
 import pytest
@@ -45,12 +46,15 @@ class Session(BaseSession):
             'chat_id': getattr(method, 'chat_id', None),
             'text': getattr(method, 'text', None) or getattr(method, 'caption', '') or '',
             'photo': getattr(method, 'photo', None),
+            'media': getattr(method, 'media', None),
             'markup': getattr(method, 'reply_markup', None),
         })
         if name == 'AnswerCallbackQuery':
             return True
-        return Message(message_id=777, date=datetime.now(), chat=CHAT,
+        sent = Message(message_id=777, date=datetime.now(), chat=CHAT,
                        text=getattr(method, 'text', '') or '', from_user=ADMIN)
+        # sendMediaGroup отвечает списком сообщений, а не одним
+        return [sent] if name == 'SendMediaGroup' else sent
 
     def to(self, chat_id) -> list[dict]:
         return [row for row in self.sent if row['chat_id'] == chat_id]
@@ -259,3 +263,116 @@ async def test_the_report_is_not_empty_without_posts(env):
     await dp.feed_update(bot, message('/posts'))
 
     assert 'ещё ничего не публиковали' in session.to(CHAT.id)[-1]['text']
+
+
+# ── альбомы и длина ─────────────────────────────────────────────────────────
+#
+# Альбом Telegram присылает несколькими сообщениями, подпись кладёт на одно
+# из них и кнопку к нему прикрепить не даёт. Всё три — его правила, и
+# узнавать о них в момент отправки поста поздно.
+
+def photo_message(update_id: int, group: str = '', caption: str = '') -> Update:
+    from aiogram.types import PhotoSize
+
+    return Update(update_id=update_id, message=Message(
+        message_id=20 + update_id, date=datetime.now(), chat=CHAT,
+        from_user=ADMIN, media_group_id=group or None,
+        caption=caption or None,
+        photo=[PhotoSize(file_id=f'pic-{update_id}', file_unique_id=f'u{update_id}',
+                         width=100, height=100)]))
+
+
+async def send_album(dp, bot, monkeypatch, caption: str = 'Пост с картинками') -> None:
+    from app.admin import channel as admin
+
+    monkeypatch.setattr(admin, 'ALBUM_WAIT', 0.01)
+    await dp.feed_update(bot, message('/post'))
+    await dp.feed_update(bot, photo_message(1, 'g1', caption))
+    await dp.feed_update(bot, photo_message(2, 'g1'))
+    await asyncio.sleep(0.1)
+
+
+async def test_an_album_becomes_one_post_not_two(env, monkeypatch):
+    """Каждая картинка приходит отдельным сообщением: без сборки бот
+    ответил бы двумя предпросмотрами, в каждом по одной картинке."""
+    dp, bot, session, c = env
+    await send_album(dp, bot, monkeypatch)
+
+    previews = [row for row in session.to(CHAT.id)
+                if row['method'] in ('SendPhoto', 'SendMediaGroup')]
+    assert len(previews) == 1
+
+
+async def test_one_picture_is_kept_by_default_and_the_button_with_it(env,
+                                                                     monkeypatch):
+    """Кнопка приводит людей, альбом только показывает больше. Что взята
+    первая картинка, видно в предпросмотре — молча бот её не выбирает."""
+    dp, bot, session, c = env
+    await send_album(dp, bot, monkeypatch)
+
+    control = session.to(CHAT.id)[-1]
+    assert 'Картинок прислано 2' in control['text']
+    assert any('Альбомом' in button.text for button in session.buttons(control))
+
+    await dp.feed_update(bot, callback(Adm(act='postgo').pack()))
+    posted = session.to('@rsconnect_vpn')[0]
+    assert posted['method'] == 'SendPhoto'
+    assert session.buttons(posted)[0].url.startswith('https://t.me/')
+
+
+async def test_an_album_can_be_chosen_instead_of_the_button(env, monkeypatch):
+    """Выбор настоящий: альбом Telegram не даёт снабдить кнопкой, и решать
+    это должен человек."""
+    dp, bot, session, c = env
+    await send_album(dp, bot, monkeypatch)
+
+    await dp.feed_update(bot, callback(Adm(act='postalbum').pack()))
+    await dp.feed_update(bot, callback(Adm(act='postgo').pack()))
+
+    posted = session.to('@rsconnect_vpn')
+    assert len(posted) == 1 and len(posted[0]['media']) == 2
+    assert not session.buttons(posted[0])
+
+
+async def test_the_album_choice_says_the_button_will_be_lost(env, monkeypatch):
+    dp, bot, session, c = env
+    await send_album(dp, bot, monkeypatch)
+
+    await dp.feed_update(bot, callback(Adm(act='postalbum').pack()))
+
+    assert 'без кнопки' in session.to(CHAT.id)[-1]['text']
+
+
+async def test_a_long_caption_says_how_much_is_extra_and_what_to_do(env,
+                                                                   monkeypatch):
+    """«Длиннее 1024» без числа и без выхода — тупик, а пост уже написан."""
+    dp, bot, session, c = env
+    await send_album(dp, bot, monkeypatch, caption='я' * 1100)
+
+    answer = session.to(CHAT.id)[-1]['text']
+    assert '1100' in answer and '76' in answer          # лишних 76 знаков
+    assert 'без картинки' in answer
+    assert not session.to('@rsconnect_vpn')
+
+
+async def test_the_same_text_goes_through_without_a_picture(env):
+    """Тот же текст, что не влез в подпись, влезает в пост без картинки."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/post'))
+    await dp.feed_update(bot, message('я' * 1100))
+
+    await dp.feed_update(bot, callback(Adm(act='postgo').pack()))
+
+    posted = session.to('@rsconnect_vpn')
+    assert len(posted) == 1 and session.buttons(posted[0])
+
+
+async def test_a_second_post_does_not_inherit_the_first_pictures(env, monkeypatch):
+    dp, bot, session, c = env
+    await send_album(dp, bot, monkeypatch)
+    await dp.feed_update(bot, message('/post'))
+    await dp.feed_update(bot, message('Теперь просто текст'))
+
+    await dp.feed_update(bot, callback(Adm(act='postgo').pack()))
+
+    assert session.to('@rsconnect_vpn')[0]['method'] == 'SendMessage'

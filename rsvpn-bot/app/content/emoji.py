@@ -94,6 +94,7 @@ EMOJI: dict[str, tuple[str, str]] = {
     'broom':          ('🧹', ''),
     'withdraw':       ('📤', ''),
     'document':       ('📄', ''),
+    'photo':          ('🖼', ''),
     'promo':          ('🎟', '5456334265383951620'),
     'trial':          ('🧪', ''),
     'green':          ('🟢', '5456351020051370999'),

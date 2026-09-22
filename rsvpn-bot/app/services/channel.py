@@ -78,9 +78,11 @@ async def unique_tag(db, moment: datetime | None = None) -> str:
 
 async def remember(db, *, tag: str, text: str, channel: str, message_id,
                    button: str, url: str, admin_id: int, photo: str = '',
+                   photos=(), album: bool = False,
                    at: datetime | None = None) -> dict:
     row = {
         '_id': tag, 'tag': tag, 'text': text, 'photo': photo,
+        'photos': list(photos or ([photo] if photo else [])), 'album': album,
         'channel': channel, 'message_id': message_id, 'button': button,
         'url': url, 'link': post_url(channel, message_id),
         'admin_id': admin_id, 'at': at or time_now(),
@@ -103,12 +105,34 @@ async def came_from(users, tag: str) -> int:
     return await users.col.count_documents({'user_data.utm': tag})
 
 
-def preview_problem(text: str, photo: str) -> str:
-    """Почему пост отправить нельзя. Пустая строка — можно."""
-    if photo:
-        # У фото подпись ограничена Telegram; текст без картинки — 4096.
-        return 'Подпись к фото длиннее 1024 знаков.' if len(text) > 1024 else ''
+# Пределы Telegram: подпись к картинке и текст без картинки — разные.
+CAPTION_LIMIT = 1024
+TEXT_LIMIT = 4096
+
+
+def preview_problem(text: str, photos=()) -> str:
+    """Почему пост отправить нельзя. Пустая строка — можно.
+
+    Отказ называет, на сколько знаков не влезло, и что с этим делать:
+    «длиннее 1024» без числа и без выхода — это тупик, а пост в этот момент
+    уже написан.
+    """
+    photos = list(photos or [])
+    length = len(text)
+
+    if photos:
+        if length <= CAPTION_LIMIT:
+            return ''
+        return (f'Подпись к картинке у Telegram не длиннее '
+                f'{CAPTION_LIMIT} знаков, а здесь {length} — лишних '
+                f'{length - CAPTION_LIMIT}.\n\nВыходы: сократить на '
+                f'{length - CAPTION_LIMIT} знаков; или отправить пост без '
+                f'картинки — текстом влезает {TEXT_LIMIT} знаков, и кнопка '
+                f'при нём остаётся.')
+
     if not text.strip():
         return 'Пустой пост отправить нельзя.'
-    return 'Текст длиннее 4096 знаков — Telegram его не примет.' \
-        if len(text) > 4096 else ''
+    if length > TEXT_LIMIT:
+        return (f'Текст у Telegram не длиннее {TEXT_LIMIT} знаков, а здесь '
+                f'{length} — лишних {length - TEXT_LIMIT}.')
+    return ''

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiogram import F, Router, types
@@ -32,11 +33,15 @@ log = logging.getLogger(__name__)
 
 USAGE = (
     f'{e("channel")} <b>Пост в канал</b>\n\n'
-    f'Пришлите пост одним сообщением: текст или картинку с подписью. '
+    f'Пришлите пост: текст, картинку с подписью или альбом. '
     f'Работает разметка Telegram — жирный, курсив, ссылки.\n\n'
     f'<blockquote>Кнопку в бота бот добавит сам, её надпись можно поменять '
     f'на следующем шаге. В ссылке кнопки будет метка этого поста — по ней '
     f'потом видно, сколько человек он привёл: <code>/posts</code>.\n\n'
+    f'Длина у Telegram разная: с картинкой подпись до '
+    f'{service.CAPTION_LIMIT} знаков, текстом без картинки — до '
+    f'{service.TEXT_LIMIT}. К альбому кнопку прикрепить нельзя — это '
+    f'запрет Telegram, а не наш.\n\n'
     f'Перед отправкой покажу пост целиком: так, как его увидят '
     f'подписчики.</blockquote>'
 )
@@ -45,6 +50,13 @@ USAGE = (
 class Post(StatesGroup):
     body = State()
     button = State()
+
+
+# Сколько ждать остальные картинки альбома после очередной. Telegram шлёт
+# их подряд и почти мгновенно; секунды хватает с запасом.
+ALBUM_WAIT = 1.0
+
+_albums: dict[int, asyncio.Task] = {}
 
 
 def _btn(text: str, act: str, a: str = '') -> types.InlineKeyboardButton:
@@ -76,16 +88,65 @@ async def screen(call: types.CallbackQuery, state: FSMContext, c, settings) -> N
 
 
 async def got_body(message: types.Message, state: FSMContext, c, settings) -> None:
-    photo = message.photo[-1].file_id if message.photo else ''
-    text = message.html_text or ''
+    """Пост пришёл. Альбом приходит не одним сообщением, а несколькими.
 
-    problem = service.preview_problem(text, photo)
+    Telegram шлёт каждую картинку альбома отдельным апдейтом, и подпись
+    лежит только на одной из них. Поэтому картинки копятся в состоянии, а
+    предпросмотр собирается через мгновение после последней — иначе на
+    альбом из двух картинок бот ответил бы двумя предпросмотрами, в каждом
+    по одной.
+    """
+    data = await state.get_data()
+    group = message.media_group_id or ''
+    same_album = bool(group) and data.get('group') == group
+
+    if message.photo:
+        photos = list(data.get('photos') or []) if same_album else []
+        photos.append(message.photo[-1].file_id)
+        # Подпись у альбома одна на всех, и приходит она не обязательно
+        # с первой картинкой.
+        text = (message.html_text or '') or (data.get('text') or '' if same_album else '')
+    else:
+        photos = []
+        text = message.html_text or ''
+
+    await state.update_data(text=text, photos=photos, group=group,
+                            album=bool(data.get('album')) and len(photos) > 1)
+
+    if group:
+        _after_album(message, state, c, settings)
+        return
+    await checked_preview(message, state, c, settings)
+
+
+async def checked_preview(message: types.Message, state: FSMContext, c,
+                          settings) -> None:
+    data = await state.get_data()
+    problem = service.preview_problem(data.get('text') or '',
+                                      data.get('photos') or [])
     if problem:
         await message.answer(f'{e("warning")} {problem}')
         return
-
-    await state.update_data(text=text, photo=photo)
     await show_preview(message, state, c, settings)
+
+
+def _after_album(message: types.Message, state: FSMContext, c, settings) -> None:
+    """Собрать предпросмотр, когда альбом доедет целиком.
+
+    Сколько в альбоме картинок, Telegram не сообщает — известно только, что
+    они идут подряд. Поэтому ждём паузу после последней: пришла ещё одна —
+    ожидание начинается заново.
+    """
+    key = message.chat.id
+    waiting = _albums.pop(key, None)
+    if waiting and not waiting.done():
+        waiting.cancel()
+
+    async def later():
+        await asyncio.sleep(ALBUM_WAIT)
+        await checked_preview(message, state, c, settings)
+
+    _albums[key] = asyncio.create_task(later())
 
 
 async def ask_button(call: types.CallbackQuery, state: FSMContext, c, settings) -> None:
@@ -133,10 +194,15 @@ async def show_preview(message: types.Message, state: FSMContext, c, settings) -
         await state.update_data(tag=tag, url=url)
         data = await state.get_data()
 
+    photos = list(data.get('photos') or [])
+    album = bool(data.get('album')) and len(photos) > 1
     markup = await post_markup(c, settings, data)
+
     try:
-        if data.get('photo'):
-            await message.answer_photo(data['photo'], caption=data['text'],
+        if album:
+            await message.answer_media_group(_media(photos, data['text']))
+        elif photos:
+            await message.answer_photo(photos[0], caption=data['text'],
                                        reply_markup=markup)
         else:
             await message.answer(data['text'], reply_markup=markup,
@@ -152,14 +218,52 @@ async def show_preview(message: types.Message, state: FSMContext, c, settings) -
     kb = InlineKeyboardBuilder()
     kb.row(_btn(f'{e("ok")} Отправить в канал', 'postgo'))
     kb.row(_btn(f'{e("edit")} Надпись на кнопке', 'postbtn'))
+    if len(photos) > 1:
+        kb.row(_btn(f'{e("photo")} Одна картинка + кнопка' if album
+                    else f'{e("photo")} Альбомом, без кнопки', 'postalbum'))
     kb.row(_btn(f'{e("cross")} Отмена', 'main'))
+
     await message.answer(
         f'{e("up_finger")} Так увидят подписчики.\n\n'
         f'{e("channel")} Канал: <code>{await service.channel_of(settings)}</code>\n'
-        f'{e("link")} Метка: <code>{data["tag"]}</code>\n\n'
-        f'<blockquote>Пришлите другое сообщение — предпросмотр '
+        f'{e("link")} Метка: <code>{data["tag"]}</code>\n'
+        + _photos_line(photos, album) +
+        f'\n<blockquote>Пришлите другое сообщение — предпросмотр '
         f'пересоберётся.</blockquote>',
         reply_markup=kb.as_markup())
+
+
+def _media(photos: list[str], caption: str) -> list:
+    """Альбом: подпись только у первой картинки — так Telegram показывает её
+    под всем альбомом, а не под каждым снимком."""
+    return [types.InputMediaPhoto(media=file_id,
+                                  caption=caption if index == 0 else None)
+            for index, file_id in enumerate(photos[:10])]
+
+
+def _photos_line(photos: list[str], album: bool) -> str:
+    if len(photos) <= 1:
+        return ''
+    if album:
+        return (f'{e("photo")} Картинок: {len(photos)} — альбомом, '
+                f'<b>без кнопки</b>: Telegram не даёт прикрепить кнопку '
+                f'к альбому\n')
+    return (f'{e("photo")} Картинок прислано {len(photos)}, беру первую — '
+            f'с ней остаётся кнопка\n')
+
+
+async def toggle_album(call: types.CallbackQuery, state: FSMContext, c,
+                       settings) -> None:
+    """Переключить «альбом без кнопки» ↔ «одна картинка с кнопкой».
+
+    Выбор настоящий, и оба варианта чего-то стоят: альбом показывает больше,
+    кнопка приводит людей. Решать это должен человек, а не бот молча.
+    """
+    data = await state.get_data()
+    await state.update_data(album=not data.get('album'))
+    await state.set_state(Post.body)
+    await checked_preview(call.message, state, c, settings)
+    await call.answer()
 
 
 async def back_to_preview(call: types.CallbackQuery, state: FSMContext, c,
@@ -172,7 +276,8 @@ async def back_to_preview(call: types.CallbackQuery, state: FSMContext, c,
 # ── отправка ────────────────────────────────────────────────────────────────
 async def publish(call: types.CallbackQuery, state: FSMContext, c, settings) -> None:
     data = await state.get_data()
-    if not data.get('text') and not data.get('photo'):
+    photos = list(data.get('photos') or [])
+    if not data.get('text') and not photos:
         await call.answer('Пост потерялся, начните заново', show_alert=True)
         return
 
@@ -181,11 +286,16 @@ async def publish(call: types.CallbackQuery, state: FSMContext, c, settings) -> 
         await call.answer('Не задан канал: /admin → Посты в канал', show_alert=True)
         return
 
+    album = bool(data.get('album')) and len(photos) > 1
     markup = await post_markup(c, settings, data)
     await call.answer('Публикую')
     try:
-        if data.get('photo'):
-            sent = await call.bot.send_photo(target, data['photo'],
+        if album:
+            posted = await call.bot.send_media_group(
+                target, _media(photos, data['text']))
+            sent = posted[0]
+        elif photos:
+            sent = await call.bot.send_photo(target, photos[0],
                                              caption=data['text'], reply_markup=markup)
         else:
             sent = await call.bot.send_message(target, data['text'],
@@ -204,7 +314,8 @@ async def publish(call: types.CallbackQuery, state: FSMContext, c, settings) -> 
     row = await service.remember(
         c.db, tag=data['tag'], text=data.get('text') or '', channel=target,
         message_id=sent.message_id, button=(await _label(settings, data)),
-        url=data['url'], admin_id=call.from_user.id, photo=data.get('photo') or '')
+        url=data['url'], admin_id=call.from_user.id,
+        photo=(photos[0] if photos else ''), photos=photos, album=album)
     await state.clear()
     log.info('пост %s опубликован в %s (%s)', row['tag'], target, sent.message_id)
 
@@ -219,6 +330,10 @@ async def publish(call: types.CallbackQuery, state: FSMContext, c, settings) -> 
         f'{e("ok")} <b>Пост опубликован</b>\n\n'
         f'{e("channel")} Канал: <code>{target}</code>\n'
         f'{e("link")} Метка: <code>{row["tag"]}</code>\n\n'
+        + (f'<blockquote>{e("warning")} Пост ушёл альбомом, и кнопки под ним '
+           f'нет — Telegram не даёт прикрепить её к альбому. Считать '
+           f'приведённых этим постом будет нечем.</blockquote>\n\n'
+           if album else '') +
         f'<blockquote>Сколько человек он привёл, покажет <code>/posts</code> — '
         f'считается по тем, кто вошёл в бота с этой кнопки. Первые переходы '
         f'появятся в течение нескольких минут.\n\n'
@@ -294,6 +409,7 @@ def register(router: Router) -> None:
     router.callback_query.register(screen, Adm.filter(F.act == 'post'))
     router.callback_query.register(posts_screen, Adm.filter(F.act == 'posts'))
     router.callback_query.register(ask_button, Adm.filter(F.act == 'postbtn'))
+    router.callback_query.register(toggle_album, Adm.filter(F.act == 'postalbum'))
     router.callback_query.register(back_to_preview, Adm.filter(F.act == 'postback'))
     router.callback_query.register(publish, Adm.filter(F.act == 'postgo'))
     router.message.register(got_button, Post.button)
