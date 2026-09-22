@@ -61,12 +61,6 @@ def _tickets(count: int) -> str:
     return 'билетов'
 
 
-def _friends(count: int) -> str:
-    if count % 10 == 1 and count % 100 != 11:
-        return 'друга'
-    return 'друзей'
-
-
 def _days(count: int) -> str:
     if count % 10 == 1 and count % 100 != 11:
         return 'день'
@@ -82,10 +76,11 @@ async def screen(event, c, user: dict, settings) -> None:
         return
 
     user_id = int(((user or {}).get('user_data') or {}).get('user_id') or 0)
+    per_friend = await settings.int('raffle.friend_tickets')
+    per_month = await settings.int('raffle.self_per_month')
     mine = await service.for_user(
         c.balance_log, c.users, user_id, start=start, end=end,
-        friend_tickets=await settings.int('raffle.friend_tickets'),
-        self_per_month=await settings.int('raffle.self_per_month'),
+        friend_tickets=per_friend, self_per_month=per_month,
         min_months=await settings.int('raffle.min_months'),
         require_active=await settings.flag('raffle.require_active'))
 
@@ -110,17 +105,21 @@ async def screen(event, c, user: dict, settings) -> None:
     if over:
         lines.append('Приём билетов закончен — ждём розыгрыша.')
     elif need and gift_days and tickets < need:
-        lines.append(f'{e("gift")} До подарка осталось '
-                     f'<b>{need - tickets} {_friends(need - tickets)}</b>: '
-                     f'приведите {need} — получите +{gift_days} дней '
-                     f'подписки, без всякого розыгрыша.')
+        # Порог считается в билетах, а не в друзьях: друг даёт сразу три, и
+        # «осталось два друга» при пороге в три билета — прямая неправда.
+        left_tickets = need - tickets
+        lines.append(f'{e("gift")} До подарка: ещё '
+                     f'<b>{left_tickets} {_tickets(left_tickets)}</b> — '
+                     f'и +{gift_days} дней подписки, без всякого розыгрыша.')
     elif need and gift_days:
         lines.append(f'{e("ok")} Подарок ваш: +{gift_days} дней начислим '
-                     f'после розыгрыша. Каждый следующий друг — ещё один '
-                     f'билет.')
+                     f'после розыгрыша. Каждый следующий друг — ещё '
+                     f'{per_friend} {_tickets(per_friend)}.')
     elif not tickets:
-        lines.append('Билетов пока нет: три билета даёт новый друг, купивший '
-                     'подписку, и один — каждый месяц вашей собственной.')
+        lines.append(f'Билетов пока нет: {per_friend} {_tickets(per_friend)} '
+                     f'даёт новый друг, купивший подписку, и '
+                     f'{per_month} {_tickets(per_month)} — каждый месяц '
+                     f'вашей собственной.')
     else:
         # Порог выключен — но и молчать нельзя: экран без единой строки
         # после числа выглядит как недоделанный.

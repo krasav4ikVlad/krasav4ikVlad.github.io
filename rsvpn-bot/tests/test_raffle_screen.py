@@ -319,6 +319,78 @@ def test_the_letter_names_the_prize():
         {'amount': 30, 'kind': 'days'}, '')
 
 
+async def shown(repos, db, settings, user_id: int = 1) -> str:
+    """Текст экрана розыгрыша так, как его увидит человек."""
+    journal, users = repos
+    captured = []
+
+    class Event:
+        from_user = type('U', (), {'id': user_id})()
+
+        async def answer(self, text='', **kwargs):
+            captured.append(text)
+            return True
+
+    class Container:
+        def __init__(self, journal, users):
+            self.balance_log = journal
+            self.users = users
+
+        def media(self, key):
+            return None
+
+    await screen.screen(Event(), Container(journal, users),
+                        await users.get(user_id), settings)
+    return captured[0]
+
+
+async def test_the_threshold_is_counted_in_tickets_not_in_friends(repos, db,
+                                                                  settings):
+    """Порог стоит в билетах, а друг даёт сразу три: «осталось два друга»
+    при пороге в три билета — прямая неправда, и человек приведёт лишних."""
+    journal, users = repos
+    await person(users, 1)
+    await bought(journal, 1, now() - timedelta(days=1))      # 1 билет
+    await settings.set('raffle.bonus_tickets', 3)
+    await settings.set('raffle.bonus_days', 7)
+
+    text = await shown(repos, db, settings)
+
+    line = next(row for row in text.split('\n') if 'До подарка' in row)
+    assert 'ещё <b>2 билета</b>' in line
+    assert 'друг' not in line
+
+
+async def test_the_gift_is_promised_once_the_threshold_is_passed(repos, db,
+                                                                 settings):
+    journal, users = repos
+    await person(users, 1)
+    await person(users, 20, referrer=1)
+    await bought(journal, 20, now() - timedelta(days=1))     # 3 билета
+    await settings.set('raffle.bonus_tickets', 3)
+    await settings.set('raffle.bonus_days', 7)
+
+    text = await shown(repos, db, settings)
+
+    assert 'Подарок ваш: +7 дней' in text
+    assert 'ещё 3 билета' in text          # столько даёт следующий друг
+
+
+async def test_the_empty_screen_names_the_real_ticket_prices(repos, db, settings):
+    """Числа на экране — из настроек: поменяли цену билета, а экран учит
+    старой — и правым окажется экран."""
+    journal, users = repos
+    await person(users, 1)
+    await settings.set('raffle.friend_tickets', 5)
+    await settings.set('raffle.self_per_month', 2)
+    await settings.set('raffle.bonus_tickets', 0)
+
+    text = await shown(repos, db, settings)
+
+    assert '5 билетов даёт новый друг' in text
+    assert '2 билета — каждый месяц' in text
+
+
 async def test_the_screen_says_something_even_without_a_threshold_gift(repos, db,
                                                                        settings):
     """Порог можно выключить, но экран без единой строки после числа
