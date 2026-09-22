@@ -82,7 +82,8 @@ async def screen(event, c, user: dict, settings) -> None:
         c.balance_log, c.users, user_id, start=start, end=end,
         friend_tickets=per_friend, self_per_month=per_month,
         min_months=await settings.int('raffle.min_months'),
-        require_active=await settings.flag('raffle.require_active'))
+        require_active=await settings.flag('raffle.require_active'),
+        exclude=await settings.get('raffle.exclude'))
 
     tickets = mine['tickets']
     need = await settings.int('raffle.bonus_tickets')

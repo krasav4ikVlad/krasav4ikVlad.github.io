@@ -828,3 +828,100 @@ async def test_a_friend_who_only_topped_up_gives_nothing(repos, db):
     await topped_up(journal, 20, amount=5000)
 
     assert await tickets_of_owner(repos) == 0
+
+
+# ── кого не учитывать ───────────────────────────────────────────────────────
+#
+# Свои и рабочие аккаунты покупают по-настоящему, и билеты им по правилам
+# полагаются. Но приз, ушедший внутрь, обесценивает всю акцию, а доказать
+# потом, что так и было задумано, нечем.
+
+def test_ids_are_read_in_any_form():
+    assert domain.parse_ids('7996131040') == frozenset({7996131040})
+    assert domain.parse_ids('123, 456\n789') == frozenset({123, 456, 789})
+    assert domain.parse_ids('') == frozenset()
+    assert domain.parse_ids('не число') == frozenset()
+
+
+async def test_an_excluded_person_gets_no_tickets_of_their_own(repos, db):
+    journal, users = repos
+    await person(users, 7996131040)
+    await bought(journal, 7996131040, months=6)
+
+    data = await collect(repos, exclude='7996131040')
+
+    assert data['tickets'] == 0
+    assert data['skipped'].get(domain.EXCLUDED) == 1
+
+
+async def test_an_excluded_person_brings_no_tickets_to_whoever_invited_them(repos, db):
+    """Иначе его вывели бы из розыгрыша только наполовину."""
+    journal, users = repos
+    await person(users, 1)
+    await person(users, 7996131040, referrer=1)
+    await bought(journal, 7996131040, months=1)
+
+    data = await collect(repos, exclude='7996131040')
+
+    assert not [row for row in data['participants'] if row['user_id'] == 1]
+
+
+async def test_an_excluded_inviter_gets_nothing_for_real_friends(repos, db):
+    journal, users = repos
+    await person(users, 7996131040)
+    await person(users, 20, referrer=7996131040)
+    await bought(journal, 20, months=1)
+
+    data = await collect(repos, exclude='7996131040')
+
+    assert not [row for row in data['participants']
+                if row['user_id'] == 7996131040]
+
+
+async def test_everyone_else_is_untouched(repos, db):
+    journal, users = repos
+    await person(users, 1)
+    await person(users, 20, referrer=1)
+    await bought(journal, 20, months=1)
+
+    data = await collect(repos, exclude='7996131040')
+    owner = next(row for row in data['participants'] if row['user_id'] == 1)
+
+    assert owner['tickets'] == 3
+
+
+async def test_the_excluded_screen_shows_zero(repos, db):
+    """Экран и таблица обязаны совпадать и здесь: иначе человек увидит
+    билеты, которых в списке нет."""
+    journal, users = repos
+    await person(users, 7996131040)
+    await bought(journal, 7996131040, months=6)
+
+    mine = await raffle.for_user(journal, users, 7996131040, start=START,
+                                 end=END, exclude='7996131040')
+
+    assert mine['tickets'] == 0
+
+
+async def test_an_excluded_friend_is_not_counted_on_the_screen(repos, db):
+    journal, users = repos
+    await person(users, 1)
+    await person(users, 7996131040, referrer=1)
+    await bought(journal, 7996131040, months=1)
+
+    mine = await raffle.for_user(journal, users, 1, start=START, end=END,
+                                 exclude='7996131040')
+
+    assert mine['tickets'] == 0 and mine['friends'] == 0
+
+
+async def test_the_report_names_who_is_excluded(admin_env):
+    """Молча выкинутый из розыгрыша участник — это то, что потом не
+    объяснишь. В сводке видно, кого не считают."""
+    dp, bot, session, container = admin_env
+    await setup_draw(container, people=2)
+    await container.settings.set('raffle.exclude', '7996131040')
+
+    await dp.feed_update(bot, message('/raffle'))
+
+    assert '7996131040' in session.last_text

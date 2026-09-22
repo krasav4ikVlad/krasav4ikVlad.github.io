@@ -120,7 +120,8 @@ async def report(message: types.Message, command, c, settings) -> dict | None:
         friend_tickets=await settings.int('raffle.friend_tickets'),
         self_per_month=await settings.int('raffle.self_per_month'),
         min_months=await settings.int('raffle.min_months'),
-        require_active=await settings.flag('raffle.require_active'))
+        require_active=await settings.flag('raffle.require_active'),
+        exclude=await settings.get('raffle.exclude'))
     data['journal_since'] = await raffle.journal_since(c.balance_log)
     return data
 
@@ -177,6 +178,10 @@ def summary(data: dict, bonus_tickets: int = 0, bonus_days: int = 0) -> str:
             lines.append(f'{why} — {count}')
         lines.append('')
 
+    if data.get('excluded'):
+        lines.append(f'{e("ban")} Не учитываются: '
+                     + ', '.join(f'<code>{item}</code>'
+                                 for item in data['excluded'][:10]))
     lines.append(depth_note(data))
     lines.append('')
 

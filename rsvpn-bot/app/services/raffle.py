@@ -58,9 +58,10 @@ def months(days) -> int:
 async def collect(journal, users, *, start: datetime, end: datetime,
                   friend_tickets: int = 3, self_per_month: int = 1,
                   min_months: int = 1, require_active: bool = True,
-                  now: datetime | None = None) -> dict:
+                  exclude=frozenset(), now: datetime | None = None) -> dict:
     """Все билеты за период плюс то, что в зачёт не пошло, и почему."""
     moment = now or time_now()
+    exclude = domain.parse_ids(exclude)
     first, inside = await _purchases(journal, start, end)
 
     buyers = list(inside)
@@ -78,6 +79,16 @@ async def collect(journal, users, *, start: datetime, end: datetime,
 
         # ── свои покупки: билет за каждый месяц
         own = sum(months(row['days']) for row in purchases) * int(self_per_month)
+        if user_id in exclude:
+            # Исключённый не получает билетов и не приносит их тому, кто его
+            # привёл: иначе его вывели бы из розыгрыша только наполовину.
+            events.append({
+                'kind': domain.SELF, 'owner': user_id, 'owner_username': '',
+                'friend': 0, 'friend_username': '',
+                'at': min(row['at'] for row in purchases),
+                'tickets': 0, 'valid': False, 'why': domain.EXCLUDED,
+                'detail': 'исключён из учёта'})
+            continue
         if own > 0:
             events.append({
                 'kind': domain.SELF, 'owner': user_id,
@@ -93,13 +104,14 @@ async def collect(journal, users, *, start: datetime, end: datetime,
             users, user_id, doc, purchases, first.get(user_id), referrers,
             start=start, end=end, friend_tickets=friend_tickets,
             min_months=min_months, require_active=require_active,
-            moment=moment))
+            exclude=exclude, moment=moment))
 
     events = [row for row in events if row]
     tickets = domain.number_tickets(events)
 
     return {
         'start': start, 'end': end,
+        'excluded': sorted(exclude),
         'friend_tickets': int(friend_tickets),
         'self_per_month': int(self_per_month),
         'min_months': int(min_months),
@@ -115,7 +127,8 @@ async def collect(journal, users, *, start: datetime, end: datetime,
 
 def _friend_event(users, user_id: int, doc: dict, purchases: list[dict],
                   first_ever, referrers: dict, *, start, end, friend_tickets,
-                  min_months, require_active, moment) -> dict | None:
+                  min_months, require_active, moment,
+                  exclude=frozenset()) -> dict | None:
     """Билеты тому, кто привёл этого человека, — если он новый и купил месяц."""
     referrer = users.pick(doc, 'user_data.referrer')
     referrer = int(referrer) if str(referrer or '').lstrip('-').isdigit() else None
@@ -134,7 +147,9 @@ def _friend_event(users, user_id: int, doc: dict, purchases: list[dict],
     bought = max(months(item['days']) for item in purchases)
     row['detail'] = f'подписка {bought} мес.'
 
-    if not referrer:
+    if referrer in exclude:
+        row['why'] = domain.EXCLUDED
+    elif not referrer:
         row['why'] = domain.NO_REFERRER
     elif referrer == user_id:
         row['why'] = domain.SELF_INVITE
@@ -260,13 +275,20 @@ MINE_FIELDS = {'user_data.user_id': 1, 'vpn.expireAt': 1,
                'info.transactions': {'$slice': OLD_SLICE}}
 
 
+EMPTY = {'tickets': 0, 'own_months': 0, 'own_tickets': 0, 'friends': 0,
+         'friend_tickets': 0, 'invited': 0}
+
+
 async def for_user(journal, users, user_id: int, *, start: datetime,
                    end: datetime, friend_tickets: int = 3,
                    self_per_month: int = 1, min_months: int = 1,
-                   require_active: bool = True,
+                   require_active: bool = True, exclude=frozenset(),
                    now: datetime | None = None) -> dict:
     """Сколько билетов у этого человека и из чего они сложились."""
     moment = now or time_now()
+    exclude = domain.parse_ids(exclude)
+    if int(user_id) in exclude:
+        return dict(EMPTY)
 
     friends: dict[int, dict] = {}
     cursor = users.col.find({'user_data.referrer': int(user_id)}, MINE_FIELDS)
@@ -302,7 +324,7 @@ async def for_user(journal, users, user_id: int, *, start: datetime,
     good_friends = 0
     for friend_id, doc in friends.items():
         purchases = inside.get(friend_id)
-        if not purchases:
+        if not purchases or friend_id in exclude:
             continue
         if max(months(row['days']) for row in purchases) < int(min_months):
             continue

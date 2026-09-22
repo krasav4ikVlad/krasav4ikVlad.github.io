@@ -40,6 +40,22 @@ TOO_SHORT = 'подписка меньше месяца'
 NOT_NEW = 'друг покупал и раньше'
 WAS_CUSTOMER = 'друг покупал ещё до журнала'
 NOT_ACTIVE = 'подписка не активна'
+EXCLUDED = 'исключён из учёта'
+
+
+def parse_ids(text) -> frozenset[int]:
+    """Список id из настройки: через запятую, пробел или с новой строки.
+
+    Нужен, чтобы вывести из розыгрыша свои же аккаунты — проверочные,
+    рабочие, аккаунты команды. Их покупки настоящие, и по правилам билеты
+    им полагаются; но приз, ушедший внутрь, обесценивает всю акцию, а
+    доказать потом, что так и задумано, нечем.
+    """
+    if isinstance(text, (list, tuple, set, frozenset)):
+        parts = [str(item) for item in text]
+    else:
+        parts = str(text or '').replace(',', ' ').replace('\n', ' ').split()
+    return frozenset(int(part) for part in parts if part.lstrip('-').isdigit())
 
 
 def parse_day(text: str, end: bool = False) -> datetime | None:
