@@ -100,17 +100,23 @@ async def got_body(message: types.Message, state: FSMContext, c, settings) -> No
     group = message.media_group_id or ''
     same_album = bool(group) and data.get('group') == group
 
+    # Текст храним дважды: с разметкой — для отправки, без неё — для счёта
+    # длины. Telegram считает предел по тексту, а не по тегам.
+    plain = message.text or message.caption or ''
+
     if message.photo:
         photos = list(data.get('photos') or []) if same_album else []
         photos.append(message.photo[-1].file_id)
         # Подпись у альбома одна на всех, и приходит она не обязательно
         # с первой картинкой.
-        text = (message.html_text or '') or (data.get('text') or '' if same_album else '')
+        keep = same_album and not plain
+        text = (data.get('text') or '') if keep else (message.html_text or '')
+        plain = (data.get('plain') or '') if keep else plain
     else:
         photos = []
         text = message.html_text or ''
 
-    await state.update_data(text=text, photos=photos, group=group,
+    await state.update_data(text=text, plain=plain, photos=photos, group=group,
                             album=bool(data.get('album')) and len(photos) > 1)
 
     if group:
@@ -122,7 +128,7 @@ async def got_body(message: types.Message, state: FSMContext, c, settings) -> No
 async def checked_preview(message: types.Message, state: FSMContext, c,
                           settings) -> None:
     data = await state.get_data()
-    problem = service.preview_problem(data.get('text') or '',
+    problem = service.preview_problem(data.get('plain') or '',
                                       data.get('photos') or [])
     if problem:
         await message.answer(f'{e("warning")} {problem}')

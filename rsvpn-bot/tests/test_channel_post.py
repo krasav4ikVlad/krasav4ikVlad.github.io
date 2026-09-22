@@ -376,3 +376,61 @@ async def test_a_second_post_does_not_inherit_the_first_pictures(env, monkeypatc
     await dp.feed_update(bot, callback(Adm(act='postgo').pack()))
 
     assert session.to('@rsconnect_vpn')[0]['method'] == 'SendMessage'
+
+
+# ── длина считается по тексту, а не по разметке ─────────────────────────────
+#
+# Один кастомный значок в HTML занимает под полсотни знаков
+# (<tg-emoji emoji-id="…">🎟</tg-emoji>), а для Telegram это один символ.
+# Пост из восьми значков и семисот букв по разметке «не влезает в 1024»,
+# хотя на самом деле влезает вдвое.
+
+def test_the_markup_is_not_counted_as_text():
+    assert service.length('<b>да</b>' ) == len('<b>да</b>')     # это просто текст
+    assert service.length('да') == 2
+
+
+def test_an_emoji_counts_as_two_just_like_in_telegram():
+    assert service.length('🎁') == 2
+
+
+def emoji_post(caption: str, icons: int = 8) -> Update:
+    """Пост со значками: в разметке они разворачиваются в длинные теги."""
+    from aiogram.types import MessageEntity, PhotoSize
+
+    text = '🎟' * icons + caption
+    entities = [MessageEntity(type='custom_emoji', offset=index * 2, length=2,
+                              custom_emoji_id='5456334265383951620')
+                for index in range(icons)]
+    return Update(update_id=7, message=Message(
+        message_id=30, date=datetime.now(), chat=CHAT, from_user=ADMIN,
+        caption=text, caption_entities=entities,
+        photo=[PhotoSize(file_id='pic', file_unique_id='u', width=10, height=10)]))
+
+
+async def test_a_post_with_custom_emoji_is_not_refused_for_nothing(env):
+    """Тот самый отказ: подпись в 750 знаков бот считал за 1100 и не
+    отправлял пост, который Telegram принял бы без разговоров."""
+    dp, bot, session, c = env
+    update = emoji_post('Розыгрыш призов. ' * 40)      # ~700 знаков текста
+    await dp.feed_update(bot, message('/post'))
+
+    assert service.length(update.message.caption) < service.CAPTION_LIMIT
+    assert len(update.message.html_text) > service.CAPTION_LIMIT
+
+    await dp.feed_update(bot, update)
+
+    assert 'длиннее' not in session.to(CHAT.id)[-1]['text']
+    assert any(row['method'] == 'SendPhoto' for row in session.to(CHAT.id))
+
+
+async def test_the_markup_still_reaches_the_channel(env):
+    """Считаем по тексту, а отправляем с разметкой — значки должны
+    остаться значками."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/post'))
+    await dp.feed_update(bot, emoji_post('Розыгрыш'))
+
+    await dp.feed_update(bot, callback(Adm(act='postgo').pack()))
+
+    assert 'tg-emoji' in session.to('@rsconnect_vpn')[0]['text']
