@@ -38,6 +38,7 @@ SELF_INVITE = 'сам себя пригласил'
 UNKNOWN_REFERRER = 'пригласившего нет в базе'
 TOO_SHORT = 'подписка меньше месяца'
 NOT_NEW = 'друг покупал и раньше'
+WAS_CUSTOMER = 'друг покупал ещё до журнала'
 NOT_ACTIVE = 'подписка не активна'
 
 
@@ -60,6 +61,35 @@ def parse_day(text: str, end: bool = False) -> datetime | None:
             else day.replace(hour=0, minute=0, second=0, tzinfo=MSK)
 
     return parse_dt(raw)
+
+
+# Слова, по которым в старых транзакциях узнаётся покупка подписки.
+# Журнал (balance_log) ведётся с того дня, как его завели, а люди покупают
+# дольше: у пришедшего два года назад его первая покупка в журнал не попала
+# вовсе. Проверять «новый ли друг» по одному журналу значит считать новыми
+# всех старых — поэтому вторая проверка идёт по info.transactions, которые
+# писал ещё прежний бот.
+PURCHASE_WORDS = ('покупка подписки', 'продление подписки', 'тариф')
+
+
+def bought_before(transactions, moment: datetime) -> bool:
+    """Покупал ли человек подписку раньше этого момента — по его карточке."""
+    from app.core.time import to_msk
+    from app.domain.transactions import extract
+
+    moment = to_msk(moment)
+    for row in transactions or []:
+        amount, at, description = extract(row)
+        if at is None or at >= moment:
+            continue
+        # Списание: покупка — это минус на балансе. Плюс с тем же словом
+        # («Возврат: покупка…») покупкой не является.
+        if amount is None or float(amount) >= 0:
+            continue
+        text = str(description or '').lower()
+        if any(word in text for word in PURCHASE_WORDS):
+            return True
+    return False
 
 
 def number_tickets(events: list[dict]) -> list[dict]:

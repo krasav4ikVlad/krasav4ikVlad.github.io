@@ -663,3 +663,103 @@ async def test_the_stats_command_does_not_break_on_an_empty_contest(admin_env):
     await dp.feed_update(bot, message('/rafflestats'))
 
     assert 'ни одного' in session.last_text
+
+
+# ── «новый» друг, когда журнал моложе бота ──────────────────────────────────
+#
+# Журнал (balance_log) завели позже, чем запустили бота: у человека,
+# пришедшего два года назад, первой покупки в нём нет вовсе. Проверять
+# новизну по одному журналу значит считать новыми всех старых — а это ровно
+# те, за кого билетов давать нельзя.
+
+async def old_customer(users, user_id: int, referrer: int, *, when) -> None:
+    """Друг, который покупал давно — так, что в журнал это не попало."""
+    await users.create({
+        'user_data': {'user_id': user_id, 'username': f'u{user_id}',
+                      'referrer': referrer},
+        'info': {'balance': 0, 'transactions': [
+            {'amount': -150, 'dt': when, 'description': 'Покупка подписки «1 месяц»'}]},
+        'vpn': {'uuid': f'u-{user_id}', 'expireAt': now() + timedelta(days=30)},
+    })
+
+
+def test_an_old_purchase_is_seen_in_the_card():
+    assert domain.bought_before(
+        [{'amount': -150, 'dt': START - timedelta(days=200),
+          'description': 'Покупка подписки «1 месяц»'}], START) is True
+
+
+def test_the_old_format_of_transactions_is_understood():
+    """В базе лежат и списки, и словари — оба формата настоящие."""
+    assert domain.bought_before(
+        [[-150, (START - timedelta(days=200)).strftime('%d.%m.%Y %H:%M:%S'),
+          'Продление подписки «1 месяц»']], START) is True
+
+
+def test_a_topup_is_not_a_purchase():
+    assert domain.bought_before(
+        [{'amount': 500, 'dt': START - timedelta(days=200),
+          'description': 'Пополнение (wata), бонус 100₽'}], START) is False
+
+
+def test_a_refund_is_not_a_purchase():
+    """«Возврат: покупка не удалась» — это плюс на баланс, а не покупка."""
+    assert domain.bought_before(
+        [{'amount': 150, 'dt': START - timedelta(days=200),
+          'description': 'Возврат: покупка подписки не удалась'}], START) is False
+
+
+def test_a_purchase_inside_the_contest_does_not_make_him_old():
+    assert domain.bought_before(
+        [{'amount': -150, 'dt': START + timedelta(days=1),
+          'description': 'Покупка подписки «1 месяц»'}], START) is False
+
+
+async def test_an_old_customer_gives_no_tickets_even_if_the_journal_is_young(repos, db):
+    """Главная проверка: в журнале его прошлых покупок нет, и по журналу он
+    выглядит новым. Карточка помнит дольше."""
+    journal, users = repos
+    await person(users, 1)
+    await old_customer(users, 20, referrer=1, when=START - timedelta(days=200))
+    await bought(journal, 20, day=5)
+
+    data = await collect(repos)
+
+    assert data['skipped'].get(domain.WAS_CUSTOMER) == 1
+    # приглашающему — ничего; сам друг свой билет за подписку получает
+    assert not [row for row in data['participants'] if row['user_id'] == 1]
+
+
+async def test_a_truly_new_friend_still_counts(repos, db):
+    journal, users = repos
+    await person(users, 1)
+    await person(users, 20, referrer=1)
+    await bought(journal, 20, day=5)
+
+    data = await collect(repos)
+    owner = next(row for row in data['participants'] if row['user_id'] == 1)
+    assert owner['tickets'] == 3
+
+
+async def test_the_screen_hides_the_old_customer_too(repos, db):
+    """Экран и таблица обязаны считать одно и то же — иначе человек увидит
+    билет, которого в списке не будет."""
+    journal, users = repos
+    await person(users, 1)
+    await old_customer(users, 20, referrer=1, when=START - timedelta(days=200))
+    await bought(journal, 20, day=5)
+
+    mine = await raffle.for_user(journal, users, 1, start=START, end=END)
+
+    assert mine['tickets'] == 0 and mine['friends'] == 0
+
+
+async def test_the_report_says_how_deep_the_journal_goes(admin_env):
+    """«Точно ли только новые?» — вопрос, на который отчёт обязан отвечать
+    сам, а не заставлять верить на слово."""
+    dp, bot, session, container = admin_env
+    await setup_draw(container, people=2)
+
+    await dp.feed_update(bot, message('/raffle'))
+
+    assert 'Журнал покупок ведётся с' in session.last_text

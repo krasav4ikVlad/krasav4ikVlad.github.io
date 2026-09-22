@@ -115,12 +115,14 @@ async def report(message: types.Message, command, c, settings) -> dict | None:
     # Проход по всем платежам не мгновенный, а команду зовут с телефона:
     # без этой строки кажется, что бот не ответил.
     await message.answer(f'{e("refresh")} Считаю билеты…')
-    return await raffle.collect(
+    data = await raffle.collect(
         c.balance_log, c.users, start=start, end=end,
         friend_tickets=await settings.int('raffle.friend_tickets'),
         self_per_month=await settings.int('raffle.self_per_month'),
         min_months=await settings.int('raffle.min_months'),
         require_active=await settings.flag('raffle.require_active'))
+    data['journal_since'] = await raffle.journal_since(c.balance_log)
+    return data
 
 
 def reached(data: dict, tickets: int) -> list[dict]:
@@ -175,6 +177,9 @@ def summary(data: dict, bonus_tickets: int = 0, bonus_days: int = 0) -> str:
             lines.append(f'{why} — {count}')
         lines.append('')
 
+    lines.append(depth_note(data))
+    lines.append('')
+
     lines.append(f'<blockquote>{data["friend_tickets"]} билета за нового '
                  f'друга, купившего подписку от {data["min_months"]} мес., и '
                  f'{data["self_per_month"]} билет за каждый месяц своей '
@@ -183,6 +188,25 @@ def summary(data: dict, bonus_tickets: int = 0, bonus_days: int = 0) -> str:
                  f'<code>/raffletickets</code>: там каждый билет отдельной '
                  f'строкой.</blockquote>')
     return '\n'.join(lines)
+
+
+def depth_note(data: dict) -> str:
+    """Насколько глубоко видно «покупал ли друг раньше».
+
+    Журнал завели позже, чем запустили бота, и по нему одному старый
+    покупатель выглядит новым. Вторая проверка идёт по карточкам — они
+    помнят дольше, — но у карточки последние 500 записей, и у самых
+    активных людей начало истории тоже обрезано. Молчать об этом нельзя:
+    «точно ли учитываются только новые» — вопрос, на который отчёт обязан
+    отвечать сам.
+    """
+    since = data.get('journal_since')
+    if not since:
+        return (f'{e("warning")} Журнал покупок пуст — «новизна» друга '
+                f'проверяется только по карточкам.')
+    return (f'{e("note")} Журнал покупок ведётся с '
+            f'<b>{fmt(since, "%d.%m.%Y")}</b>; что было раньше, проверяется '
+            f'по карточкам пользователей.')
 
 
 def _tickets(count: int) -> str:

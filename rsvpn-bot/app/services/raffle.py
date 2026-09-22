@@ -35,8 +35,13 @@ log = logging.getLogger(__name__)
 KINDS = ('plan', 'renewal')
 
 JOURNAL_FIELDS = {'user_id': 1, 'amount': 1, 'kind': 1, 'meta': 1, 'at': 1}
+# Первые сто записей карточки — самые старые: по ним видно, покупал ли
+# человек подписку до того, как завели журнал. Весь массив тянуть нельзя:
+# в нём до пятисот записей на человека, а людей тысячи.
+OLD_SLICE = 100
 USER_FIELDS = {'user_data.user_id': 1, 'user_data.username': 1,
-               'user_data.referrer': 1, 'vpn.uuid': 1, 'vpn.expireAt': 1}
+               'user_data.referrer': 1, 'vpn.uuid': 1, 'vpn.expireAt': 1,
+               'info.transactions': {'$slice': OLD_SLICE}}
 CHUNK = 500
 DAYS_IN_MONTH = 30
 
@@ -140,6 +145,10 @@ def _friend_event(users, user_id: int, doc: dict, purchases: list[dict],
     elif not first_ever or not (start <= first_ever <= end):
         # Друг покупал и раньше — он не новый, и билетов за него уже не дают.
         row['why'] = domain.NOT_NEW
+    elif domain.bought_before(users.pick(doc, 'info.transactions') or [], start):
+        # Журнал моложе бота: у пришедшего давно первая покупка в него не
+        # попала, и по журналу он выглядит новым. Карточка помнит дольше.
+        row['why'] = domain.WAS_CUSTOMER
     elif require_active and not _alive(users, doc, moment):
         row['why'] = domain.NOT_ACTIVE
     else:
@@ -177,6 +186,14 @@ async def _purchases(journal, start: datetime,
                  'amount': abs(int(row.get('amount') or 0))})
 
     return first, inside
+
+
+async def journal_since(journal) -> datetime | None:
+    """С какого дня вообще есть записи. Журнал завели позже, чем запустили
+    бота, и «первая покупка в жизни» глубже этой даты не видна — а значит
+    старый покупатель по одному журналу выглядит новым."""
+    rows = await journal.col.find({}, {'at': 1}).sort('at', 1).limit(1).to_list(length=1)
+    return parse_dt(rows[0].get('at')) if rows else None
 
 
 async def _docs(users, ids: list[int]) -> dict[int, dict]:
@@ -239,7 +256,8 @@ def _skipped(events: list[dict]) -> dict[str, int]:
 # билетов стояло другое, и правым был бы человек.
 
 MAX_FRIENDS = 1000
-MINE_FIELDS = {'user_data.user_id': 1, 'vpn.expireAt': 1}
+MINE_FIELDS = {'user_data.user_id': 1, 'vpn.expireAt': 1,
+               'info.transactions': {'$slice': OLD_SLICE}}
 
 
 async def for_user(journal, users, user_id: int, *, start: datetime,
@@ -290,6 +308,10 @@ async def for_user(journal, users, user_id: int, *, start: datetime,
             continue
         came = first.get(friend_id)
         if not came or not (start <= came <= end):
+            continue
+        # Та же проверка, что и в таблице: журнал моложе бота, и старого
+        # покупателя видно только по его карточке.
+        if domain.bought_before(users.pick(doc, 'info.transactions') or [], start):
             continue
         if require_active and not _alive(users, doc, moment):
             continue
