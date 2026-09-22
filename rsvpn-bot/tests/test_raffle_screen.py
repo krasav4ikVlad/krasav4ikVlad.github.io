@@ -361,6 +361,18 @@ async def test_the_threshold_is_counted_in_tickets_not_in_friends(repos, db,
     assert 'друг' not in line
 
 
+async def test_by_default_no_days_are_promised_to_anyone(repos, db, settings):
+    """Подарок за порог — решение, которое принимают руками. Включённый по
+    умолчанию, он обещает дни сотням людей раньше, чем это кто-то заметил."""
+    journal, users = repos
+    await person(users, 1)
+    await bought(journal, 1, now() - timedelta(days=1), months=6)
+
+    text = await shown(repos, db, settings)
+
+    assert 'До подарка' not in text and 'Подарок ваш' not in text
+
+
 async def test_the_gift_is_promised_once_the_threshold_is_passed(repos, db,
                                                                  settings):
     journal, users = repos
