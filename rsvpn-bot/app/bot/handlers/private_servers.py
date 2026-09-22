@@ -371,7 +371,13 @@ async def server_screen(event, c, user: dict, settings, server: dict,
                  f'<code>{ps.occupied(server)} из {server.get("slots")}</code>')
     if paid_until:
         lines.append(f'<b>{e("calendar")} Оплачен до:</b> <code>{fmt(paid_until)}</code>')
-    if owner:
+    charging = await c.private.autocharge()
+    if owner and not charging:
+        # Списание выключено нами. Обещать человеку дату списания, которого
+        # не будет, нельзя — и пугать его ею тоже.
+        lines.append(f'<b>{e("money")} Списание:</b> <b>приостановлено</b> — '
+                     f'сейчас сервер ничего не стоит')
+    elif owner:
         renews = server.get('autorenew', True)
         lines.append(f'<b>{e("money")} Списание:</b> <code>{server.get("price")}₽</code> '
                      + ('в месяц, следующее '
@@ -387,8 +393,10 @@ async def server_screen(event, c, user: dict, settings, server: dict,
             kb.row(_btn(f'{e("stats")} Статистика', 'stats', server['_id']))
             if server.get('members'):
                 kb.row(_btn(f'{e("friends")} Участники', 'members', server['_id']))
-            kb.row(_btn(f'{e("renew")} Включить продление' if not server.get('autorenew', True)
-                        else f'{e("cross")} Не продлевать', 'renew', server['_id']))
+            if charging:
+                kb.row(_btn(f'{e("renew")} Включить продление'
+                            if not server.get('autorenew', True)
+                            else f'{e("cross")} Не продлевать', 'renew', server['_id']))
         else:
             kb.row(_btn(f'{e("cross")} Выйти с сервера', 'leave', server['_id']))
 

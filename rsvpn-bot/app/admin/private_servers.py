@@ -698,6 +698,15 @@ async def queue_text(c, settings=None) -> str:
                      f'серверы это не трогает.')
         lines.append('')
 
+    # Выключенное списание — деньги, которые не приходят каждый месяц.
+    # Такое нельзя забыть включённым на полгода, поэтому оно на виду.
+    if settings is not None and not await settings.flag('private.autocharge'):
+        lines.append(f'{e("warning")} <b>Списание приостановлено.</b> '
+                     f'Ежемесячная плата с владельцев не берётся, за неуплату '
+                     f'никого не приостанавливаем. Серверы работают, пока не '
+                     f'закроете их руками.')
+        lines.append('')
+
     if not queue:
         lines.append(f'{e("ok")} Заявок в работе нет.')
     else:

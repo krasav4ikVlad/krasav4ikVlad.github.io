@@ -1142,10 +1142,22 @@ class PrivateServerService:
             sent += 1
         return sent
 
+    async def autocharge(self) -> bool:
+        return bool(await self.settings.flag('private.autocharge'))
+
     async def charge_due(self) -> dict:
         """Ежемесячное списание с владельцев. Возвращает сводку для /diag."""
         report = {'checked': 0, 'charged': 0, 'amount': 0, 'suspended': 0,
-                  'closed': 0, 'warned': 0}
+                  'closed': 0, 'warned': 0, 'off': False}
+
+        # Выключенное списание не означает «закрыть всем серверы»: у
+        # владельца это отдельное решение, и оно закрывает сервер по
+        # окончании оплаченного. Здесь мы просто ничего не делаем — ни
+        # денег, ни приостановок, ни закрытий по сроку.
+        if not await self.autocharge():
+            report['off'] = True
+            return report
+
         report['warned'] = await self.warn_upcoming()
 
         for server in await self.servers.due():
