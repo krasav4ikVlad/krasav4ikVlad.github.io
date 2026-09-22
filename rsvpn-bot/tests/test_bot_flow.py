@@ -538,15 +538,30 @@ async def test_topup_screen_shows_the_bonus_that_is_actually_credited(env):
     session.calls.clear()
     await dp.feed_update(bot, callback(Menu(screen='payments').pack()))
 
-    assert '+30% сверху' in session.last_text
+    # 20% общий бонус за пополнение плюс 30% надбавки новичку — начислят оба,
+    # значит и на экране стоит сумма, а не одно из двух
+    assert '+50% сверху' in session.last_text
     assert 'Плата за подписку' in session.last_text
 
 
-async def test_topup_screen_promises_nothing_without_the_bonus(env):
+async def test_topup_screen_shows_the_ordinary_bonus_too(env):
+    """Включённый в админке бонус за пополнение экран не показывал вовсе."""
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.users.col.update_one({'user_data.user_id': 5},
+                                 {'$set': {'growth.segment': 'expired_7d'}})
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='payments').pack()))
+
+    assert '+20% сверху' in session.last_text
+
+
+async def test_the_newcomer_offer_is_not_promised_outside_the_trial(env):
     """Обещать бонус тому, кому его не начислят, — хуже, чем не обещать.
 
-    Надбавка новичка живёт ровно на триальных сегментах: вне их экран молчит,
-    какой бы ни была A/B-группа.
+    Надбавка новичка живёт ровно на триальных сегментах: вне их про неё
+    экран молчит, какой бы ни была A/B-группа.
     """
     dp, bot, session, c = env
     await dp.feed_update(bot, message('/start'))
@@ -557,7 +572,8 @@ async def test_topup_screen_promises_nothing_without_the_bonus(env):
     session.calls.clear()
     await dp.feed_update(bot, callback(Menu(screen='payments').pack()))
 
-    assert 'сверху' not in session.last_text
+    assert 'для новых пользователей' not in session.last_text
+    assert '+50%' not in session.last_text
 
 
 async def test_topup_bonus_is_not_promised_after_it_was_used(env):
@@ -565,6 +581,18 @@ async def test_topup_bonus_is_not_promised_after_it_was_used(env):
     await dp.feed_update(bot, message('/start'))
     await c.users.col.update_one({'user_data.user_id': 5},
                                  {'$set': {'growth.ab_group': 'used'}})
+
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Menu(screen='payments').pack()))
+
+    assert 'для новых пользователей' not in session.last_text
+
+
+async def test_nothing_is_promised_when_every_bonus_is_off(env):
+    dp, bot, session, c = env
+    await dp.feed_update(bot, message('/start'))
+    await c.settings.set('bonus.topup_enabled', False)
+    await c.settings.set('bonus.ab_new_trial_rate', 0)
 
     session.calls.clear()
     await dp.feed_update(bot, callback(Menu(screen='payments').pack()))
