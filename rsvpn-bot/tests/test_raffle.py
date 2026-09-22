@@ -570,3 +570,96 @@ async def test_prizes_are_credited_without_writing_to_the_winner(admin_env):
     assert (await container.users.get(1))['info']['balance'] == 5000
     # два сообщения админу — «выдаю» и отчёт; победителю ни одного
     assert len([name for name, _ in session.calls if name == 'SendMessage']) == 2
+
+
+# ── статистика билетов ──────────────────────────────────────────────────────
+#
+# Сводка отвечает «сколько всего», статистика — «как идёт и у кого». Тысяча
+# билетов у пятнадцати человек и та же тысяча у четырёхсот — разные акции
+# с одинаковой суммой, и различить их должно быть чем.
+
+def ticket(owner: int, day: int, kind: str = domain.SELF) -> dict:
+    return {'ticket': owner * 100 + day, 'owner': owner, 'kind': kind,
+            'at': START.replace(day=day)}
+
+
+def who(user_id: int, tickets: int, friends: int = 0) -> dict:
+    return {'user_id': user_id, 'tickets': tickets, 'friends': friends}
+
+
+def test_the_median_is_shown_next_to_the_average():
+    """Среднее врёт: один человек с сотней билетов поднимает его всем."""
+    rows = [ticket(1, 5) for _ in range(100)] + [ticket(index, 5)
+                                                 for index in range(2, 12)]
+    people = [who(1, 100)] + [who(index, 1) for index in range(2, 12)]
+
+    numbers = domain.stats(rows, people)
+
+    assert numbers['average'] == 10.0 and numbers['median'] == 1
+    assert numbers['most'] == 100
+
+
+def test_tickets_are_split_by_day():
+    numbers = domain.stats([ticket(1, 5), ticket(2, 5), ticket(3, 6)],
+                           [who(1, 1), who(2, 1), who(3, 1)])
+
+    assert [row['tickets'] for row in numbers['days']] == [2, 1]
+    assert [row['day'] for row in numbers['days']] == ['05.10', '06.10']
+
+
+def test_a_person_is_counted_new_on_their_first_day_only():
+    """Иначе «сколько человек пришло за день» превращается в «сколько
+    было активно», а это другой вопрос."""
+    numbers = domain.stats([ticket(1, 5), ticket(1, 6), ticket(2, 6)],
+                           [who(1, 2), who(2, 1)])
+
+    assert [row['people'] for row in numbers['days']] == [1, 1]
+
+
+def test_people_are_split_into_buckets():
+    numbers = domain.stats([ticket(1, 5)],
+                           [who(1, 1), who(2, 2), who(3, 5), who(4, 40)])
+
+    assert [row['people'] for row in numbers['buckets']] == [1, 1, 1, 1]
+
+
+def test_those_who_actually_invited_are_counted():
+    """Главное число акции «приведи друга»: остальные просто продлились."""
+    numbers = domain.stats([ticket(1, 5, domain.FRIEND), ticket(2, 5)],
+                           [who(1, 3, friends=1), who(2, 1)])
+
+    assert numbers['inviters'] == 1
+    assert numbers['friends'] == 1 and numbers['own'] == 1
+
+
+def test_empty_stats_do_not_divide_by_zero():
+    numbers = domain.stats([], [])
+
+    assert numbers['total'] == 0 and numbers['average'] == 0.0
+
+
+def test_the_bar_is_proportional_and_never_empty_for_a_nonzero_day():
+    """День с одним билетом на фоне двухсот всё равно должен быть виден."""
+    assert len(admin.bar(200, 200)) == admin.BAR_WIDTH
+    assert admin.bar(1, 200) != ''
+    assert admin.bar(0, 200) == ''
+
+
+async def test_the_stats_command_answers_with_numbers(admin_env):
+    dp, bot, session, container = admin_env
+    await setup_draw(container, people=3)
+
+    await dp.feed_update(bot, message('/rafflestats'))
+
+    assert 'Статистика билетов' in session.last_text
+    assert 'По дням' in session.last_text and 'Сколько у кого' in session.last_text
+
+
+async def test_the_stats_command_does_not_break_on_an_empty_contest(admin_env):
+    dp, bot, session, container = admin_env
+    await container.settings.set('raffle.start', '01.10.2026')
+    await container.settings.set('raffle.end', '22.10.2026')
+
+    await dp.feed_update(bot, message('/rafflestats'))
+
+    assert 'ни одного' in session.last_text

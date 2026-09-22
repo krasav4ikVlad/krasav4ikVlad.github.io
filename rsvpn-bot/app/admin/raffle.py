@@ -3,6 +3,7 @@
 Команды делят одну задачу на части, каждая из которых нужна в свой день:
 
   * `/raffle` — как идёт: билеты, участники, деньги, что не в зачёт;
+  * `/rafflestats` — статистика билетов: по дням и по людям;
   * `/raffleusers` — все участники таблицей: id, сколько билетов и откуда;
   * `/raffletickets` — все билеты таблицей, по строке на билет. Этот файл
     публикуется в канале **до** жребия;
@@ -26,6 +27,7 @@ import logging
 from aiogram import Router, types
 from aiogram.filters import Command
 
+from app.admin.money import rub
 from app.content.emoji import e
 from app.core import db as names
 from app.core.time import fmt
@@ -40,6 +42,7 @@ log = logging.getLogger(__name__)
 USAGE = (
     f'{e("gift")} <b>Розыгрыш</b>\n\n'
     f'<code>/raffle</code> — как идёт: билеты, участники, деньги\n'
+    f'<code>/rafflestats</code> — статистика билетов: по дням и по людям\n'
     f'<code>/raffleusers</code> — все участники таблицей\n'
     f'<code>/raffletickets</code> — все билеты, по строке на билет\n'
     f'<code>/raffledraw</code> — жребий: кому какой приз\n'
@@ -333,6 +336,89 @@ async def bonus(message: types.Message, command, c, settings) -> None:
     await message.answer('\n'.join(lines))
 
 
+# ── статистика ──────────────────────────────────────────────────────────────
+#
+# Сводка отвечает на «сколько всего», статистика — на «как идёт и у кого».
+# Вопросы разные: тысяча билетов у пятнадцати человек и та же тысяча у
+# четырёхсот — два разных результата с одинаковой суммой.
+
+BAR = '█'
+BAR_WIDTH = 12
+DAYS_SHOWN = 14
+
+
+def bar(value: int, top: int) -> str:
+    """Полоска на строку дня. Столбик виден одним взглядом, а число —
+    только если его прочитать и сравнить с соседним."""
+    if top <= 0:
+        return ''
+    return BAR * max(1, round(value * BAR_WIDTH / top)) if value else ''
+
+
+def stats_text(data: dict, numbers: dict) -> str:
+    lines = [f'{e("stats")} <b>Статистика билетов</b>',
+             f'{fmt(data["start"], "%d.%m.%Y")} — {fmt(data["end"], "%d.%m.%Y")}', '']
+
+    if not numbers['total']:
+        lines.append('Билетов пока ни одного — считать нечего.')
+        return '\n'.join(lines)
+
+    lines.append(f'{e("cart")} Билетов: <b>{numbers["total"]}</b> '
+                 f'у <b>{numbers["people"]}</b> чел.')
+    lines.append(f'{e("stats")} В среднем <b>{numbers["average"]}</b>, '
+                 f'у половины — <b>{numbers["median"]}</b> и меньше, '
+                 f'больше всех — <b>{numbers["most"]}</b>')
+    lines.append('')
+
+    lines.append('<b>По дням</b>')
+    days = numbers['days'][-DAYS_SHOWN:]
+    top = max(row['tickets'] for row in days)
+    for row in days:
+        lines.append(f'<code>{row["day"]}  {row["tickets"]:>4}</code> '
+                     f'{bar(row["tickets"], top)}'
+                     + (f' <i>+{row["people"]} чел.</i>' if row['people'] else ''))
+    lines.append('')
+
+    lines.append('<b>Сколько у кого</b>')
+    for row in numbers['buckets']:
+        if not row['people']:
+            continue
+        share = round(row['people'] * 100 / numbers['people'])
+        lines.append(f'<code>{row["label"]:<12}</code> {row["people"]} чел. '
+                     f'({share}%)')
+    lines.append('')
+
+    lines.append('<b>Откуда билеты</b>')
+    lines.append(f'За друзей: <b>{numbers["friends"]}</b> '
+                 f'({round(numbers["friends"] * 100 / numbers["total"])}%) — '
+                 f'привели <b>{numbers["inviters"]}</b> чел.')
+    lines.append(f'За свои подписки: <b>{numbers["own"]}</b> '
+                 f'({round(numbers["own"] * 100 / numbers["total"])}%)')
+    lines.append('')
+
+    lines.append(f'{e("money")} Куплено подписок на <b>{rub(data["revenue"])}</b>')
+    lines.append('')
+    lines.append(f'<blockquote>«+N чел.» в строке дня — столько человек '
+                 f'получили свой первый билет в этот день.\n\n'
+                 f'«Привели N человек» — это те, кому засчитан '
+                 f'хотя бы один друг. Остальные участвуют своей подпиской: '
+                 f'их всегда больше, и это нормально.\n\n'
+                 f'Средним лучше не мерить: один человек с сотней билетов '
+                 f'поднимает его всем. Медиана честнее — половина участников '
+                 f'имеет столько билетов или меньше.\n\n'
+                 f'Пофамильно — <code>/raffleusers</code>, каждый билет '
+                 f'строкой — <code>/raffletickets</code>.</blockquote>')
+    return '\n'.join(lines)
+
+
+async def statistics(message: types.Message, command, c, settings) -> None:
+    data = await report(message, command, c, settings)
+    if data is None:
+        return
+    await message.answer(stats_text(data, domain.stats(data['rows'],
+                                                       data['participants'])))
+
+
 # ── жребий ──────────────────────────────────────────────────────────────────
 #
 # Результат приходит только сюда. Участникам бот ничего не пишет: объявить
@@ -498,6 +584,7 @@ async def win(message: types.Message, command, c, settings) -> None:
 
 def register(router: Router) -> None:
     router.message.register(win, Command('rafflewin'))
+    router.message.register(statistics, Command('rafflestats'))
     router.message.register(drawing, Command('raffledraw'))
     router.message.register(users, Command('raffleusers'))
     router.message.register(command, Command('raffle'))

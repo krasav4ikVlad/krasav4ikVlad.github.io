@@ -144,3 +144,64 @@ def draw(tickets: list[dict], count: int, rng=None) -> list[dict]:
         pool = [item for item in pool if item['owner'] != owner]
 
     return winners
+
+
+# ── статистика билетов ──────────────────────────────────────────────────────
+#
+# Сводка отвечает на «сколько всего», статистика — на «как идёт и у кого».
+# Это разные вопросы: акция с тысячей билетов у пятнадцати человек и та же
+# тысяча у четырёхсот — это два разных результата, а сумма у них одна.
+
+BUCKETS = ((1, 1, '1 билет'), (2, 3, '2–3'), (4, 9, '4–9'),
+           (10, 10 ** 9, '10 и больше'))
+
+
+def stats(tickets: list[dict], participants: list[dict]) -> dict:
+    """Распределение билетов: по дням, по людям и по источнику."""
+    total = len(tickets)
+    people = len(participants)
+
+    by_day: dict[str, dict] = {}
+    seen: set[int] = set()
+    for row in sorted(tickets, key=lambda item: item['at']):
+        day = row['at'].strftime('%d.%m')
+        entry = by_day.setdefault(day, {'day': day, 'tickets': 0, 'people': 0})
+        entry['tickets'] += 1
+        if row['owner'] not in seen:
+            seen.add(row['owner'])
+            entry['people'] += 1
+
+    counts = sorted((item['tickets'] for item in participants), reverse=True)
+    buckets = [{'label': label,
+                'people': sum(1 for value in counts if low <= value <= high)}
+               for low, high, label in BUCKETS]
+
+    friends = sum(1 for row in tickets if row['kind'] == FRIEND)
+
+    return {
+        'total': total,
+        'people': people,
+        'average': round(total / people, 1) if people else 0.0,
+        'median': _median(counts),
+        'most': counts[0] if counts else 0,
+        'days': list(by_day.values()),
+        'buckets': buckets,
+        'friends': friends,
+        'own': total - friends,
+        # Сколько человек привёл хотя бы одного друга: главное число акции
+        # «приведи друга» — остальные просто продлились.
+        'inviters': sum(1 for item in participants if item.get('friends')),
+    }
+
+
+def _median(sorted_desc: list[int]) -> int:
+    """Медиана: половина участников имеет столько билетов или меньше.
+
+    Нужна рядом со средним, потому что среднее врёт: один человек с сотней
+    билетов поднимает его всем, и «в среднем четыре» превращается в ответ
+    ни о чём.
+    """
+    if not sorted_desc:
+        return 0
+    middle = len(sorted_desc) // 2
+    return sorted_desc[middle]
