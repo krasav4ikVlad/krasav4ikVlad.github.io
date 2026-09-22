@@ -763,3 +763,68 @@ async def test_the_report_says_how_deep_the_journal_goes(admin_env):
     await dp.feed_update(bot, message('/raffle'))
 
     assert 'Журнал покупок ведётся с' in session.last_text
+
+
+# ── три билета ровно за месяц ───────────────────────────────────────────────
+#
+# Правило объявлено в канале: три билета даёт новый друг, купивший подписку
+# от месяца. Ни неделя, ни пополнение баланса билета не дают, а полгода
+# дают те же три — билеты считаются за человека, а не за срок.
+
+async def tickets_of_owner(repos, user_id: int = 1) -> int:
+    data = await collect(repos)
+    row = next((item for item in data['participants']
+                if item['user_id'] == user_id), None)
+    return row['tickets'] if row else 0
+
+
+async def test_a_friend_with_a_week_gives_nothing(repos, db):
+    journal, users = repos
+    await person(users, 1)
+    await person(users, 20, referrer=1)
+    await journal.col.insert_one({
+        'user_id': 20, 'amount': -75, 'kind': 'plan',
+        'at': START.replace(day=5), 'meta': {'days': 7},
+        'description': 'Покупка подписки «неделя»'})
+
+    assert await tickets_of_owner(repos) == 0
+
+
+async def test_a_friend_with_exactly_one_month_gives_three(repos, db):
+    journal, users = repos
+    await person(users, 1)
+    await person(users, 20, referrer=1)
+    await bought(journal, 20, months=1)
+
+    assert await tickets_of_owner(repos) == 3
+
+
+async def test_a_friend_with_half_a_year_gives_the_same_three(repos, db):
+    """Билеты за друга — за человека, а не за срок: иначе один друг с
+    годовой подпиской перевесил бы четверых приведённых."""
+    journal, users = repos
+    await person(users, 1)
+    await person(users, 20, referrer=1)
+    await bought(journal, 20, months=6)
+
+    assert await tickets_of_owner(repos) == 3
+
+
+async def test_two_new_friends_give_six(repos, db):
+    journal, users = repos
+    await person(users, 1)
+    for friend_id in (20, 21):
+        await person(users, friend_id, referrer=1)
+        await bought(journal, friend_id, months=1)
+
+    assert await tickets_of_owner(repos) == 6
+
+
+async def test_a_friend_who_only_topped_up_gives_nothing(repos, db):
+    """Деньги на балансе — ещё не подписка."""
+    journal, users = repos
+    await person(users, 1)
+    await person(users, 20, referrer=1)
+    await topped_up(journal, 20, amount=5000)
+
+    assert await tickets_of_owner(repos) == 0
