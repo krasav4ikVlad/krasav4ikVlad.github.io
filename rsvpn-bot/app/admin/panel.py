@@ -14,6 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.admin import broadcast
+from app.admin import channel as admin_channel
 from app.admin import commands as admin_commands
 from app.admin import money as admin_money
 from app.admin import partner_bots as admin_partner_bots
@@ -69,6 +70,7 @@ def main_kb(c) -> InlineKeyboardBuilder:
         kb.row(btn(entity.title, 'elist', entity.code))
     kb.row(btn(f'{e("private")} Серверы: очередь и запас', 'srvq'))
     kb.row(btn(f'{e("broadcast")} Рассылка', 'broadcast'))
+    kb.row(btn(f'{e("channel")} Пост в канал', 'post'))
     kb.row(btn(f'{e("trial")} Сброс бесплатного периода', 'trial'))
     kb.row(btn(f'{e("cross")} Заблокировали бота', 'blocked'))
     kb.row(btn(f'{e("money")} Экономика: деньги за месяц', 'money'))
@@ -452,6 +454,7 @@ def create_router(admin_ids) -> Router:
 
     # разделы в своих файлах: панель не должна расти на каждую новую функцию
     broadcast.register(router)
+    admin_channel.register(router)
     admin_payouts.register(router)
     admin_moderation.register(router)
     admin_trial.register(router)

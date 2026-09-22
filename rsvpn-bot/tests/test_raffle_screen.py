@@ -163,6 +163,44 @@ async def test_the_button_stays_for_a_few_days_after_the_end(settings):
     assert await screen.running(settings) is True
 
 
+# ── почему кнопки не видно ──────────────────────────────────────────────────
+#
+# Пустая дата выглядит снаружи как сломанная кнопка: в профиле её нет, и
+# сказать об этом некому. Сводка должна отвечать на этот вопрос сама.
+
+def test_the_summary_says_the_button_is_hidden_without_dates():
+    from app.admin.raffle import button_note
+
+    assert 'даты акции не заданы' in button_note(None, None)
+
+
+def test_the_summary_says_when_the_button_will_appear():
+    from app.admin.raffle import button_note
+
+    later = now() + timedelta(days=5)
+    assert 'появится' in button_note(later, later + timedelta(days=7))
+
+
+def test_the_summary_confirms_the_button_is_visible():
+    from app.admin.raffle import button_note
+
+    assert 'видна всем' in button_note(START, END)
+
+
+def test_the_summary_says_the_button_is_gone_after_the_contest():
+    from app.admin.raffle import button_note
+
+    old = now() - timedelta(days=30)
+    assert 'убрана' in button_note(old - timedelta(days=7), old)
+
+
+def test_the_hint_about_dates_is_in_the_refusal():
+    """Ответ «не вижу даты» без адреса, куда их вписать, — половина ответа."""
+    from app.admin.raffle import NO_DATES
+
+    assert 'Розыгрыш' in NO_DATES and '22.09.2026' in NO_DATES
+
+
 # ── разбор списка победителей ───────────────────────────────────────────────
 def test_money_and_days_are_told_apart():
     winners, broken = prizes.parse_list('802421217 5000\n802421218 30д')

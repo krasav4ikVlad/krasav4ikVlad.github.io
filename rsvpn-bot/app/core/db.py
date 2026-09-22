@@ -33,6 +33,8 @@ MIGRATIONS = 'migrations'
 JOB_RUNS = 'job_runs'
 # состояние ручных рассылок: см. app/admin/broadcast.py
 BROADCASTS = 'broadcasts'
+# посты, опубликованные в канал от имени бота: см. app/services/channel.py
+CHANNEL_POSTS = 'channel_posts'
 # личные серверы: см. app/services/private_servers.py
 PRIVATE_SERVERS = 'private_servers'
 # заранее поднятые машины, ждущие заявки

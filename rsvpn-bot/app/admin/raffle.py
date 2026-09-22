@@ -20,6 +20,7 @@ from aiogram.filters import Command
 
 from app.content.emoji import e
 from app.core.time import fmt
+from app.core.time import now as time_now
 from app.domain import raffle as domain
 from app.services import raffle
 from app.services import raffle_prizes as prizes
@@ -41,6 +42,37 @@ USAGE = (
 COLUMNS = ('билет', 'дата', 'время', 'участник_id', 'участник_username',
            'за_что', 'подробности', 'друг_id')
 
+NO_DATES = (
+    f'{e("cross")} <b>Не вижу даты акции</b>\n\n'
+    f'Поэтому и кнопки «Розыгрыш» в профиле ни у кого нет: она появляется '
+    f'только пока акция идёт, а «идёт» считается по этим двум датам.\n\n'
+    f'Задайте их в /admin → Розыгрыш: «Начало акции» и «Конец акции», '
+    f'в виде <code>22.09.2026</code>.\n\n'
+)
+
+
+def button_note(start, end, moment=None) -> str:
+    """Видит ли человек кнопку «Розыгрыш» в профиле — и если нет, то почему.
+
+    Кнопка показывается по датам и больше ни по чему, но снаружи этого не
+    видно: пустая дата выглядит как сломанная кнопка. Один вопрос — один
+    ответ, прямо в сводке.
+    """
+    from app.bot.handlers.raffle import AFTER_DAYS, _after
+
+    moment = moment or time_now()
+    if not start or not end:
+        return (f'{e("cross")} Кнопки в профиле нет: даты акции не заданы '
+                f'(/admin → Розыгрыш)')
+    if moment < start:
+        return (f'{e("calendar")} Кнопка появится {fmt(start, "%d.%m.%Y")} '
+                f'в 00:00')
+    if moment <= end + _after():
+        return (f'{e("ok")} Кнопка видна всем — и ещё {AFTER_DAYS} дня после '
+                f'конца акции')
+    return (f'{e("cross")} Кнопка убрана: акция кончилась '
+            f'{fmt(end, "%d.%m.%Y")}')
+
 
 async def period(command, settings) -> tuple:
     """Период акции: из аргументов команды, иначе из настроек."""
@@ -54,8 +86,7 @@ async def period(command, settings) -> tuple:
 async def report(message: types.Message, command, c, settings) -> dict | None:
     start, end = await period(command, settings)
     if not start or not end:
-        await message.answer(
-            f'{e("cross")} Не вижу даты акции.\n\n' + USAGE)
+        await message.answer(NO_DATES + USAGE)
         return None
     if end < start:
         await message.answer(f'{e("cross")} Конец акции раньше начала.')
@@ -81,7 +112,8 @@ def reached(data: dict, tickets: int) -> list[dict]:
 
 def summary(data: dict, bonus_tickets: int = 0, bonus_days: int = 0) -> str:
     lines = [f'{e("gift")} <b>Розыгрыш</b>',
-             f'{fmt(data["start"], "%d.%m.%Y")} — {fmt(data["end"], "%d.%m.%Y")}', '']
+             f'{fmt(data["start"], "%d.%m.%Y")} — {fmt(data["end"], "%d.%m.%Y")}',
+             button_note(data['start'], data['end']), '']
 
     if not data['tickets']:
         lines.append('Билетов пока ни одного.')
