@@ -925,3 +925,82 @@ async def test_the_report_names_who_is_excluded(admin_env):
     await dp.feed_update(bot, message('/raffle'))
 
     assert '7996131040' in session.last_text
+
+
+# ── кто выиграл по номеру ───────────────────────────────────────────────────
+#
+# Числа тянет генератор на видео, а не бот: зритель видит и опубликованный
+# список билетов, и сам бросок. Боту остаётся ответить, чей это номер, и не
+# дать одному человеку забрать два приза.
+
+def test_numbers_are_read_in_any_form():
+    assert domain.parse_numbers('1423, 77\n2890') == [1423, 77, 2890]
+    assert domain.parse_numbers('1 два 3') == [1, 3]
+    assert domain.parse_numbers('') == []
+
+
+def test_the_order_of_numbers_is_kept():
+    """Первый номер — первый приз, и путать их нельзя."""
+    assert domain.parse_numbers('9 1 5') == [9, 1, 5]
+
+
+def ticket_row(number: int, owner: int) -> dict:
+    return {'ticket': number, 'owner': owner, 'owner_username': f'u{owner}',
+            'kind': domain.SELF, 'detail': '', 'at': START}
+
+
+def test_a_ticket_finds_its_owner():
+    found = domain.lookup([ticket_row(1, 10), ticket_row(2, 20)], [2])
+
+    assert found[0]['row']['owner'] == 20 and found[0]['place'] == 1
+
+
+def test_a_number_that_does_not_exist_is_reported():
+    """Молча пропустить номер нельзя: на видео его уже назвали."""
+    found = domain.lookup([ticket_row(1, 10)], [99])
+
+    assert found[0]['row'] is None and found[0]['ticket'] == 99
+
+
+def test_a_second_win_by_the_same_person_is_flagged():
+    """Один приз в одни руки — о повторе нужно сказать сразу, чтобы
+    вытянуть замену, не сходя с записи."""
+    rows = [ticket_row(1, 10), ticket_row(2, 10), ticket_row(3, 20)]
+
+    found = domain.lookup(rows, [1, 3, 2])
+
+    assert [item['repeat'] for item in found] == [0, 0, 1]
+
+
+def test_too_many_numbers_are_cut():
+    assert len(domain.parse_numbers(' '.join(str(n) for n in range(1, 300)))) \
+        == domain.MAX_LOOKUP
+
+
+async def test_the_command_tells_the_range_without_arguments(admin_env):
+    """Верхняя граница для генератора — это и есть число билетов."""
+    dp, bot, session, container = admin_env
+    await setup_draw(container, people=3)
+
+    await dp.feed_update(bot, message('/rafflewho'))
+
+    assert 'Билетов сейчас' in session.last_text
+    assert 'от 1 до 3' in session.last_text
+
+
+async def test_the_command_names_the_owner(admin_env):
+    dp, bot, session, container = admin_env
+    await setup_draw(container, people=3)
+
+    await dp.feed_update(bot, message('/rafflewho 1 2'))
+
+    assert '№1' in session.last_text and '№2' in session.last_text
+
+
+async def test_the_command_says_when_the_number_is_out_of_range(admin_env):
+    dp, bot, session, container = admin_env
+    await setup_draw(container, people=2)
+
+    await dp.feed_update(bot, message('/rafflewho 999'))
+
+    assert 'такого билета нет' in session.last_text

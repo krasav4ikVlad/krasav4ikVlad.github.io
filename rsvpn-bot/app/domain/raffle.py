@@ -251,3 +251,46 @@ def _median(sorted_desc: list[int]) -> int:
         return 0
     middle = len(sorted_desc) // 2
     return sorted_desc[middle]
+
+
+# ── кто выиграл по номеру ───────────────────────────────────────────────────
+#
+# Числа тянутся не ботом, а генератором на видео — и это лучший способ из
+# возможных: зритель видит и список билетов, и бросок. Боту остаётся
+# ответить, чей это номер, и не дать одному человеку забрать два приза.
+
+MAX_LOOKUP = 100
+
+
+def parse_numbers(text) -> list[int]:
+    """Номера билетов из сообщения: через пробел, запятую или с новой строки.
+
+    Порядок сохраняется: первый номер — первый приз, и путать их нельзя.
+    Повторы не выбрасываются — о них нужно сказать вслух.
+    """
+    raw = str(text or '').replace(',', ' ').replace('\n', ' ').split()
+    return [int(part) for part in raw if part.isdigit()][:MAX_LOOKUP]
+
+
+def lookup(tickets: list[dict], numbers: list[int]) -> list[dict]:
+    """Чей это билет. Возвращает строку на каждый номер, по порядку.
+
+    Второй номер того же человека помечается: один приз в одни руки — это
+    то, о чём договариваются до розыгрыша, а не после. Тянуть взамен ещё
+    одно число проще всего сразу, на том же видео.
+    """
+    by_number = {int(row['ticket']): row for row in tickets}
+    seen: dict[int, int] = {}
+    found: list[dict] = []
+
+    for place, number in enumerate(numbers, start=1):
+        row = by_number.get(number)
+        if row is None:
+            found.append({'place': place, 'ticket': number, 'row': None,
+                          'repeat': 0})
+            continue
+        owner = row['owner']
+        found.append({'place': place, 'ticket': number, 'row': row,
+                      'repeat': seen.get(owner, 0)})
+        seen.setdefault(owner, number)
+    return found

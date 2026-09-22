@@ -7,8 +7,10 @@
   * `/raffleusers` — все участники таблицей: id, сколько билетов и откуда;
   * `/raffletickets` — все билеты таблицей, по строке на билет. Этот файл
     публикуется в канале **до** жребия;
-  * `/raffledraw` — жребий: кому какой приз. Результат приходит только
-    сюда, участникам бот ничего не пишет;
+  * `/rafflewho` — чьи это номера: числа тянет генератор на видео, бот
+    только отвечает, кому билет принадлежит;
+  * `/raffledraw` — жребий силами бота, если тянуть самому не хочется.
+    Результат приходит только сюда, участникам бот ничего не пишет;
   * `/rafflewin` — начислить деньги и дни победителям.
 
 Порядок «сначала публикуем билеты, потом тащим» здесь не формальность:
@@ -45,6 +47,7 @@ USAGE = (
     f'<code>/rafflestats</code> — статистика билетов: по дням и по людям\n'
     f'<code>/raffleusers</code> — все участники таблицей\n'
     f'<code>/raffletickets</code> — все билеты, по строке на билет\n'
+    f'<code>/rafflewho 1423 77</code> — чьи это билеты\n'
     f'<code>/raffledraw</code> — жребий: кому какой приз\n'
     f'<code>/rafflebonus</code> — кому причитается подарок за порог билетов\n'
     f'<code>/raffle 01.10.2026 22.10.2026</code> — за другой период\n\n'
@@ -448,6 +451,69 @@ async def statistics(message: types.Message, command, c, settings) -> None:
                                                        data['participants'])))
 
 
+# ── кто выиграл по номеру ───────────────────────────────────────────────────
+#
+# Числа тянет генератор на видео, а не бот: зритель видит и опубликованный
+# список билетов, и сам бросок — проверить можно всё. Боту остаётся
+# ответить, чей это номер.
+
+WHO_USAGE = (
+    f'{e("gift")} <b>Кто выиграл</b>\n\n'
+    f'Пришлите номера билетов — через пробел, запятую или строками:\n'
+    f'<code>/rafflewho 1423 77 2890</code>\n\n'
+    f'<blockquote>Порядок сохраняется: первый номер — первый приз. '
+    f'Если номер достался тому, кто уже выиграл, бот скажет об этом — '
+    f'тяните взамен ещё одно число, не сходя с записи.\n\n'
+    f'Сам список билетов — <code>/raffletickets</code>. Выложите его в '
+    f'канал до броска: список, который нельзя поменять после публикации, '
+    f'и делает случайный выбор проверяемым.</blockquote>'
+)
+
+
+def who_text(data: dict, found: list[dict]) -> str:
+    total = data['tickets']
+    lines = [f'{e("gift")} <b>Кто выиграл</b>',
+             f'Билетов всего: <b>{total}</b>', '']
+
+    for item in found:
+        row = item['row']
+        if row is None:
+            lines.append(f'<b>{item["place"]}.</b> №{item["ticket"]} — '
+                         f'{e("cross")} такого билета нет (всего {total})')
+            continue
+        who = f' @{row["owner_username"]}' if row['owner_username'] else ''
+        lines.append(f'<b>{item["place"]}.</b> №{item["ticket"]} — '
+                     f'<code>{row["owner"]}</code>{who}')
+        lines.append(f'      <i>{row["kind"]}, {row["detail"]}, '
+                     f'{fmt(row["at"], "%d.%m %H:%M")}</i>')
+        if item['repeat']:
+            lines.append(f'      {e("warning")} <b>Это тот же человек, что '
+                         f'и №{item["repeat"]}</b> — тяните ещё одно число')
+
+    lines.append('')
+    lines.append(f'<blockquote>Начислить деньги и дни: '
+                 f'<code>/rafflewin id сумма</code> или '
+                 f'<code>/rafflewin id 30д</code>, по строке на человека. '
+                 f'Писем победителям бот не шлёт.</blockquote>')
+    return '\n'.join(lines)
+
+
+async def who(message: types.Message, command, c, settings) -> None:
+    """`/rafflewho 1423 77` — чьи это билеты."""
+    numbers = domain.parse_numbers(command.args or '')
+    data = await report(message, _no_args(command), c, settings)
+    if data is None:
+        return
+
+    if not numbers:
+        await message.answer(
+            f'{e("cart")} Билетов сейчас <b>{data["tickets"]}</b> — '
+            f'генерируйте числа от 1 до {data["tickets"]}.\n\n' + WHO_USAGE)
+        return
+
+    await message.answer(who_text(data, domain.lookup(data['rows'], numbers)))
+
+
 # ── жребий ──────────────────────────────────────────────────────────────────
 #
 # Результат приходит только сюда. Участникам бот ничего не пишет: объявить
@@ -614,6 +680,7 @@ async def win(message: types.Message, command, c, settings) -> None:
 def register(router: Router) -> None:
     router.message.register(win, Command('rafflewin'))
     router.message.register(statistics, Command('rafflestats'))
+    router.message.register(who, Command('rafflewho'))
     router.message.register(drawing, Command('raffledraw'))
     router.message.register(users, Command('raffleusers'))
     router.message.register(command, Command('raffle'))
