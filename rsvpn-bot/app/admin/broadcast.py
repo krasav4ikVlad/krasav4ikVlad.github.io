@@ -35,7 +35,7 @@ from datetime import timedelta
 
 from app.core.time import now
 from app.domain.segments import AUDIENCES, SEGMENTS, audience_query
-from app.content.emoji import e
+from app.content.emoji import e, plain
 
 log = logging.getLogger(__name__)
 
@@ -153,7 +153,11 @@ async def preview(message: types.Message, state: FSMContext, c, settings) -> Non
     from app.bot.keyboards.common import broadcast_keyboard
 
     try:
-        await message.answer(text, reply_markup=await broadcast_keyboard(c.settings))
+        # Письмо показывается так, как его увидят люди, — со своими
+        # значками. Админка ходит на обычных (PlainEmojiMiddleware), и без
+        # этой строки предпросмотр показывал бы не то письмо.
+        with plain(False):
+            await message.answer(text, reply_markup=await broadcast_keyboard(c.settings))
     except Exception as exc:
         await message.answer(f'{e("warning")} Разметка сломана, Telegram отказался её принять:\n'
                              f'<code>{exc}</code>\n\nПоправьте и пришлите заново.')
@@ -388,6 +392,9 @@ async def _run(c, bot, job_id: str) -> None:
         Зависший HTTP-запрос без таймаута останавливает рассылку навсегда:
         задача жива, исключения нет, счётчик стоит. Снаружи это неотличимо
         от обрыва — и именно так рассылка «пропадала».
+
+        Значки в письме свои: об этом заботится Sender.send — фоновая
+        задача уносит с собой контекст админки, где они обычные.
         """
         try:
             return await asyncio.wait_for(sender.send(bot, user_id, text, markup),

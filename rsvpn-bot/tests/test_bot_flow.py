@@ -628,6 +628,54 @@ async def test_broadcast_asks_audience_then_text_then_confirms(env):
     assert 'Так увидят получатели' in session.last_text
 
 
+# Админка ходит на обычных значках нарочно (PlainEmojiMiddleware): кастомный
+# эмодзи Telegram может отклонить, и тогда тумблер стало бы нечем выключить.
+# Но письмо уходит не в админку, а людям — и раньше оно наследовало режим
+# админки вместе с контекстом фоновой задачи.
+
+async def test_the_preview_shows_the_letter_with_our_own_emoji(env):
+    from app.bot.callbacks import Admin as Adm
+    from app.bot.middlewares.emoji import emoji_middleware
+
+    dp, bot, session, c = env
+    bot.session.middleware(emoji_middleware)        # как в factory.create_bot
+    await dp.feed_update(bot, message('/start'))
+    await dp.feed_update(bot, callback(Adm(act='bcseg', a='all').pack()))
+
+    session.calls.clear()
+    await dp.feed_update(bot, message('Держите 🎁 подарок'))
+
+    letter = next(text for name, text in session.calls
+                  if name == 'SendMessage' and 'подарок' in text)
+    assert 'tg-emoji' in letter
+
+
+async def test_the_broadcast_goes_out_with_our_own_emoji(env):
+    """Рассылку запускают из админки, а она ходит на обычных значках, и
+    фоновая задача уносит её режим с собой. Sender это разворачивает
+    обратно — проверка стоит здесь, чтобы разворот не потерялся."""
+    from app.admin import broadcast as bc
+    from app.bot.callbacks import Admin as Adm
+    from app.bot.middlewares.emoji import emoji_middleware
+
+    dp, bot, session, c = env
+    bot.session.middleware(emoji_middleware)        # как в factory.create_bot
+    await dp.feed_update(bot, message('/start'))
+    await c.settings.set('campaign.broadcast_delay_ms', 0)
+    await c.users.create({'user_data': {'user_id': 700},
+                          'growth': {'segment': 'expired_3d'}})
+
+    await dp.feed_update(bot, callback(Adm(act='bcseg', a='all').pack()))
+    await dp.feed_update(bot, message('Держите 🎁 подарок'))
+    session.calls.clear()
+    await dp.feed_update(bot, callback(Adm(act='bcgo').pack()))
+    await asyncio.gather(*list(bc._running.values()))
+
+    letters = [text for name, text in session.calls
+               if name == 'SendMessage' and 'подарок' in text]
+    assert letters and all('tg-emoji' in text for text in letters)
+
+
 async def test_broadcast_refuses_an_empty_message(env):
     from app.bot.callbacks import Admin as Adm
 

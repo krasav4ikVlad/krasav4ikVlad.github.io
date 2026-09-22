@@ -434,3 +434,38 @@ async def test_the_markup_still_reaches_the_channel(env):
     await dp.feed_update(bot, callback(Adm(act='postgo').pack()))
 
     assert 'tg-emoji' in session.to('@rsconnect_vpn')[0]['text']
+
+
+# ── значки ──────────────────────────────────────────────────────────────────
+#
+# Админка ходит на обычных эмодзи нарочно (PlainEmojiMiddleware): кастомный
+# значок Telegram может отклонить, и тогда тумблер стало бы нечем выключить.
+# Но пост уходит не в админку, а людям — и в нём значки должны быть те же,
+# что во всём остальном боте.
+
+async def test_the_post_goes_out_with_our_own_emoji(env):
+    dp, bot, session, c = env
+    await write_post(dp, bot, session, 'Сегодня 🎁 розыгрыш')
+
+    await dp.feed_update(bot, callback(Adm(act='postgo').pack()))
+
+    assert 'tg-emoji' in session.to('@rsconnect_vpn')[0]['text']
+
+
+async def test_the_preview_shows_the_same_emoji_as_the_post(env):
+    """Предпросмотр на обычных значках показывал бы не тот пост."""
+    dp, bot, session, c = env
+    await write_post(dp, bot, session, 'Сегодня 🎁 розыгрыш')
+
+    mine = [row for row in session.to(CHAT.id) if 'розыгрыш' in row['text']]
+    assert mine and 'tg-emoji' in mine[0]['text']
+
+
+async def test_the_admin_screens_stay_on_plain_emoji(env):
+    """Аварийный выход: если кастомный значок Telegram отклонит, админка
+    должна остаться рабочей."""
+    dp, bot, session, c = env
+
+    await dp.feed_update(bot, message('/post'))
+
+    assert 'tg-emoji' not in session.to(CHAT.id)[-1]['text']

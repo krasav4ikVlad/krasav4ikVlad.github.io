@@ -25,7 +25,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Admin as Adm
-from app.content.emoji import e
+from app.content.emoji import e, plain
 from app.core.time import fmt
 from app.services import channel as service
 
@@ -102,21 +102,21 @@ async def got_body(message: types.Message, state: FSMContext, c, settings) -> No
 
     # Текст храним дважды: с разметкой — для отправки, без неё — для счёта
     # длины. Telegram считает предел по тексту, а не по тегам.
-    plain = message.text or message.caption or ''
+    raw = message.text or message.caption or ''
 
     if message.photo:
         photos = list(data.get('photos') or []) if same_album else []
         photos.append(message.photo[-1].file_id)
         # Подпись у альбома одна на всех, и приходит она не обязательно
         # с первой картинкой.
-        keep = same_album and not plain
+        keep = same_album and not raw
         text = (data.get('text') or '') if keep else (message.html_text or '')
-        plain = (data.get('plain') or '') if keep else plain
+        raw = (data.get('plain') or '') if keep else raw
     else:
         photos = []
         text = message.html_text or ''
 
-    await state.update_data(text=text, plain=plain, photos=photos, group=group,
+    await state.update_data(text=text, plain=raw, photos=photos, group=group,
                             album=bool(data.get('album')) and len(photos) > 1)
 
     if group:
@@ -205,14 +205,17 @@ async def show_preview(message: types.Message, state: FSMContext, c, settings) -
     markup = await post_markup(c, settings, data)
 
     try:
-        if album:
-            await message.answer_media_group(_media(photos, data['text']))
-        elif photos:
-            await message.answer_photo(photos[0], caption=data['text'],
-                                       reply_markup=markup)
-        else:
-            await message.answer(data['text'], reply_markup=markup,
-                                 disable_web_page_preview=False)
+        # Со своими значками: админка ходит на обычных, и предпросмотр без
+        # этой строки показывал бы не тот пост, что уйдёт в канал.
+        with plain(False):
+            if album:
+                await message.answer_media_group(_media(photos, data['text']))
+            elif photos:
+                await message.answer_photo(photos[0], caption=data['text'],
+                                           reply_markup=markup)
+            else:
+                await message.answer(data['text'], reply_markup=markup,
+                                     disable_web_page_preview=False)
     except Exception as exc:
         await message.answer(
             f'{e("warning")} Telegram не принял это сообщение:\n<code>{exc}</code>\n\n'
@@ -296,16 +299,19 @@ async def publish(call: types.CallbackQuery, state: FSMContext, c, settings) -> 
     markup = await post_markup(c, settings, data)
     await call.answer('Публикую')
     try:
-        if album:
-            posted = await call.bot.send_media_group(
-                target, _media(photos, data['text']))
-            sent = posted[0]
-        elif photos:
-            sent = await call.bot.send_photo(target, photos[0],
-                                             caption=data['text'], reply_markup=markup)
-        else:
-            sent = await call.bot.send_message(target, data['text'],
-                                               reply_markup=markup)
+        # Пост уходит людям, а не в админку: значки — наши.
+        with plain(False):
+            if album:
+                posted = await call.bot.send_media_group(
+                    target, _media(photos, data['text']))
+                sent = posted[0]
+            elif photos:
+                sent = await call.bot.send_photo(target, photos[0],
+                                                 caption=data['text'],
+                                                 reply_markup=markup)
+            else:
+                sent = await call.bot.send_message(target, data['text'],
+                                                   reply_markup=markup)
     except Exception as exc:
         log.error('пост в канал %s не ушёл: %r', target, exc)
         await call.message.answer(
