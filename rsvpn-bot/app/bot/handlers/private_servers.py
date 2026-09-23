@@ -373,10 +373,11 @@ async def server_screen(event, c, user: dict, settings, server: dict,
         lines.append(f'<b>{e("calendar")} Оплачен до:</b> <code>{fmt(paid_until)}</code>')
     charging = await c.private.autocharge()
     if owner and not charging:
-        # Списание выключено нами. Обещать человеку дату списания, которого
-        # не будет, нельзя — и пугать его ею тоже.
-        lines.append(f'<b>{e("money")} Списание:</b> <b>приостановлено</b> — '
-                     f'сейчас сервер ничего не стоит')
+        # Списание выключено нами: сервер доработает оплаченное и закроется.
+        # Обещать человеку дату списания, которого не будет, нельзя — но и
+        # молчать о закрытии нельзя тем более.
+        lines.append(f'<b>{e("money")} Списание:</b> <b>больше не берём</b> — '
+                     f'сервер работает до {fmt(paid_until)} и закроется')
     elif owner:
         renews = server.get('autorenew', True)
         lines.append(f'<b>{e("money")} Списание:</b> <code>{server.get("price")}₽</code> '
@@ -407,6 +408,10 @@ async def server_screen(event, c, user: dict, settings, server: dict,
 
     hint = ('Сервер готовится. Как только он будет поднят, придёт сообщение.'
             if server.get('status') == ps.REQUESTED else
+            'Продление личных серверов закрыто: денег мы больше не списываем, '
+            'а оплаченный срок дорабатывается полностью. После него сервер '
+            'закроется — доступ к общим серверам RS VPN при этом остаётся.'
+            if owner and not charging else
             'Продление выключено: сервер доработает оплаченный месяц и '
             'закроется. Передумаете — включите обратно.'
             if owner and not server.get('autorenew', True) else

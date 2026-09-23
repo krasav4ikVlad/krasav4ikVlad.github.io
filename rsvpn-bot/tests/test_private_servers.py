@@ -1858,8 +1858,25 @@ async def test_nothing_is_charged_when_autocharge_is_off(service):
     assert (await users.get(1))['info']['balance'] == before
 
 
-async def test_nobody_is_suspended_when_autocharge_is_off(service):
-    """Без денег сервер приостанавливается — но денег мы и не просили."""
+async def test_the_server_is_closed_when_the_paid_period_ends(service):
+    """Денег не берём — значит и держать сервер не обязаны: оплаченный срок
+    дорабатывается, и сервер закрывается."""
+    srv, vpn, users = service
+    server = await live_server(service)
+    await srv.settings.set('private.autocharge', False)
+    await srv.servers.set(server['_id'], next_charge_at=now() - timedelta(minutes=1))
+
+    report = await srv.charge_due()
+
+    assert report['closed'] == 1 and report['suspended'] == 0
+    fresh = await srv.servers.get(server['_id'])
+    assert fresh['status'] == ps.CANCELLED
+    assert SQUAD not in vpn.state['u-1']['squads']
+
+
+async def test_nobody_is_suspended_for_an_unpaid_bill_nobody_sent(service):
+    """Приостановка — это «денег нет». Мы их и не просили, поэтому сервер
+    закрывается, а не повисает приостановленным."""
     srv, _, users = service
     server = await live_server(service)
     await srv.settings.set('private.autocharge', False)
@@ -1869,10 +1886,25 @@ async def test_nobody_is_suspended_when_autocharge_is_off(service):
 
     await srv.charge_due()
 
+    assert (await srv.servers.get(server['_id']))['status'] == ps.CANCELLED
+
+
+async def test_a_server_with_time_left_is_not_touched(service):
+    """Оплаченный месяц принадлежит человеку целиком."""
+    srv, _, users = service
+    server = await live_server(service)
+    await srv.settings.set('private.autocharge', False)
+    await srv.servers.set(server['_id'], next_charge_at=now() + timedelta(days=10))
+
+    report = await srv.charge_due()
+
+    assert report['closed'] == 0
     assert (await srv.servers.get(server['_id']))['status'] == ps.ACTIVE
 
 
-async def test_an_overdue_server_is_not_closed_when_autocharge_is_off(service):
+async def test_a_server_suspended_earlier_is_closed_too(service):
+    """Пополнять баланс больше незачем, и висеть в «приостановлен» такому
+    серверу нечего ждать."""
     srv, _, users = service
     server = await live_server(service)
     await srv.settings.set('private.autocharge', False)
@@ -1881,30 +1913,49 @@ async def test_an_overdue_server_is_not_closed_when_autocharge_is_off(service):
 
     report = await srv.charge_due()
 
-    assert report['closed'] == 0
-    assert (await srv.servers.get(server['_id']))['status'] == ps.SUSPENDED
+    assert report['closed'] == 1
+    assert (await srv.servers.get(server['_id']))['status'] == ps.CANCELLED
 
 
-async def test_no_warning_about_a_charge_that_will_not_happen(service):
-    """Обещать списание и не списать хуже, чем промолчать."""
+async def test_a_recently_suspended_server_keeps_its_grace(service):
+    """Отсрочку человеку обещали — её дорабатывают до конца."""
     srv, _, users = service
+    server = await live_server(service)
+    await srv.settings.set('private.autocharge', False)
+    await srv.servers.set(server['_id'], status=ps.SUSPENDED,
+                          suspended_at=now() - timedelta(hours=1))
+
+    assert (await srv.charge_due())['closed'] == 0
+
+
+async def test_the_owner_is_warned_about_closing_not_about_a_charge(service):
+    """Обещать списание, которого не будет, нельзя. Молчать о закрытии —
+    тем более: человек узнал бы о нём по пропавшему доступу."""
+    srv, _, users = service
+    sent = []
+
+    async def remember(user_id, text):
+        sent.append(text)
+
+    srv._tell = remember
     server = await live_server(service)
     await srv.settings.set('private.autocharge', False)
     await srv.servers.set(
         server['_id'],
         next_charge_at=now() + timedelta(days=ps.WARN_DAYS - 1))
 
-    assert (await srv.charge_due())['warned'] == 0
+    assert (await srv.charge_due())['warned'] == 1
+    assert 'закроется' in sent[0] and '1500₽' not in sent[0]
 
 
 async def test_charging_works_again_when_switched_back_on(service):
     srv, _, users = service
-    server = await live_server(service)
     await srv.settings.set('private.autocharge', False)
-    await srv.servers.set(server['_id'], next_charge_at=now() - timedelta(minutes=1))
     await srv.charge_due()
 
     await srv.settings.set('private.autocharge', True)
+    server = await live_server(service)
+    await srv.servers.set(server['_id'], next_charge_at=now() - timedelta(minutes=1))
     report = await srv.charge_due()
 
-    assert report['charged'] == 1
+    assert report['charged'] == 1 and report['closed'] == 0

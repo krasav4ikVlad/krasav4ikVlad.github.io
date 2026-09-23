@@ -1120,8 +1120,14 @@ class PrivateServerService:
         await self.servers.set(server_id, autorenew=bool(on))
         return Result(True, server=await self.servers.get(server_id))
 
-    async def warn_upcoming(self) -> int:
-        """Предупредить владельцев о ближайшем списании. Возвращает сколько."""
+    async def warn_upcoming(self, charging: bool = True) -> int:
+        """Предупредить владельцев о том, что будет через три дня.
+
+        Что именно будет — зависит от того, берём ли мы деньги. Если
+        списание приостановлено, «спишется 1500₽» было бы неправдой, а
+        молчать нельзя тем более: сервер закроется, и человек должен узнать
+        об этом заранее, а не по факту пропавшего доступа.
+        """
         border = now() + timedelta(days=ps.WARN_DAYS)
         sent = 0
         for server in await self.servers.soon_due(border):
@@ -1130,6 +1136,18 @@ class PrivateServerService:
             price = int(server.get('price') or 0)
 
             await self.servers.set(server['_id'], charge_warned_at=now())
+            if not charging:
+                await self._tell(
+                    server['owner_id'],
+                    f'{e("calendar")} Через {ps.WARN_DAYS} дня сервер '
+                    f'«{server.get("title")}» закроется: оплаченный срок '
+                    f'заканчивается, а продления больше нет.\n\n'
+                    f'Денег мы больше не списываем. Доступ к общим серверам '
+                    f'RS VPN остаётся — он к личному серверу отношения не '
+                    f'имеет.')
+                sent += 1
+                continue
+
             await self._tell(
                 server['owner_id'],
                 f'{e("calendar")} Через {ps.WARN_DAYS} дня спишется '
@@ -1150,15 +1168,25 @@ class PrivateServerService:
         report = {'checked': 0, 'charged': 0, 'amount': 0, 'suspended': 0,
                   'closed': 0, 'warned': 0, 'off': False}
 
-        # Выключенное списание не означает «закрыть всем серверы»: у
-        # владельца это отдельное решение, и оно закрывает сервер по
-        # окончании оплаченного. Здесь мы просто ничего не делаем — ни
-        # денег, ни приостановок, ни закрытий по сроку.
-        if not await self.autocharge():
-            report['off'] = True
-            return report
+        # Списание приостановлено: денег не берём, но и держать сервер
+        # вечно не обязаны. Оплаченный месяц дорабатывается и сервер
+        # закрывается — так же, как если бы владелец сам отказался от
+        # продления. Приостанавливать за неуплату при этом нечего: мы
+        # ничего и не просили.
+        charging = await self.autocharge()
+        report['off'] = not charging
+        report['warned'] = await self.warn_upcoming(charging)
 
-        report['warned'] = await self.warn_upcoming()
+        if not charging:
+            for server in await self.servers.due():
+                report['checked'] += 1
+                await self.close(server, reason=ps.NO_RENEWAL)
+                report['closed'] += 1
+            # Приостановленные раньше — тоже закрываем по их отсрочке:
+            # пополнять баланс больше незачем, и висеть в «приостановлен»
+            # такому серверу теперь нечего ждать.
+            report['closed'] += await self._close_overdue()
+            return report
 
         for server in await self.servers.due():
             report['checked'] += 1
@@ -1190,12 +1218,17 @@ class PrivateServerService:
             report['suspended'] += 1
 
         # Отсрочка кончилась — закрываем и говорим админам гасить VPS
+        report['closed'] += await self._close_overdue()
+        return report
+
+    async def _close_overdue(self) -> int:
+        """Закрыть приостановленные, у которых кончилась отсрочка."""
         border = now() - timedelta(days=ps.GRACE_DAYS)
+        closed = 0
         for server in await self.servers.overdue(border):
             await self.close(server)
-            report['closed'] += 1
-
-        return report
+            closed += 1
+        return closed
 
     async def suspend(self, server: dict) -> None:
         """Денег нет: доступ снимаем, VPS пока не гасим — отсрочка."""
