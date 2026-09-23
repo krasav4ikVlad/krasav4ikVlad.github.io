@@ -31,10 +31,14 @@ def user_link(user_id: int, username: str | None = None) -> str:
 
 
 class Notifier:
-    def __init__(self, bot, settings, users=None):
+    def __init__(self, bot, settings, users=None, ref_tags=None):
         self.bot = bot
         self.settings = settings
         self.users = users
+        # Метки партнёров: у каждой может быть свой чат (и тема), куда идёт
+        # копия событий по её людям. Партнёров несколько, и смешивать их в
+        # одной ленте — значит не видеть ни одного.
+        self.ref_tags = ref_tags
 
     # ── отправка ────────────────────────────────────────────────────────────
     async def send(self, topic: str, text: str, markup=None) -> bool:
@@ -68,6 +72,40 @@ class Notifier:
             log.warning('уведомление «%s» не отправлено: %s', topic, exc)
             return None
 
+    # ── копия партнёрских событий ───────────────────────────────────────────
+    async def partner(self, user_id: int, text: str) -> bool:
+        """Копия события в чат партнёра, если человек пришёл по его метке.
+
+        Отдельным сообщением, а не пометкой в общей ленте: смысл в том,
+        чтобы про конкретного партнёра можно было смотреть отдельно, не
+        вылавливая его людей из общего потока.
+
+        Молчит, если метки нет, чат не задан или что-то не так: копия
+        уведомления не должна ломать ни событие, ни основное уведомление.
+        """
+        if self.ref_tags is None or self.users is None or not user_id:
+            return False
+        try:
+            user = await self.users.get(int(user_id), {'user_data.ref_tag': 1})
+            tag = str(self.users.pick(user or {}, 'user_data.ref_tag') or '')
+            if not tag:
+                return False
+
+            partner = await self.ref_tags.get(tag)
+            chat_id = int((partner or {}).get('chat_id') or 0)
+            if not chat_id:
+                return False
+
+            topic = int((partner or {}).get('topic_id') or 0)
+            with plain():
+                await self.bot.send_message(
+                    chat_id=chat_id, message_thread_id=topic or None,
+                    text=f'{e("link")} <b>По метке</b> <code>{tag}</code>\n{text}')
+            return True
+        except Exception as exc:
+            log.warning('копия события партнёру (%s) не ушла: %s', user_id, exc)
+            return False
+
     async def _who(self, user_id: int, username: str | None = None) -> str:
         """Подпись пользователя. Юзернейм берём из базы, если не передали."""
         if username is None and self.users is not None:
@@ -78,9 +116,11 @@ class Notifier:
     # ── события ─────────────────────────────────────────────────────────────
     async def registered(self, user_id: int, username: str | None = None,
                          utm: str = '') -> bool:
-        return await self.send('registration',
-                               f'{e("user")} <b>Новый пользователь</b>\n{user_link(user_id, username)}'
-                               + (f'\n<b>UTM:</b> <code>{utm}</code>' if utm else ''))
+        text = (f'{e("user")} <b>Новый пользователь</b>\n'
+                f'{user_link(user_id, username)}'
+                + (f'\n<b>UTM:</b> <code>{utm}</code>' if utm else ''))
+        await self.partner(user_id, text)
+        return await self.send('registration', text)
 
     async def topup(self, user_id: int, amount: int, bonus: int, credit: int,
                     provider: str) -> bool:
@@ -90,6 +130,7 @@ class Notifier:
                 f'<b>Способ:</b> <code>{provider}</code>')
         if bonus:
             text += f'\n<b>Бонус:</b> <code>{bonus}₽</code>'
+        await self.partner(user_id, text)
         return await self.send('topup', text)
 
     async def topup_try(self, user_id: int, amount: int, provider: str) -> bool:
@@ -100,18 +141,20 @@ class Notifier:
 
     async def subscription_created(self, user_id: int, plan: dict,
                                    subscription: dict | None = None) -> bool:
-        return await self.send('subscription',
-                               f'{e("shield")} <b>Покупка подписки</b>\n{await self._who(user_id)}\n'
-                               f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>\n'
-                               f'<b>Действует до:</b> '
-                               f'<code>{fmt((subscription or {}).get("expireAt"))}</code>')
+        text = (f'{e("shield")} <b>Покупка подписки</b>\n{await self._who(user_id)}\n'
+                f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>\n'
+                f'<b>Действует до:</b> '
+                f'<code>{fmt((subscription or {}).get("expireAt"))}</code>')
+        await self.partner(user_id, text)
+        return await self.send('subscription', text)
 
     async def renewed(self, user_id: int, plan: dict, price: int, until=None) -> bool:
-        return await self.send('subscription',
-                               f'{e("renew")} <b>Автопродление</b>\n{await self._who(user_id)}\n'
-                               f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>\n'
-                               f'<b>Списано:</b> <code>{price}₽</code>\n'
-                               f'<b>Действует до:</b> <code>{fmt(until)}</code>')
+        text = (f'{e("renew")} <b>Автопродление</b>\n{await self._who(user_id)}\n'
+                f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>\n'
+                f'<b>Списано:</b> <code>{price}₽</code>\n'
+                f'<b>Действует до:</b> <code>{fmt(until)}</code>')
+        await self.partner(user_id, text)
+        return await self.send('subscription', text)
 
     async def devices_charged(self, user_id: int, amount: int, price: int,
                               next_charge=None) -> bool:

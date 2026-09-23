@@ -18,6 +18,7 @@ from app.admin import channel as admin_channel
 from app.admin import commands as admin_commands
 from app.admin import money as admin_money
 from app.admin import partner_bots as admin_partner_bots
+from app.admin import partners as admin_partners
 from app.admin import bypass_report as admin_bypass
 from app.admin import freebies as admin_freebies
 from app.admin import outage as admin_outage
@@ -74,7 +75,7 @@ def main_kb(c) -> InlineKeyboardBuilder:
     kb.row(btn(f'{e("trial")} Сброс бесплатного периода', 'trial'))
     kb.row(btn(f'{e("cross")} Заблокировали бота', 'blocked'))
     kb.row(btn(f'{e("money")} Экономика: деньги за месяц', 'money'))
-    kb.row(btn(f'{e("link")} Именные реф. ссылки', 'reftags'))
+    kb.row(btn(f'{e("friends")} Партнёры и их ссылки', 'partners'))
     kb.row(btn(f'{e("friends")} Партнёрские боты', 'partnerbots'))
     kb.row(btn(f'{e("wrench")} Технические работы', 'maint'))
     kb.row(btn(f'{e("tools")} Диагностика', 'diag'))
@@ -469,4 +470,5 @@ def create_router(admin_ids) -> Router:
     admin_freebies.register(router)
     admin_bypass.register(router)
     admin_partner_bots.register(router)
+    admin_partners.register(router)
     return router

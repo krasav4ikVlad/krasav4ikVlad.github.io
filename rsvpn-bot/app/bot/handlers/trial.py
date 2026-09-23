@@ -30,9 +30,12 @@ REASONS = {
 async def trial_screen(event, c, user: dict, settings, note: str = ''):
     days = await settings.int('price.trial_days')
     channel_url = await settings.get('link.channel')
+    # Пришедшему по партнёрской метке подписка может быть не нужна — тогда
+    # и кнопки «подписаться» на экране быть не должно.
+    needs_channel = await c.trial.needs_channel(user)
 
     kb = InlineKeyboardBuilder()
-    if await settings.flag('trial.require_subscription'):
+    if needs_channel:
         kb.row(types.InlineKeyboardButton(text=f'{e("channel")} Подписаться на канал', url=channel_url))
     kb.row(types.InlineKeyboardButton(
         text=f'{e("ok")} Проверить и получить', callback_data=Menu(screen='trial_claim').pack()))
@@ -43,7 +46,7 @@ async def trial_screen(event, c, user: dict, settings, note: str = ''):
     hint = note or (
         f'{e("gift")} Подпишитесь на наш канал и получите <b>{days} дня</b> RS VPN бесплатно.\n\n'
         'После подписки нажмите «Проверить и получить» — доступ включится сразу.'
-        if await settings.flag('trial.require_subscription') else
+        if needs_channel else
         f'{e("gift")} Заберите <b>{days} дня</b> RS VPN бесплатно — доступ включится сразу.')
 
     await render(event, Screen(

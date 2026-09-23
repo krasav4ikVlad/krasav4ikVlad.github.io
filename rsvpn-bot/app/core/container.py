@@ -141,7 +141,8 @@ class Container:
         # plans нужен, чтобы записать в vpn.period существующий тариф:
         # длина бесплатного периода тарифом не является, и автопродление
         # по ней ничего не находило
-        self.trial = TrialService(self.users, self.settings, vpn=None, plans=self.plans)
+        self.trial = TrialService(self.users, self.settings, vpn=None,
+                                  plans=self.plans, ref_tags=self.ref_tags)
         # именно collection(): в старой базе коллекция называется
         # 'churn_surveys ' — с пробелом на конце, см. app/core/db.py
         self.survey = SurveyService(self.users,
@@ -405,7 +406,8 @@ class Container:
 
         # Notifier раздаётся сервисам явно: без него все админ-уведомления
         # (регистрации, пополнения, заявки на вывод) молча никуда не уходят
-        self.notifier = Notifier(bot, self.settings, self.users)
+        self.notifier = Notifier(bot, self.settings, self.users,
+                                 ref_tags=self.ref_tags)
         # личным серверам bot нужен, чтобы сказать владельцу о приостановке,
         # а notifier — чтобы заявка дошла до админ-чата
         if self.private is not None:

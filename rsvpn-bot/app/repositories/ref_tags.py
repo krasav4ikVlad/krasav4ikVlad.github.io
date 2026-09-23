@@ -48,6 +48,19 @@ class RefTagsRepository(Repository):
             log.info('метка %s не занята: %s', tag, exc)
             return False
 
+    async def get(self, tag: str) -> dict | None:
+        return await self.col.find_one({'tag': domain.normalize(tag)})
+
+    async def update(self, tag: str, **fields) -> bool:
+        """Поменять настройки метки: чат уведомлений, триал без подписки."""
+        result = await self.col.update_one(
+            {'tag': domain.normalize(tag)}, {'$set': fields})
+        return bool(getattr(result, 'matched_count', 0))
+
+    async def of_partner(self, tag: str) -> dict | None:
+        """Метка вместе с её настройками — по ней живёт весь партнёр."""
+        return await self.get(tag)
+
     async def owner(self, tag: str) -> int:
         """Кому принадлежит метка. 0 — метки нет."""
         found = await self.col.find_one({'tag': domain.normalize(tag)})

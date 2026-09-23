@@ -31,12 +31,17 @@ class TrialResult:
 
 
 class TrialService:
-    def __init__(self, users, settings, vpn, bot=None, plans=None):
+    def __init__(self, users, settings, vpn, bot=None, plans=None,
+                 ref_tags=None):
         self.users = users
         self.settings = settings
         self.vpn = vpn
         self.bot = bot
         self.plans = plans
+        # Метки партнёров: у партнёра может быть снято требование подписки
+        # на канал. Его аудитория приходит с его площадки и подписываться
+        # на чужой канал ради трёх дней не станет — она просто уйдёт.
+        self.ref_tags = ref_tags
 
     async def channel(self) -> str:
         return str(await self.settings.get('trial.channel') or '').strip()
@@ -78,6 +83,27 @@ class TrialService:
             return True
         return not ((user or {}).get('growth') or {}).get('trial_reset_at')
 
+    async def needs_channel(self, user: dict | None) -> bool:
+        """Требовать ли подписку на канал именно от этого человека.
+
+        Общий тумблер — один на всех, но пришедшие по партнёрской метке
+        могут быть освобождены: партнёр приводит свою аудиторию, и требовать
+        от неё подписки на наш канал значит терять её на первом же шаге.
+        """
+        if not await self.settings.flag('trial.require_subscription'):
+            return False
+
+        tag = str(((user or {}).get('user_data') or {}).get('ref_tag') or '')
+        if not tag or self.ref_tags is None:
+            return True
+
+        try:
+            partner = await self.ref_tags.get(tag)
+        except Exception as exc:      # метка не должна ломать выдачу триала
+            log.warning('метка %s не прочитана: %s', tag, exc)
+            return True
+        return not (partner or {}).get('no_channel')
+
     async def is_subscribed(self, user_id: int) -> bool | None:
         """True/False — ответ Telegram. None — проверить не удалось.
 
@@ -113,7 +139,7 @@ class TrialService:
         if self.blocked_by_subscription(user):
             return TrialResult(False, 'has_sub')
 
-        if await self.settings.flag('trial.require_subscription'):
+        if await self.needs_channel(user):
             subscribed = await self.is_subscribed(user_id)
             if subscribed is None:
                 return TrialResult(False, 'check')
