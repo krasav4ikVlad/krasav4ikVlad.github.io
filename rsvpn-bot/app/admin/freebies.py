@@ -17,6 +17,7 @@ from datetime import timedelta
 from aiogram import Router, types
 from aiogram.filters import Command
 
+from app.content import ids
 from app.content.emoji import e
 from app.core.time import fmt, now
 from app.services import freebies
@@ -54,7 +55,7 @@ def render(riders: dict, shared: list[dict], bonus: dict, days: int,
         lines.append(f'Никогда не платили: <b>{riders["never_paid"]}</b>')
     for row in riders['rows'][:10]:
         who = f'@{row["username"]}' if row['username'] else 'без юзернейма'
-        lines.append(f'   <code>{row["user_id"]}</code> ({who}) — '
+        lines.append(f'   <code>{ids.show(row["user_id"])}</code> ({who}) — '
                      f'{row["days"]} дн.'
                      + ('' if row['paid_ever'] else ', ни одной оплаты'))
     if not max_days:
@@ -70,9 +71,9 @@ def render(riders: dict, shared: list[dict], bonus: dict, days: int,
     else:
         lines.append(f'Групп: <b>{len(shared)}</b>')
         for group in shared[:10]:
-            ids = ', '.join(f'<code>{user_id}</code>'
+            listed = ', '.join(f'<code>{ids.show(user_id)}</code>'
                             for user_id in group['user_ids'][:6])
-            lines.append(f'   {group["accounts"]} аккаунта: {ids} — '
+            lines.append(f'   {group["accounts"]} аккаунта: {listed} — '
                          f'{group["amount"]}₽ за {group["payments"]} оплат')
         lines.append('<i>Это не приговор: так же выглядит человек, который '
                      'оплачивает подписку жене и родителям. Смотреть стоит на '

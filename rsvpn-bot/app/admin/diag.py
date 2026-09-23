@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from aiogram import F, Router, types
@@ -22,10 +23,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.admin import health
 from app.bot.callbacks import Admin as Adm
+from app.content import ids
 from app.content.emoji import e
 from app.core.time import fmt, now
 from app.services.expiry import ALL_KEYS
 from app.version import version_line
+
+log = logging.getLogger(__name__)
 
 
 def ago(moment) -> str:
@@ -411,6 +415,43 @@ async def maintenance_command(message: types.Message, command, c, settings) -> N
                          reply_markup=maintenance_kb(on).as_markup())
 
 
+MASK_KEY = 'privacy.mask_ids'
+
+
+async def mask_ids(message: types.Message, command, c, settings) -> None:
+    """`/mask` — прятать ли идентификаторы за звёздочками.
+
+    Для съёмки экрана и скриншотов в канал: чужой id на записи ни к чему,
+    а свой виден крупным планом. Команда, а не тумблер в настройках,
+    потому что включают её ровно на время записи и тут же выключают —
+    ходить за этим в четыре экрана админки никто не станет.
+    """
+    arg = (command.args or '').strip().lower()
+    if arg in ('on', 'вкл', '1', 'да'):
+        value = True
+    elif arg in ('off', 'выкл', '0', 'нет'):
+        value = False
+    else:
+        value = not await settings.flag(MASK_KEY)
+
+    await settings.set(MASK_KEY, value)
+    ids.set_hidden(value)
+    log.info('админ %s: маска идентификаторов = %s', message.from_user.id, value)
+
+    example = ids.mask(message.from_user.id)
+    await message.answer(
+        (f'{e("lock")} <b>Идентификаторы спрятаны</b>\n\n'
+         f'Ваш показывается как <code>{example}</code> — и в профиле '
+         f'у людей, и в админских списках.\n\n'
+         f'<blockquote>Выгрузок это не касается: в Excel id остаются '
+         f'настоящими, иначе из файла нельзя было бы копировать их для '
+         f'начислений.\n\nВыключить: <code>/mask off</code>.</blockquote>')
+        if value else
+        (f'{e("ok")} <b>Идентификаторы показываются целиком</b>\n\n'
+         f'<blockquote>Спрятать на время съёмки: '
+         f'<code>/mask on</code>.</blockquote>'))
+
+
 async def chat_id(message: types.Message, c, settings) -> None:
     """`/chatid` — id этого чата и этой темы.
 
@@ -674,6 +715,7 @@ def register(router: Router) -> None:
     router.message.register(maintenance_command, Command('maintenance'))
     router.message.register(devsync, Command('devsync'))
     router.message.register(chat_id, Command('chatid'))
+    router.message.register(mask_ids, Command('mask'))
     router.callback_query.register(maintenance_screen, Adm.filter(F.act == 'maint'))
     router.callback_query.register(refresh, Adm.filter(F.act == 'diag'))
     router.callback_query.register(test_menu, Adm.filter(F.act == 'exptest'))

@@ -23,6 +23,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Admin as Adm
+from app.content import ids
 from app.content.emoji import e
 from app.core.time import fmt
 from app.domain import ref_tags as domain
@@ -94,7 +95,7 @@ async def card(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
 
     lines = [f'<b>{e("friends")} Партнёр {tag}</b>', '',
              f'{e("link")} <code>{domain.link(bot_username, tag)}</code>',
-             f'{e("user")} Начисления: <code>{owner_id}</code>'
+             f'{e("user")} Начисления: <code>{ids.show(owner_id)}</code>'
              + (f' @{username}' if username else ''),
              f'{e("referrals")} Привёл: <b>{int(partner.get("registrations") or 0)}</b> чел.']
     if partner.get('last_at'):
@@ -292,7 +293,7 @@ async def got_new(message: types.Message, state: FSMContext, c, settings) -> Non
     await message.answer(
         f'{e("ok")} <b>Партнёр заведён</b>\n\n'
         f'{e("link")} <code>{domain.link(await settings.get("link.bot_username"), tag)}</code>\n'
-        f'{e("user")} Начисления: <code>{user_id}</code>\n\n'
+        f'{e("user")} Начисления: <code>{ids.show(user_id)}</code>\n\n'
         f'<blockquote>Осталось решить два вопроса: нужен ли его людям '
         f'триал без подписки на канал и куда слать события по ним. '
         f'Обе кнопки — в карточке.</blockquote>',

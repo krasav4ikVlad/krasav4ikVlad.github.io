@@ -21,6 +21,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Admin as Adm
+from app.content import ids
 from app.content.emoji import e
 from app.core.time import MSK, fmt, now
 from app.services import outage
@@ -120,7 +121,7 @@ def summary(data: dict) -> str:
                          f'{len(money["stuck"])} на {money["lost"]}₽</b> — '
                          f'деньги ушли провайдеру, а на баланс не легли:')
             for row in money['stuck'][:10]:
-                lines.append(f'   <code>{row["user_id"]}</code> — '
+                lines.append(f'   <code>{ids.show(row["user_id"])}</code> — '
                              f'{row["amount"]}₽, {row["provider"]}, '
                              f'{row["status"]}, {fmt(row["at"], "%H:%M")}')
             lines.append('   <i>Проверьте их в кабинете провайдера: если '
@@ -131,7 +132,7 @@ def summary(data: dict) -> str:
         lines.append('<b>Стучались чаще всех</b>')
         for item in data['people'][:10]:
             who = f'@{item["username"]}' if item['username'] else 'без юзернейма'
-            lines.append(f'<code>{item["user_id"]}</code> ({who}) — '
+            lines.append(f'<code>{ids.show(item["user_id"])}</code> ({who}) — '
                          f'{item["hits"]}, '
                          f'{fmt(item["first"], "%H:%M")} → '
                          f'{fmt(item["last"], "%H:%M")}')

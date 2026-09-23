@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from app.content import texts
+from app.content import ids
 from app.content.emoji import e
 from app.core.time import fmt, parse_dt
 
@@ -19,7 +20,7 @@ def profile_caption(user: dict, title: str = '') -> str:
     return (
         f'<b>{heading}</b>\n\n'
         f'<b>{e("id")} Идентификатор:</b> '
-        f'<code>{(user.get("user_data") or {}).get("user_id", "")}</code>\n'
+        f'<code>{ids.show((user.get("user_data") or {}).get("user_id", ""))}</code>\n'
         f'<b>{e("money")} Баланс:</b> <code>{info.get("balance", 0)}₽</code>\n'
         f'<b>{e("friends")} Друзей:</b> <code>{len(ref.get("referrals") or [])}</code>\n'
         f'<b>{e("email")} Почта:</b> <code>{info.get("email", "Не привязана")}</code>\n\n'

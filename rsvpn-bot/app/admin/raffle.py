@@ -30,6 +30,7 @@ from aiogram import Router, types
 from aiogram.filters import Command
 
 from app.admin.money import rub
+from app.content import ids
 from app.content.emoji import e
 from app.core import db as names
 from app.core.time import fmt
@@ -169,7 +170,7 @@ def summary(data: dict, bonus_tickets: int = 0, bonus_days: int = 0) -> str:
     lines.append('<b>Больше всех привели</b>')
     for place, item in enumerate(data['participants'][:10], start=1):
         who = f'@{item["username"]}' if item['username'] else 'без юзернейма'
-        lines.append(f'{place}. <code>{item["user_id"]}</code> ({who}) — '
+        lines.append(f'{place}. <code>{ids.show(item["user_id"])}</code> ({who}) — '
                      f'<b>{item["tickets"]}</b> {_tickets(item["tickets"])} '
                      f'(друзей {item["friends"]}, своих {item["own"]})')
     lines.append('')
@@ -256,7 +257,10 @@ def filename(data: dict, what: str, ext: str) -> str:
 
 async def send_table(message: types.Message, data: dict, *, what: str,
                      columns, rows: list[list], sheet: str, caption: str) -> None:
-    body, ext = excel.build(columns, rows, sheet)
+    # Маска в файл не идёт: из выгрузки копируют id для начислений,
+    # и звёздочки там означали бы «файл сломан».
+    with ids.visible():
+        body, ext = excel.build(columns, rows, sheet)
     await message.answer_document(
         types.BufferedInputFile(body, filename=filename(data, what, ext)),
         caption=caption + ('' if ext == 'xlsx' else
@@ -359,7 +363,7 @@ async def bonus(message: types.Message, command, c, settings) -> None:
              f'Человек: <b>{len(winners)}</b>', '']
     for item in winners:
         who = f' @{item["username"]}' if item['username'] else ''
-        lines.append(f'<code>{item["user_id"]}</code>{who} — '
+        lines.append(f'<code>{ids.show(item["user_id"])}</code>{who} — '
                      f'{item["tickets"]} {_tickets(item["tickets"])}')
 
     lines.append('')
@@ -525,7 +529,7 @@ def who_text(total: int, found: list[dict]) -> str:
             continue
         who = f' @{row["owner_username"]}' if row['owner_username'] else ''
         lines.append(f'<b>{item["place"]}.</b> №{item["ticket"]} — '
-                     f'<code>{row["owner"]}</code>{who}')
+                     f'<code>{ids.show(row["owner"])}</code>{who}')
         lines.append(f'      <i>{row["kind"]}, {row["detail"]}, '
                      f'{fmt(row["at"], "%d.%m %H:%M")}</i>')
         if item['repeat']:
@@ -590,7 +594,8 @@ def draw_text(row: dict) -> str:
     for place, winner in enumerate(row['winners'], start=1):
         who = f' @{winner["username"]}' if winner['username'] else ''
         lines.append(f'{place}. <b>{winner["prize"]}</b> — билет '
-                     f'№{winner["ticket"]}, <code>{winner["user_id"]}</code>{who}')
+                     f'№{winner["ticket"]}, '
+                     f'<code>{ids.show(winner["user_id"])}</code>{who}')
 
     lines.append('')
     lines.append(f'<blockquote>Победителям бот ничего не написал — это ваш '
@@ -715,7 +720,7 @@ async def win(message: types.Message, command, c, settings) -> None:
     for row in report_data['done'][:40]:
         what = (f'{row["amount"]}₽' if row['kind'] == 'money'
                 else f'+{row["amount"]} дн.')
-        lines.append(f'   <code>{row["user_id"]}</code> — {what}')
+        lines.append(f'   <code>{ids.show(row["user_id"])}</code> — {what}')
     if report_data['skipped']:
         lines.append(f'Пропущено (уже получали): '
                      f'<b>{len(report_data["skipped"])}</b>')
@@ -723,7 +728,8 @@ async def win(message: types.Message, command, c, settings) -> None:
         lines.append('')
         lines.append(f'{e("cross")} <b>Не вышло: {len(report_data["failed"])}</b>')
         for row in report_data['failed'][:10]:
-            lines.append(f'   <code>{row["user_id"]}</code> — {row["why"]}')
+            lines.append(f'   <code>{ids.show(row["user_id"])}</code> — '
+                         f'{row["why"]}')
     await message.answer('\n'.join(lines))
 
 
