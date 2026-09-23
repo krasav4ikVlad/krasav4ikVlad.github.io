@@ -14,6 +14,7 @@ import { SegmentSankey } from "@/components/charts/sankey";
 import { Funnel } from "@/components/charts/funnel";
 import { CohortGrid } from "@/components/charts/cohort-grid";
 import { TimeSeries } from "@/components/charts/timeseries";
+import { StackedBars } from "@/components/charts/stacked-bars";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
@@ -25,6 +26,126 @@ import {
   fmtNum,
   fmtPct,
 } from "@/lib/format";
+
+function fmtMonths(days: number | null): string {
+  if (days === null) return "—";
+  if (days < 45) return `${Math.round(days)} дн`;
+  const months = days / 30;
+  return `${months.toLocaleString("ru-RU", { maximumFractionDigits: 1 })} мес`;
+}
+
+function LifetimeCard() {
+  const { data, isLoading } = useSWR<T.LifetimeResponse>(
+    api.urls.lifetime(),
+    fetcher,
+    { keepPreviousData: true },
+  );
+  const survivalData = (data?.survival ?? []).map((s) => ({ ...s }));
+  const histData = (data?.histogram ?? []).map((h) => ({ ...h }));
+  const ltvByLife =
+    data?.median_survival_months != null
+      ? data.median_survival_months * data.monthly_sub_cost
+      : null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>Время жизни платящего</CardTitle>
+          <p className="mt-0.5 text-xs text-muted">
+            От первой оплаты до ухода. Живые юзеры учтены как «дожил и живёт
+            дальше» — среднее они не занижают
+          </p>
+        </div>
+        {data ? (
+          <Badge variant="outline">
+            живых {fmtNum(data.alive)} · ушло {fmtNum(data.departed)}
+          </Badge>
+        ) : null}
+      </CardHeader>
+      {isLoading && !data ? (
+        <TableSkeleton rows={4} />
+      ) : !data || data.paying_total === 0 ? (
+        <div className="py-8 text-center text-sm text-muted">
+          Нет платящих пользователей
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-card border border-hairline bg-surface-2/40 p-3">
+              <div className="text-xs text-muted">Половина доживает до</div>
+              <div className="text-xl font-semibold text-ink">
+                {data.median_survival_months != null
+                  ? `${data.median_survival_months} мес`
+                  : `${data.survival.length}+ мес`}
+              </div>
+              <div className="mt-0.5 text-xs text-muted">
+                по кривой выживаемости
+              </div>
+            </div>
+            <div className="rounded-card border border-hairline bg-surface-2/40 p-3">
+              <div className="text-xs text-muted">Жизнь ушедшего</div>
+              <div className="text-xl font-semibold text-ink">
+                {fmtMonths(data.median_lifetime_days)}
+              </div>
+              <div className="mt-0.5 text-xs text-muted">
+                медиана · среднее {fmtMonths(data.avg_lifetime_days)}
+              </div>
+            </div>
+            <div className="rounded-card border border-hairline bg-surface-2/40 p-3">
+              <div className="text-xs text-muted">Ушедший принёс</div>
+              <div className="text-xl font-semibold text-ink">
+                {fmtMoney(data.avg_ltv_departed)}
+              </div>
+              <div className="mt-0.5 text-xs text-muted">
+                факт. LTV за жизнь
+              </div>
+            </div>
+            <div className="rounded-card border border-hairline bg-surface-2/40 p-3">
+              <div className="text-xs text-muted">Живые уже с нами</div>
+              <div className="text-xl font-semibold text-ink">
+                {fmtMonths(data.avg_alive_age_days)}
+              </div>
+              <div className="mt-0.5 text-xs text-muted">
+                в среднем · LTV ≥{" "}
+                {ltvByLife != null ? fmtMoney(ltvByLife) : "—"}
+              </div>
+            </div>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="min-w-0">
+              <div className="mb-1 text-xs text-muted">
+                Кривая выживаемости: % платящих, доживших до N-го месяца
+              </div>
+              <TimeSeries
+                data={survivalData as unknown as Record<string, unknown>[]}
+                series={[{ key: "pct", name: "Живы", kind: "area" }]}
+                height={210}
+                xKey="month"
+                xFormatter={(m) => `${m} мес`}
+                valueFormatter={(v) => fmtPct(v)}
+              />
+            </div>
+            <div className="min-w-0">
+              <div className="mb-1 text-xs text-muted">
+                Через сколько уходят (только ушедшие)
+              </div>
+              <StackedBars
+                data={histData as unknown as Record<string, unknown>[]}
+                keys={["count"]}
+                names={{ count: "Ушли" }}
+                height={210}
+                xKey="bucket"
+                xFormatter={(b) => b}
+                valueFormatter={(v) => fmtNum(v)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 function segmentVariant(
   segment: string | null,
@@ -105,6 +226,9 @@ export default function UsersPage() {
           />
         </ChartCard>
       </div>
+
+      {/* Lifetime / survival */}
+      <LifetimeCard />
 
       {/* Conversion funnel */}
       <ChartCard

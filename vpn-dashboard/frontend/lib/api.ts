@@ -122,6 +122,7 @@ export const api = {
     opportunities: () => "/api/experiments/opportunities",
     regEconomics: () => "/api/experiments/registration-economics",
     regSources: () => "/api/experiments/registration-sources",
+    lifetime: () => "/api/users/lifetime",
   },
 
   alertsTest: () => request<{ sent: boolean }>("/api/alerts/test", { method: "POST" }),

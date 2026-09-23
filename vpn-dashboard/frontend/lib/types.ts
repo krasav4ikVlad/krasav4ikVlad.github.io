@@ -421,6 +421,21 @@ export interface OpportunitiesResponse {
   computed_at: string | null;
 }
 
+// ---- lifetime ----
+export interface LifetimeResponse {
+  paying_total: number;
+  alive: number;
+  departed: number;
+  avg_lifetime_days: number | null;
+  median_lifetime_days: number | null;
+  avg_ltv_departed: number | null;
+  median_survival_months: number | null;
+  survival: { month: number; pct: number; eligible: number }[];
+  histogram: { bucket: string; count: number }[];
+  monthly_sub_cost: number;
+  avg_alive_age_days: number | null;
+}
+
 // ---- registration economics ----
 export interface RegHorizon {
   users: number;

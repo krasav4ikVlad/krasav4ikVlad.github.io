@@ -564,3 +564,108 @@ async def user_card(user_id: int) -> dict[str, Any]:
         "referrals": referrals,
         "recent_logs": await _recent_logs(user_id),
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /users/lifetime — сколько живёт платящий пользователь
+# ---------------------------------------------------------------------------
+
+_LIFETIME_MAX_MONTHS = 18
+_LIFETIME_HIST_BUCKETS = [(0, 1), (1, 2), (2, 3), (3, 6), (6, 12), (12, None)]
+_EXPIRED_SEG_RE = re.compile(r"expired|churn", re.IGNORECASE)
+
+
+@cached(ttl=300, prefix="users:lifetime")
+async def _lifetime() -> dict[str, Any]:
+    """Survival analysis over paying users.
+
+    Lifetime starts at the first top-up. A user counts as departed when the
+    segment says expired/churned and the subscription end is known; everyone
+    still active is right-censored (they contribute 'survived so far', not a
+    finished lifetime, so the averages are not dragged down)."""
+    db = get_db()
+    now = datetime.now(timezone.utc)
+
+    departed_days: list[float] = []
+    departed_ltv: list[float] = []
+    alive_days: list[float] = []
+    total_paying = 0
+
+    cursor = db[USERS_FLAT].find(
+        {"first_topup_at": {"$type": "date"}},
+        {"first_topup_at": 1, "sub_until": 1, "segment": 1,
+         "topup_total": 1, "last_tx_at": 1},
+    ).batch_size(1000)
+    async for doc in cursor:
+        start = as_utc(doc.get("first_topup_at"))
+        if start is None or start > now:
+            continue
+        total_paying += 1
+        segment = str(doc.get("segment") or "")
+        sub_until = as_utc(doc.get("sub_until"))
+        churned = bool(_EXPIRED_SEG_RE.search(segment))
+        if churned:
+            # конец жизни: конец подписки, иначе последняя транзакция
+            end = sub_until or as_utc(doc.get("last_tx_at"))
+            if end is None or end > now:
+                end = now
+            if end < start:
+                end = start
+            departed_days.append((end - start).total_seconds() / 86400)
+            departed_ltv.append(float(doc.get("topup_total") or 0))
+        else:
+            alive_days.append((now - start).total_seconds() / 86400)
+
+    # кривая выживаемости: доля доживших до k-го месяца среди тех, чей
+    # k-й месяц уже наблюдаем (ушедшие раньше k — не дожили; живые моложе
+    # k месяцев не участвуют в точке k)
+    survival = []
+    median_months: Optional[float] = None
+    for k in range(1, _LIFETIME_MAX_MONTHS + 1):
+        horizon = k * 30
+        survived = (sum(1 for d in departed_days if d >= horizon)
+                    + sum(1 for d in alive_days if d >= horizon))
+        not_survived = sum(1 for d in departed_days if d < horizon)
+        eligible = survived + not_survived
+        if eligible < 5:
+            break
+        pct = survived / eligible * 100
+        survival.append({"month": k, "pct": r2(pct), "eligible": eligible})
+        if median_months is None and pct < 50:
+            median_months = k
+
+    histogram = []
+    for lo, hi in _LIFETIME_HIST_BUCKETS:
+        label = (f"{lo}–{hi} мес" if hi is not None else f"{lo}+ мес")
+        histogram.append({
+            "bucket": label,
+            "count": sum(1 for d in departed_days
+                         if d >= lo * 30 and (hi is None or d < hi * 30)),
+        })
+
+    from .experiments import _monthly_sub_cost
+    monthly_cost = await _monthly_sub_cost(db, 199.0)
+
+    return {
+        "paying_total": total_paying,
+        "alive": len(alive_days),
+        "departed": len(departed_days),
+        "avg_lifetime_days": r2(statistics.mean(departed_days))
+            if departed_days else None,
+        "median_lifetime_days": r2(statistics.median(departed_days))
+            if departed_days else None,
+        "avg_ltv_departed": r2(statistics.mean(departed_ltv))
+            if departed_ltv else None,
+        "median_survival_months": median_months,
+        "survival": survival,
+        "histogram": histogram,
+        "monthly_sub_cost": r2(monthly_cost),
+        "avg_alive_age_days": r2(statistics.mean(alive_days))
+            if alive_days else None,
+    }
+
+
+@router.get("/lifetime")
+async def lifetime() -> dict[str, Any]:
+    """Время жизни платящего: выживаемость, средняя/медианная жизнь, LTV."""
+    return await _lifetime()
