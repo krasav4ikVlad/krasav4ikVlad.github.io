@@ -287,3 +287,85 @@ async def test_a_tag_is_deleted_only_after_a_confirmation(admin_env):
 
     await dp.feed_update(bot, callback(Adm(act='pdelok', a='vlad').pack()))
     assert await c.ref_tags.get('vlad') is None
+
+
+# ── в оба чата, а не в один ─────────────────────────────────────────────────
+#
+# Партнёрское событие — обычное событие бота, и в общей ленте ему место:
+# админ-чат остаётся полным. Чат партнёра нужен затем, что полтора десятка
+# его человек в день теряются среди полутора тысяч чужих.
+
+async def test_the_event_reaches_both_chats(tags, users, settings, db):
+    await settings.set('notify.chat_id', -100777)
+    await tags.create('vlad', 500)
+    await tags.update('vlad', chat_id=-100123, topic_id=42)
+    await person(users, 1, tag='vlad')
+    bot = FakeBot()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    await notifier.topup(1, amount=500, bonus=0, credit=500, provider='wata')
+
+    assert [row for row in bot.sent if row['chat_id'] == -100777]   # админ-чат
+    assert [row for row in bot.sent if row['chat_id'] == -100123]   # партнёр
+
+
+async def test_the_admin_chat_says_which_partner_it_was(tags, users, settings, db):
+    """Иначе партнёрскую покупку не отличить в ленте от любой другой."""
+    await settings.set('notify.chat_id', -100777)
+    await tags.create('vlad', 500)
+    await tags.update('vlad', chat_id=-100123)
+    await person(users, 1, tag='vlad')
+    bot = FakeBot()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    await notifier.subscription_created(1, {'title': 'Месяц'}, {})
+
+    admin_copy = next(row for row in bot.sent if row['chat_id'] == -100777)
+    assert 'vlad' in admin_copy['text']
+
+
+async def test_the_tag_is_marked_even_without_a_partner_chat(tags, users,
+                                                             settings, db):
+    """Чат партнёру можно и не заводить — но в ленте метку видеть полезно."""
+    await settings.set('notify.chat_id', -100777)
+    await tags.create('vlad', 500)
+    await person(users, 1, tag='vlad')
+    bot = FakeBot()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    await notifier.registered(1, username='u1')
+
+    assert 'vlad' in bot.sent[0]['text'] and bot.sent[0]['chat_id'] == -100777
+
+
+async def test_a_dead_partner_chat_does_not_eat_the_admin_notice(tags, users,
+                                                                 settings, db):
+    """Копия — дело второе: её неудача не должна лишать вас события."""
+    await settings.set('notify.chat_id', -100777)
+    await tags.create('vlad', 500)
+    await tags.update('vlad', chat_id=-100123)
+    await person(users, 1, tag='vlad')
+
+    class HalfBroken(FakeBot):
+        async def send_message(self, chat_id, text, message_thread_id=None, **kw):
+            if chat_id == -100123:
+                raise RuntimeError('chat not found')
+            return await FakeBot.send_message(self, chat_id, text,
+                                              message_thread_id, **kw)
+
+    bot = HalfBroken()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    assert await notifier.registered(1, username='u1') is True
+    assert [row for row in bot.sent if row['chat_id'] == -100777]
+
+
+async def test_an_ordinary_user_gets_no_tag_line(tags, users, settings, db):
+    await settings.set('notify.chat_id', -100777)
+    await person(users, 2)
+    bot = FakeBot()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    await notifier.registered(2, username='u2')
+
+    assert 'Метка' not in bot.sent[0]['text']
