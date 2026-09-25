@@ -1448,5 +1448,9 @@ async def test_every_entry_explains_what_it_does(admin_env):
 
     for section in SECTIONS:
         for cmd in section.items:
-            assert cmd.usage.startswith('/'), cmd
+            # Почти всё здесь — команды бота. Исключение одно и намеренное:
+            # когда бот лежит, спросить его самого нельзя, и команда сервера
+            # («почему не работает») нужна ровно в справочнике, где её будут
+            # искать заранее.
+            assert cmd.usage.startswith(('/', './scripts/')), cmd
             assert len(cmd.what) > 15, cmd
