@@ -80,11 +80,36 @@ def collection_name(name: str, legacy: bool = False) -> str:
     return LEGACY_BY_NEW.get(name, name) if legacy else name
 
 
+# Сколько ждать ответа от Mongo, прежде чем признать её недоступной.
+#
+# По умолчанию драйвер ждёт тридцать секунд, и это худшее из возможных
+# поведений для бота: база лежит, а каждое нажатие висит полминуты. Один
+# экран делает десяток запросов — и человек ждёт минуты, а не получает
+# честное «база не отвечает». В логе это выглядело как «кнопка dev:list
+# (3303144 мс)»: пятьдесят пять минут на одно нажатие.
+#
+# Пять секунд — это «сеть моргнула, переключились на реплику», всё, что
+# дольше, для человека за экраном уже отказ.
+SERVER_SELECTION_MS = 5000
+CONNECT_MS = 5000
+SOCKET_MS = 20000
+
+
 def create_client(uri: str):
     """Импорт драйвера ленивый: модуль с именами коллекций должен читаться
     и в тестах, где motor не нужен."""
     from motor.motor_asyncio import AsyncIOMotorClient
-    return AsyncIOMotorClient(uri, tz_aware=True)
+
+    return AsyncIOMotorClient(uri, tz_aware=True, **client_options())
+
+
+def client_options() -> dict:
+    """Таймауты одним местом: их легко забыть в одном из двух вызовов."""
+    return {
+        'serverSelectionTimeoutMS': SERVER_SELECTION_MS,
+        'connectTimeoutMS': CONNECT_MS,
+        'socketTimeoutMS': SOCKET_MS,
+    }
 
 
 def get_database(client, name: str):

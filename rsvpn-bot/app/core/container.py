@@ -343,7 +343,8 @@ class Container:
 
         config = config or Config.from_env()
         if db is None:
-            db = AsyncIOMotorClient(config.mongo_uri, tz_aware=True)[config.mongo_db]
+            db = AsyncIOMotorClient(config.mongo_uri, tz_aware=True,
+                                    **names.client_options())[config.mongo_db]
 
         container = cls(config=config, db=db)
 
