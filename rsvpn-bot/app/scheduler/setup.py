@@ -54,6 +54,11 @@ def create_scheduler(container, bot) -> AsyncIOScheduler:
     scheduler.add_job(jobs.migrate_panel_ids, 'interval', minutes=60,
                       args=[container], id='migrate_panel_ids',
                       next_run_time=now() + timedelta(minutes=7))
+    # Сторож базы — чаще всех и первым: пока он молчит, про аварию не
+    # узнает никто, кроме людей, которые упрутся в неё сами.
+    scheduler.add_job(jobs.watch_database, 'interval', minutes=1,
+                      args=[container, bot], id='watch_database',
+                      next_run_time=now() + timedelta(seconds=30))
     scheduler.add_job(jobs.run_campaigns, 'interval', minutes=60,
                       args=[container, bot, engine], id='campaigns',
                       next_run_time=now() + timedelta(minutes=10))

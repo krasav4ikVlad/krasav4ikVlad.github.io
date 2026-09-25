@@ -409,6 +409,13 @@ class Container:
         # (регистрации, пополнения, заявки на вывод) молча никуда не уходят
         self.notifier = Notifier(bot, self.settings, self.users,
                                  ref_tags=self.ref_tags)
+
+        # Сторож базы. Адресаты — из .env, а не из настроек: номер
+        # админ-чата лежит в базе, то есть недоступен ровно тогда, когда
+        # сторож и нужен.
+        from app.services.watchdog import Watchdog
+
+        self.watchdog = Watchdog(self.db, bot, self.config.admin_ids)
         # личным серверам bot нужен, чтобы сказать владельцу о приостановке,
         # а notifier — чтобы заявка дошла до админ-чата
         if self.private is not None:

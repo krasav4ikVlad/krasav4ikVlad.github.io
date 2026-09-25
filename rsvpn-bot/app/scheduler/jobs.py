@@ -23,6 +23,19 @@ async def run_campaigns(container, bot, engine) -> None:
         await container.notifier.campaign_report(report)
 
 
+async def watch_database(container, bot) -> None:
+    """Достаёт ли бот до базы. Пишет админам лично, если нет.
+
+    Живёт здесь, а не среди уведомлений: всё остальное в боте при лежащей
+    базе молчит, и этот сторож — единственное, что должно продолжать
+    работать. Поэтому он не читает ни настроек, ни коллекций.
+    """
+    watchdog = getattr(container, 'watchdog', None)
+    if watchdog is None:
+        return
+    await watchdog.check()
+
+
 async def watch_broadcasts(container, bot) -> None:
     """Поднять рассылки, которые оборвались и сами не продолжатся."""
     from app.admin.broadcast import resume_stalled

@@ -51,11 +51,30 @@ def numbers(info: dict) -> str:
                      if value not in (None, ''))
 
 
+def watchdog_line(watchdog) -> str:
+    """Состояние сторожа базы. Он пишет админам лично, и знать, что он
+    вообще заведён, нужно до аварии, а не во время."""
+    if watchdog is None:
+        return (f'{e("warning")} <b>Сторож базы не собран</b> — об аварии '
+                f'никто не напишет')
+    if watchdog.down:
+        return (f'{e("attention")} <b>База не отвечает</b> с '
+                f'{fmt(watchdog.since)}')
+    who = len(watchdog.admin_ids)
+    return (f'{e("ok")} Сторож базы следит, напишет лично '
+            f'({who} чел. из ADMIN_IDS)')
+
+
 async def text(c, settings) -> str:
     marks = await c.health.read()
     scheduler = c.config.scheduler_enabled
 
     lines = [f'<b>{e("tools")} Диагностика</b>', f'Сборка: <code>{version_line()}</code>', '']
+
+    # Сторож базы — первой строкой: если он молчит, про аварию узнают от
+    # людей и через несколько часов, как это уже было.
+    lines.append(watchdog_line(getattr(c, 'watchdog', None)))
+    lines.append('')
 
     # ── планировщик: автопродление и списания ───────────────────────────────
     lines.append(f'<b>{e("renew")} Автопродление</b>')
