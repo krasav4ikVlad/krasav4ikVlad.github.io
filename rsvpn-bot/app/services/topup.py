@@ -14,7 +14,8 @@ import logging
 
 from app.content import texts
 from app.core.time import now
-from app.domain.pricing import PricingRules, referral_reward, topup_credit
+from app.domain import ref_tags as ref_tags_domain
+from app.domain.pricing import PricingRules, topup_credit
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +27,8 @@ EXPIRED_SEGMENTS = (
 
 class TopupService:
     def __init__(self, users, payments, settings, container=None,
-                 notifier=None, analytics=None, bot=None, sender=None):
+                 notifier=None, analytics=None, bot=None, sender=None,
+                 ref_tags=None):
         self.users = users
         self.payments = payments
         self.settings = settings
@@ -37,6 +39,8 @@ class TopupService:
         # зачисление приходит вебхуком, где своего Bot у сервиса нет.
         self.bot = bot
         self.sender = sender
+        # Метки партнёров: у метки может стоять повышенный процент на срок.
+        self.ref_tags = ref_tags
 
     async def process(self, *, provider: str, txid: str, amount: int,
                       user_id: int | None, payload: dict | None = None) -> dict:
@@ -216,6 +220,31 @@ class TopupService:
             }},
         )
 
+    async def _referral_rate(self, user: dict, rules: PricingRules) -> float:
+        """Процент пригласившему. Обычный — из настроек; по метке партнёра
+        может стоять повышенный на срок, и тогда действует он.
+
+        Ставка берётся по метке ПРИВЕДЁННОГО: акция объявляется партнёру и
+        касается тех, кто пришёл по его ссылке.
+        """
+        base = float(rules.referral_rate or 0)
+        tag = str(self.users.pick(user, 'user_data.ref_tag') or '')
+        if not tag or self.ref_tags is None:
+            return base
+
+        try:
+            partner = await self.ref_tags.get(tag)
+        except Exception as exc:      # noqa: BLE001 — метка не должна ломать оплату
+            log.warning('метка %s не прочитана при начислении: %s', tag, exc)
+            return base
+
+        boost = ref_tags_domain.boost_rate(partner or {}, now())
+        if boost > base:
+            log.info('метка %s: повышенный процент %s вместо %s',
+                     tag, boost, base)
+            return boost
+        return base
+
     # ── рефералка ───────────────────────────────────────────────────────────
     async def _pay_referrer(self, user: dict, amount: int,
                             rules: PricingRules) -> tuple[int, int | None]:
@@ -227,7 +256,8 @@ class TopupService:
         if not referrer_id or not friend_id:
             return 0, None
 
-        reward = referral_reward(amount, rules)
+        rate = await self._referral_rate(user, rules)
+        reward = int(amount * rate)
         if reward <= 0:
             return 0, referrer_id
 

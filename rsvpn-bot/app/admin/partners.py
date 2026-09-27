@@ -26,7 +26,8 @@ from app.bot.callbacks import Admin as Adm
 from app.content import ids
 from app.content import ids
 from app.content.emoji import e
-from app.core.time import fmt
+from app.core.time import fmt, parse_dt
+from app.core.time import now as time_now
 from app.domain import ref_tags as domain
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class Partner(StatesGroup):
     new = State()
     chat = State()
     pay_topic = State()
+    boost = State()
 
 
 async def legacy_aliases(settings) -> list[tuple[str, str]]:
@@ -136,6 +138,13 @@ async def card(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
         lines.append(f'{e("note")} {partner["note"]}')
     lines.append('')
 
+    boost = domain.boost_rate(partner, time_now())
+    if boost:
+        left = (parse_dt(partner.get('boost_until')) - time_now()).days
+        lines.append(f'{e("hot")} Повышенный процент: '
+                     f'<b>{round(boost * 100)}%</b> до '
+                     f'{fmt(partner.get("boost_until"), "%d.%m.%Y")} '
+                     f'(осталось {max(0, left)} дн.)')
     lines.append(f'{e("trial")} Триал без подписки на канал: '
                  f'<b>{"да" if partner.get("no_channel") else "нет"}</b>')
     chat_id = int(partner.get('chat_id') or 0)
@@ -165,6 +174,8 @@ async def card(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
     kb.row(_btn(f'{e("cross")} Требовать подписку на канал'
                 if partner.get('no_channel') else
                 f'{e("trial")} Разрешить триал без подписки', 'pchan', tag))
+    kb.row(_btn(f'{e("hot")} Снять повышенный процент' if boost
+                else f'{e("hot")} Повышенный процент', 'pboost', tag))
     kb.row(_btn(f'{e("bell")} Чат и тема регистраций', 'pchat', tag))
     if chat_id:
         kb.row(_btn(f'{e("money")} Тема оплат', 'pchatpay', tag))
@@ -260,6 +271,84 @@ async def got_chat(message: types.Message, state: FSMContext, c, settings) -> No
     await message.answer(
         f'{e("ok")} Готово: события по метке <code>{tag}</code> пойдут в этот '
         f'чат. Проверочное сообщение туда уже ушло.',
+        reply_markup=kb.as_markup())
+
+
+BOOST_ASK = (
+    f'{e("hot")} <b>Повышенный процент</b>\n\n'
+    f'Пришлите процент и на сколько дней:\n'
+    f'<code>50 7</code> — 50% на неделю\n\n'
+    f'<blockquote>Действует для тех, кто пришёл по этой метке, и только '
+    f'пока идёт срок: потом процент сам вернётся к обычному. Срок '
+    f'обязателен — повышенный процент без даты окончания однажды забывают '
+    f'снять, и он тихо становится постоянным.\n\n'
+    f'Уже начисленное не пересчитывается: проценты считаются в момент '
+    f'оплаты.</blockquote>'
+)
+
+BOOST_MAX = 90
+BOOST_MAX_DAYS = 90
+
+
+async def toggle_boost(call: types.CallbackQuery, callback_data: Adm,
+                       state: FSMContext, c, settings) -> None:
+    tag = domain.normalize(callback_data.a)
+    partner = await c.ref_tags.get(tag) or {}
+
+    if domain.boost_rate(partner, time_now()):
+        await c.ref_tags.update(tag, boost_rate=0.0, boost_until=None)
+        log.info('партнёр %s: повышенный процент снят', tag)
+        await call.answer('Процент вернулся к обычному')
+        await card(call, callback_data, state, c, settings)
+        return
+
+    await state.set_state(Partner.boost)
+    await state.update_data(tag=tag)
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn(f'{e("back")} Отмена', 'pshow', tag))
+    await call.message.edit_text(BOOST_ASK, reply_markup=kb.as_markup())
+    await call.answer()
+
+
+async def got_boost(message: types.Message, state: FSMContext, c,
+                    settings) -> None:
+    from datetime import timedelta
+
+    data = await state.get_data()
+    tag = data.get('tag') or ''
+    parts = (message.text or '').replace(',', ' ').replace('%', ' ').split()
+    numbers = [part for part in parts if part.isdigit()]
+
+    if len(numbers) < 2:
+        await message.answer(f'{e("warning")} Нужны два числа: процент и дни. '
+                             f'Например: <code>50 7</code>')
+        return
+
+    percent, days = int(numbers[0]), int(numbers[1])
+    base = round(await settings.rate('bonus.ref_rate') * 100)
+    if not 1 <= percent <= BOOST_MAX:
+        await message.answer(f'{e("warning")} Процент — от 1 до {BOOST_MAX}.')
+        return
+    if percent <= base:
+        await message.answer(
+            f'{e("warning")} Обычный процент и так {base}%. Повышенный '
+            f'должен быть больше — иначе он ничего не меняет.')
+        return
+    if not 1 <= days <= BOOST_MAX_DAYS:
+        await message.answer(f'{e("warning")} Дни — от 1 до {BOOST_MAX_DAYS}.')
+        return
+
+    until = time_now() + timedelta(days=days)
+    await c.ref_tags.update(tag, boost_rate=percent / 100, boost_until=until)
+    await state.clear()
+    log.warning('партнёр %s: процент %s%% до %s', tag, percent, until)
+
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn(f'{e("back")} К партнёру', 'pshow', tag))
+    await message.answer(
+        f'{e("hot")} <b>{percent}% до {fmt(until, "%d.%m.%Y")}</b>\n\n'
+        f'Действует для тех, кто пришёл по метке <code>{tag}</code>. '
+        f'Потом процент сам вернётся к {base}%.',
         reply_markup=kb.as_markup())
 
 
@@ -440,6 +529,7 @@ def register(router: Router) -> None:
     router.callback_query.register(card, Adm.filter(F.act == 'pshow'))
     router.callback_query.register(toggle_channel, Adm.filter(F.act == 'pchan'))
     router.callback_query.register(ask_chat, Adm.filter(F.act == 'pchat'))
+    router.callback_query.register(toggle_boost, Adm.filter(F.act == 'pboost'))
     router.callback_query.register(ask_pay_topic, Adm.filter(F.act == 'pchatpay'))
     router.callback_query.register(clear_chat, Adm.filter(F.act == 'pchatoff'))
     router.callback_query.register(ask_new, Adm.filter(F.act == 'pnew'))
@@ -447,4 +537,5 @@ def register(router: Router) -> None:
     router.callback_query.register(delete, Adm.filter(F.act == 'pdelok'))
     router.message.register(got_chat, Partner.chat)
     router.message.register(got_pay_topic, Partner.pay_topic)
+    router.message.register(got_boost, Partner.boost)
     router.message.register(got_new, Partner.new)

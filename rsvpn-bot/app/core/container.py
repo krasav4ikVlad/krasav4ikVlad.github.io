@@ -368,7 +368,8 @@ class Container:
             build_providers(config, http, container.db[names.CARDLINK_BILLS]),
             container.settings)
         container.topup = TopupService(
-            container.users, container.payments_repo, container.settings, container=container)
+            container.users, container.payments_repo, container.settings,
+            container=container, ref_tags=container.ref_tags)
         container.billing = BillingService(
             container.users, container.plans, container.settings,
             container.vpn, container.topup, discounts=container.discounts)

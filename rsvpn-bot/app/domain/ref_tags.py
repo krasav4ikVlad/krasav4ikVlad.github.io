@@ -59,3 +59,21 @@ def check(raw: str) -> str:
 
 def link(bot_username: str, tag: str) -> str:
     return f'https://t.me/{bot_username}?start=ref_{tag}'
+
+
+# ── бонусный период партнёра ────────────────────────────────────────────────
+#
+# Процент по метке можно поднять на срок: «эту неделю у тебя 50 вместо 30».
+# Срок обязателен и хранится вместе со ставкой — повышенный процент без
+# даты окончания однажды забывают снять, и он тихо становится постоянным.
+
+
+def boost_rate(partner: dict, moment) -> float:
+    """Повышенная ставка, если она задана и не истекла. Иначе 0."""
+    from app.core.time import parse_dt
+
+    rate = float((partner or {}).get('boost_rate') or 0)
+    until = parse_dt((partner or {}).get('boost_until'))
+    if rate <= 0 or until is None:
+        return 0.0
+    return rate if moment <= until else 0.0

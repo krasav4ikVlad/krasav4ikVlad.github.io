@@ -519,3 +519,143 @@ async def test_a_broken_alias_line_does_not_break_the_screen(admin_env):
     await dp.feed_update(bot, callback(Adm(act='partners').pack()))
 
     assert 'Партнёры' in session.last_text
+
+
+# ── повышенный процент на срок ──────────────────────────────────────────────
+#
+# «Эту неделю у тебя 50 вместо 30». Срок обязателен: повышенный процент без
+# даты окончания однажды забывают снять, и он тихо становится постоянным.
+
+def test_the_boost_works_only_while_it_lasts():
+    from datetime import timedelta
+
+    from app.domain.ref_tags import boost_rate
+
+    live = {'boost_rate': 0.5, 'boost_until': now() + timedelta(days=1)}
+    dead = {'boost_rate': 0.5, 'boost_until': now() - timedelta(days=1)}
+
+    assert boost_rate(live, now()) == 0.5
+    assert boost_rate(dead, now()) == 0.0
+
+
+def test_a_boost_without_a_deadline_does_not_count():
+    """Иначе он остаётся навсегда, и никто об этом не помнит."""
+    from app.domain.ref_tags import boost_rate
+
+    assert boost_rate({'boost_rate': 0.5}, now()) == 0.0
+
+
+def test_an_ordinary_partner_has_no_boost():
+    from app.domain.ref_tags import boost_rate
+
+    assert boost_rate({}, now()) == 0.0
+
+
+async def test_the_referrer_gets_the_raised_percent(db, tags, users, settings):
+    """Главная проверка: деньги считаются по повышенной ставке."""
+    from datetime import timedelta
+
+    from app.repositories.payments import PaymentsRepository
+    from app.services.topup import TopupService
+
+    await tags.create('vlad', 500)
+    await tags.update('vlad', boost_rate=0.5,
+                      boost_until=now() + timedelta(days=7))
+    await users.create({'user_data': {'user_id': 500},
+                        'info': {'balance': 0, 'ref_stats': {'referrals': []}}})
+    await users.create({'user_data': {'user_id': 1, 'referrer': 500,
+                                      'ref_tag': 'vlad'},
+                        'info': {'balance': 0}, 'growth': {}})
+
+    topup = TopupService(users, PaymentsRepository(db['payments']), settings,
+                         ref_tags=tags)
+    result = await topup.process(provider='wata', txid='t1', amount=1000,
+                                 user_id=1)
+
+    assert result['referral_reward'] == 500      # 50%, а не обычные 30%
+
+
+async def test_an_expired_boost_pays_the_usual_percent(db, tags, users, settings):
+    from datetime import timedelta
+
+    from app.repositories.payments import PaymentsRepository
+    from app.services.topup import TopupService
+
+    await tags.create('vlad', 500)
+    await tags.update('vlad', boost_rate=0.5,
+                      boost_until=now() - timedelta(days=1))
+    await users.create({'user_data': {'user_id': 500},
+                        'info': {'balance': 0, 'ref_stats': {'referrals': []}}})
+    await users.create({'user_data': {'user_id': 1, 'referrer': 500,
+                                      'ref_tag': 'vlad'},
+                        'info': {'balance': 0}, 'growth': {}})
+
+    topup = TopupService(users, PaymentsRepository(db['payments']), settings,
+                         ref_tags=tags)
+    result = await topup.process(provider='wata', txid='t2', amount=1000,
+                                 user_id=1)
+
+    assert result['referral_reward'] == 300
+
+
+async def test_someone_without_a_tag_is_unaffected(db, tags, users, settings):
+    from app.repositories.payments import PaymentsRepository
+    from app.services.topup import TopupService
+
+    await users.create({'user_data': {'user_id': 500},
+                        'info': {'balance': 0, 'ref_stats': {'referrals': []}}})
+    await users.create({'user_data': {'user_id': 1, 'referrer': 500},
+                        'info': {'balance': 0}, 'growth': {}})
+
+    topup = TopupService(users, PaymentsRepository(db['payments']), settings,
+                         ref_tags=tags)
+    result = await topup.process(provider='wata', txid='t3', amount=1000,
+                                 user_id=1)
+
+    assert result['referral_reward'] == 300
+
+
+async def test_the_boost_is_set_from_the_panel(admin_env):
+    dp, bot, session, c = admin_env
+    await c.ref_tags.create('vlad', ADMIN.id)
+
+    await dp.feed_update(bot, callback(Adm(act='pboost', a='vlad').pack()))
+    await dp.feed_update(bot, message('50 7'))
+
+    partner = await c.ref_tags.get('vlad')
+    assert partner['boost_rate'] == 0.5 and partner['boost_until']
+
+
+async def test_a_percent_below_the_usual_is_refused(admin_env):
+    """«Повышенный» 20% при обычных 30 ничего не повышает и только путает."""
+    dp, bot, session, c = admin_env
+    await c.ref_tags.create('vlad', ADMIN.id)
+
+    await dp.feed_update(bot, callback(Adm(act='pboost', a='vlad').pack()))
+    await dp.feed_update(bot, message('20 7'))
+
+    assert not (await c.ref_tags.get('vlad')).get('boost_rate')
+    assert 'должен быть больше' in session.last_text
+
+
+async def test_the_boost_needs_a_deadline(admin_env):
+    dp, bot, session, c = admin_env
+    await c.ref_tags.create('vlad', ADMIN.id)
+
+    await dp.feed_update(bot, callback(Adm(act='pboost', a='vlad').pack()))
+    await dp.feed_update(bot, message('50'))
+
+    assert not (await c.ref_tags.get('vlad')).get('boost_rate')
+
+
+async def test_the_boost_can_be_taken_away(admin_env):
+    from datetime import timedelta
+
+    dp, bot, session, c = admin_env
+    await c.ref_tags.create('vlad', ADMIN.id)
+    await c.ref_tags.update('vlad', boost_rate=0.5,
+                            boost_until=now() + timedelta(days=7))
+
+    await dp.feed_update(bot, callback(Adm(act='pboost', a='vlad').pack()))
+
+    assert not (await c.ref_tags.get('vlad'))['boost_rate']
