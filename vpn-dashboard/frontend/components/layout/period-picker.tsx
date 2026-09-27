@@ -3,7 +3,7 @@
 /** Global period filter — preset chips + custom date range. */
 
 import { useState } from "react";
-import { Check } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   PRESET_LABELS,
@@ -15,14 +15,55 @@ import { cn } from "@/lib/utils";
 const ORDER: PeriodPreset[] = ["today", "7d", "30d", "90d", "all"];
 
 export function PeriodPicker() {
-  const { preset, setPreset, setCustom, customFrom, customTo } = usePeriod();
+  const {
+    preset,
+    setPreset,
+    setCustom,
+    customFrom,
+    customTo,
+    shiftWindow,
+    canShiftBack,
+    canShiftForward,
+  } = usePeriod();
   const [open, setOpen] = useState(false);
   const [from, setFrom] = useState(customFrom ?? "");
   const [to, setTo] = useState(customTo ?? "");
 
+  const arrowCls = (enabled: boolean) =>
+    cn(
+      "flex h-6 w-6 shrink-0 items-center justify-center rounded",
+      enabled
+        ? "text-ink-2 hover:bg-surface hover:text-ink"
+        : "cursor-default text-muted/40",
+    );
+
   return (
     <div className="relative">
       <div className="flex items-center gap-1 overflow-x-auto rounded-md bg-surface-2 p-1">
+        <button
+          aria-label="Раньше (сдвинуть период назад)"
+          title="Раньше: тот же период на шаг назад"
+          disabled={!canShiftBack}
+          onClick={() => {
+            setOpen(false);
+            shiftWindow(-1);
+          }}
+          className={arrowCls(canShiftBack)}
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </button>
+        <button
+          aria-label="Позже (сдвинуть период вперёд)"
+          title="Позже: тот же период на шаг вперёд"
+          disabled={!canShiftForward}
+          onClick={() => {
+            setOpen(false);
+            shiftWindow(1);
+          }}
+          className={arrowCls(canShiftForward)}
+        >
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
         {ORDER.map((p) => (
           <button
             key={p}

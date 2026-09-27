@@ -33,6 +33,11 @@ export interface PeriodState {
   customTo: string | null;
   setPreset: (p: PeriodPreset) => void;
   setCustom: (from: string, to: string) => void;
+  /** Shift the window by its own length: -1 = earlier days, +1 = later.
+   *  Reaching today snaps back to the anchored preset. */
+  shiftWindow: (dir: -1 | 1) => void;
+  canShiftBack: boolean;
+  canShiftForward: boolean;
 }
 
 /** N full UTC days back from today's UTC midnight — aligned with the
@@ -75,6 +80,47 @@ function presetToQuery(
 }
 
 const PeriodContext = createContext<PeriodState | null>(null);
+
+const DAY_MS = 86_400_000;
+const PRESET_DAYS: Partial<Record<PeriodPreset, number>> = {
+  today: 1,
+  "7d": 7,
+  "30d": 30,
+  "90d": 90,
+};
+
+function toDateStr(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function todayUtcStartMs(): number {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** Inclusive [from, to] date-window (ms of UTC midnights) for the state. */
+function currentWindow(
+  preset: PeriodPreset,
+  customFrom: string | null,
+  customTo: string | null,
+): { fromMs: number; toMs: number } | null {
+  const today = todayUtcStartMs();
+  const days = PRESET_DAYS[preset];
+  if (days !== undefined) {
+    // якорные пресеты: N дней, заканчивая сегодняшним
+    return { fromMs: today - (days - 1) * DAY_MS, toMs: today };
+  }
+  if (preset === "custom" && customFrom) {
+    const fromMs = new Date(customFrom + "T00:00:00Z").getTime();
+    const toMs = customTo
+      ? new Date(customTo + "T00:00:00Z").getTime()
+      : today;
+    if (Number.isNaN(fromMs) || Number.isNaN(toMs)) return null;
+    return { fromMs, toMs: Math.max(fromMs, toMs) };
+  }
+  return null; // "all"
+}
 
 export function PeriodProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
@@ -120,6 +166,37 @@ export function PeriodProvider({ children }: { children: ReactNode }) {
     [params, navigate],
   );
 
+  const window_ = currentWindow(preset, customFrom, customTo);
+  const canShiftBack = window_ !== null;
+  const canShiftForward =
+    window_ !== null && window_.toMs < todayUtcStartMs();
+
+  const shiftWindow = useCallback(
+    (dir: -1 | 1) => {
+      const win = currentWindow(preset, customFrom, customTo);
+      if (win === null) return; // "всё время" двигать некуда
+      const lenDays =
+        Math.round((win.toMs - win.fromMs) / DAY_MS) + 1; // inclusive
+      const today = todayUtcStartMs();
+      const newFrom = win.fromMs + dir * lenDays * DAY_MS;
+      const newTo = win.toMs + dir * lenDays * DAY_MS;
+      if (dir === 1 && newTo >= today) {
+        // окно дошло до сегодня — возвращаемся к живому пресету той же длины
+        const presetOfLen = (
+          Object.entries(PRESET_DAYS) as [PeriodPreset, number][]
+        ).find(([, d]) => d === lenDays)?.[0];
+        if (presetOfLen) {
+          setPreset(presetOfLen);
+        } else {
+          setCustom(toDateStr(today - (lenDays - 1) * DAY_MS), toDateStr(today));
+        }
+        return;
+      }
+      setCustom(toDateStr(newFrom), toDateStr(newTo));
+    },
+    [preset, customFrom, customTo, setPreset, setCustom],
+  );
+
   const value = useMemo<PeriodState>(
     () => ({
       preset,
@@ -128,8 +205,12 @@ export function PeriodProvider({ children }: { children: ReactNode }) {
       customTo,
       setPreset,
       setCustom,
+      shiftWindow,
+      canShiftBack,
+      canShiftForward,
     }),
-    [preset, customFrom, customTo, setPreset, setCustom],
+    [preset, customFrom, customTo, setPreset, setCustom, shiftWindow,
+     canShiftBack, canShiftForward],
   );
 
   return <PeriodContext.Provider value={value}>{children}</PeriodContext.Provider>;
