@@ -675,17 +675,20 @@ async def lifetime() -> dict[str, Any]:
 # GET /users/{id}/referral-daily — что приносит рефералка юзера по дням
 # ---------------------------------------------------------------------------
 
-_REF_DAILY_DAYS = 60
+_REF_DAILY_FALLBACK_DAYS = 365  # окно для «Всё время»
 _REF_DAILY_MAX_REFS = 5000
 
 
 @cached(ttl=120, prefix="users:ref-daily")
-async def _referral_daily(*, user_id: int, days: int) -> dict[str, Any]:
+async def _referral_daily(*, user_id: int, from_iso: Optional[str],
+                          to_iso: Optional[str]) -> dict[str, Any]:
 
     db = get_db()
     now = datetime.now(timezone.utc)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    since = today - timedelta(days=days)
+    until = parse_dt(to_iso) or now
+    since = parse_dt(from_iso) or (today
+                                   - timedelta(days=_REF_DAILY_FALLBACK_DAYS))
 
     ref_ids = [row["_id"] async for row in db[USERS_FLAT].find(
         {"referrer_id": {"$in": [user_id, str(user_id)]}},
@@ -695,7 +698,7 @@ async def _referral_daily(*, user_id: int, days: int) -> dict[str, Any]:
 
     def slot(day: Optional[datetime]) -> Optional[dict[str, float]]:
         day = as_utc(day)
-        if day is None or day < since:
+        if day is None or day < since or day >= until:
             return None
         return daily.setdefault(day.date().isoformat(), {
             "registrations": 0, "topups": 0.0, "topup_count": 0,
@@ -704,7 +707,7 @@ async def _referral_daily(*, user_id: int, days: int) -> dict[str, Any]:
     # регистрации приведённых по дням
     async for row in db[USERS_FLAT].find(
             {"referrer_id": {"$in": [user_id, str(user_id)]},
-             "joined_at": {"$type": "date", "$gte": since}},
+             "joined_at": {"$type": "date", "$gte": since, "$lt": until}},
             {"joined_at": 1}).limit(_REF_DAILY_MAX_REFS):
         s = slot(row.get("joined_at"))
         if s is not None:
@@ -714,7 +717,8 @@ async def _referral_daily(*, user_id: int, days: int) -> dict[str, Any]:
     if ref_ids:
         async for row in db[TX_FLAT].find(
                 {"user_id": {"$in": ref_ids}, "direction": "credit",
-                 "kind": "topup", "dt": {"$type": "date", "$gte": since}},
+                 "kind": "topup",
+                 "dt": {"$type": "date", "$gte": since, "$lt": until}},
                 {"dt": 1, "amount": 1, "bonus": 1}).limit(20000):
             s = slot(row.get("dt"))
             if s is not None:
@@ -725,7 +729,8 @@ async def _referral_daily(*, user_id: int, days: int) -> dict[str, Any]:
     # реферальные начисления самому юзеру
     async for row in db[TX_FLAT].find(
             {"user_id": user_id, "direction": "credit",
-             "kind": "ref_income", "dt": {"$type": "date", "$gte": since}},
+             "kind": "ref_income",
+             "dt": {"$type": "date", "$gte": since, "$lt": until}},
             {"dt": 1, "amount": 1}).limit(20000):
         s = slot(row.get("dt"))
         if s is not None:
@@ -740,7 +745,7 @@ async def _referral_daily(*, user_id: int, days: int) -> dict[str, Any]:
 
     return {
         "user_id": user_id,
-        "window_days": days,
+        "window_days": max(1, round((until - since).total_seconds() / 86400)),
         "referrals_total": len(ref_ids),
         "sum_registrations": sum(s["registrations"] for s in series),
         "sum_topups": r2(sum(s["topups"] for s in series)),
@@ -752,7 +757,9 @@ async def _referral_daily(*, user_id: int, days: int) -> dict[str, Any]:
 @router.get("/{user_id}/referral-daily")
 async def referral_daily(
         user_id: int,
-        days: int = Query(_REF_DAILY_DAYS, ge=7, le=400),
+        period: Period = Depends(get_period),
 ) -> dict[str, Any]:
-    """Рефералка юзера по дням: приведённые, их пополнения, начисления."""
-    return await _referral_daily(user_id=user_id, days=days)
+    """Рефералка юзера по дням в выбранном периоде (границы — из шапки)."""
+    return await _referral_daily(user_id=user_id,
+                                 from_iso=iso(period.from_dt),
+                                 to_iso=iso(period.to_dt))
