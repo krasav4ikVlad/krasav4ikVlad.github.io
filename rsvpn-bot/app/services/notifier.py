@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 
+from app.content import ids
 from app.core.time import fmt
 from app.content.emoji import e, plain
 
@@ -28,6 +29,18 @@ log = logging.getLogger(__name__)
 def user_link(user_id: int, username: str | None = None) -> str:
     name = f'@{username}' if username else 'без юзернейма'
     return f'{name} (<code>{user_id}</code>)'
+
+
+def partner_topic(partner: dict, paid: bool) -> int:
+    """В какую тему класть событие: регистрации и оплаты живут отдельно.
+
+    Тема оплат не задана — кладём в тему регистраций: одна лента лучше
+    потерянного события. Наоборот не работает, поэтому тема регистраций
+    и остаётся основной.
+    """
+    reg = int((partner or {}).get('topic_id') or 0)
+    pay = int((partner or {}).get('topic_pay_id') or 0)
+    return (pay or reg) if paid else reg
 
 
 class Notifier:
@@ -94,7 +107,7 @@ class Notifier:
             log.warning('метка пользователя %s не прочитана: %s', user_id, exc)
             return '', {}
 
-    async def partner(self, user_id: int, text: str) -> bool:
+    async def partner(self, user_id: int, text: str, paid: bool = False) -> bool:
         """Копия события в чат партнёра. Без чата и без метки — молчим.
 
         Не ломает ни событие, ни основное уведомление: не ушла копия —
@@ -106,7 +119,7 @@ class Notifier:
             return False
 
         try:
-            topic = int((partner or {}).get('topic_id') or 0)
+            topic = partner_topic(partner, paid)
             with plain():
                 await self.bot.send_message(
                     chat_id=chat_id, message_thread_id=topic or None,
@@ -116,7 +129,8 @@ class Notifier:
             log.warning('копия события партнёру (%s) не ушла: %s', user_id, exc)
             return False
 
-    async def about(self, topic: str, user_id: int, text: str) -> bool:
+    async def about(self, topic: str, user_id: int, text: str,
+                    paid: bool = False) -> bool:
         """Событие по человеку: в общий админ-чат и, если он пришёл по
         партнёрской метке, копией в чат этого партнёра.
 
@@ -125,9 +139,14 @@ class Notifier:
         """
         tag, partner = await self._partner_of(user_id)
         if tag:
-            text += f'\n{e("link")} <b>Метка:</b> <code>{tag}</code>'
+            # Кому засчитан приведённый — главное, чего не хватало: по
+            # одной метке не видно, на чей счёт идут проценты.
+            owner = int((partner or {}).get('user_id') or 0)
+            text += (f'\n{e("link")} <b>Метка:</b> <code>{tag}</code>'
+                     + (f' → засчитан <code>{ids.show(owner)}</code>'
+                        if owner else ''))
             if int((partner or {}).get('chat_id') or 0):
-                await self.partner(user_id, text)
+                await self.partner(user_id, text, paid=paid)
         return await self.send(topic, text)
 
     async def _who(self, user_id: int, username: str | None = None) -> str:
@@ -153,7 +172,7 @@ class Notifier:
                 f'<b>Способ:</b> <code>{provider}</code>')
         if bonus:
             text += f'\n<b>Бонус:</b> <code>{bonus}₽</code>'
-        return await self.about('topup', user_id, text)
+        return await self.about('topup', user_id, text, paid=True)
 
     async def topup_try(self, user_id: int, amount: int, provider: str) -> bool:
         return await self.send('topup_try',
@@ -167,14 +186,14 @@ class Notifier:
                 f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>\n'
                 f'<b>Действует до:</b> '
                 f'<code>{fmt((subscription or {}).get("expireAt"))}</code>')
-        return await self.about('subscription', user_id, text)
+        return await self.about('subscription', user_id, text, paid=True)
 
     async def renewed(self, user_id: int, plan: dict, price: int, until=None) -> bool:
         text = (f'{e("renew")} <b>Автопродление</b>\n{await self._who(user_id)}\n'
                 f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>\n'
                 f'<b>Списано:</b> <code>{price}₽</code>\n'
                 f'<b>Действует до:</b> <code>{fmt(until)}</code>')
-        return await self.about('subscription', user_id, text)
+        return await self.about('subscription', user_id, text, paid=True)
 
     async def devices_charged(self, user_id: int, amount: int, price: int,
                               next_charge=None) -> bool:

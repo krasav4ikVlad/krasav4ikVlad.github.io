@@ -24,6 +24,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Admin as Adm
 from app.content import ids
+from app.content import ids
 from app.content.emoji import e
 from app.core.time import fmt
 from app.domain import ref_tags as domain
@@ -34,6 +35,24 @@ log = logging.getLogger(__name__)
 class Partner(StatesGroup):
     new = State()
     chat = State()
+    pay_topic = State()
+
+
+async def legacy_aliases(settings) -> list[tuple[str, str]]:
+    """Именные ссылки из настройки link.ref_aliases — наследство старого бота.
+
+    Они работают (см. resolve_referrer), но счётчика и настроек у них нет:
+    это просто «имя → id» строкой. Показываем, чтобы про них помнили.
+    """
+    raw = str(await settings.get('link.ref_aliases') or '')
+    found = []
+    for pair in raw.split(','):
+        if ':' not in pair:
+            continue
+        name, owner = (part.strip() for part in pair.split(':', 1))
+        if name and owner.isdigit():
+            found.append((name, owner))
+    return found
 
 
 def _btn(text: str, act: str, a: str = '', b: str = '') -> types.InlineKeyboardButton:
@@ -67,6 +86,19 @@ async def screen(call: types.CallbackQuery, state: FSMContext, c, settings) -> N
 
     kb.row(_btn(f'{e("plus")} Добавить партнёра', 'pnew'))
     kb.row(_btn(f'{e("back")} Назад', 'main'))
+
+    old = await legacy_aliases(settings)
+    if old:
+        # Алиасы из настроек работают, но живут мимо этого экрана: ни
+        # счётчика, ни настроек у них нет. Молчать о них — значит однажды
+        # искать «а куда делась старая ссылка».
+        lines.append('')
+        lines.append(f'{e("warning")} <b>Старые ссылки из настроек</b> '
+                     f'(без счётчика): ' + ', '.join(
+                         f'<code>{name}</code> → <code>{ids.show(owner)}</code>'
+                         for name, owner in old[:10]))
+        lines.append('   <i>Заведите их метками — тогда будет видно, '
+                     'сколько каждая привела.</i>')
 
     lines.append(f'<blockquote>{e("trial")} — триал без подписки на канал, '
                  f'{e("bell")} — свой чат уведомлений.\n\n'
@@ -109,16 +141,23 @@ async def card(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
     chat_id = int(partner.get('chat_id') or 0)
     if chat_id:
         topic = int(partner.get('topic_id') or 0)
-        lines.append(f'{e("bell")} Уведомления: <code>{chat_id}</code>'
-                     + (f', тема <code>{topic}</code>' if topic else ''))
+        pay = int(partner.get('topic_pay_id') or 0)
+        lines.append(f'{e("bell")} Чат уведомлений: <code>{chat_id}</code>')
+        lines.append(f'   {e("user")} Регистрации: '
+                     + (f'тема <code>{topic}</code>' if topic
+                        else '<b>общая лента чата</b>'))
+        lines.append(f'   {e("money")} Оплаты: '
+                     + (f'тема <code>{pay}</code>' if pay
+                        else '<b>туда же, куда регистрации</b>'))
     else:
         lines.append(f'{e("bell")} Уведомления: <b>в общий админ-чат</b>')
 
     lines.append('')
-    lines.append(f'<blockquote>События его людей — регистрация, пополнение, '
-                 f'покупка подписки и автопродление — идут и в общий '
-                 f'админ-чат (с пометкой метки), и сюда копией. Общая лента '
-                 f'остаётся полной.\n\nТриал без подписки на канал касается '
+    lines.append(f'<blockquote>События его людей идут и в общий админ-чат '
+                 f'(с пометкой метки и id того, кому засчитан приведённый), '
+                 f'и сюда копией. Регистрации — в одну тему, пополнения, '
+                 f'покупки и автопродления — в другую: в одной ленте '
+                 f'оплаты тонут среди заходов.\n\nТриал без подписки на канал касается '
                  f'только тех, кто пришёл по этой ссылке; общий тумблер в '
                  f'«Бесплатный период» это не меняет.</blockquote>')
 
@@ -126,8 +165,9 @@ async def card(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
     kb.row(_btn(f'{e("cross")} Требовать подписку на канал'
                 if partner.get('no_channel') else
                 f'{e("trial")} Разрешить триал без подписки', 'pchan', tag))
-    kb.row(_btn(f'{e("bell")} Чат уведомлений', 'pchat', tag))
+    kb.row(_btn(f'{e("bell")} Чат и тема регистраций', 'pchat', tag))
     if chat_id:
+        kb.row(_btn(f'{e("money")} Тема оплат', 'pchatpay', tag))
         kb.row(_btn(f'{e("broom")} Убрать чат', 'pchatoff', tag))
     kb.row(_btn(f'{e("trash")} Удалить метку', 'pdel', tag))
     kb.row(_btn(f'{e("back")} Назад', 'partners'))
@@ -223,10 +263,79 @@ async def got_chat(message: types.Message, state: FSMContext, c, settings) -> No
         reply_markup=kb.as_markup())
 
 
+PAY_ASK = (
+    f'{e("money")} <b>Тема оплат</b>\n\n'
+    f'Пришлите номер темы — одним числом:\n'
+    f'<code>43</code>\n\n'
+    f'<blockquote>Чат тот же, меняется только тема. Туда пойдут '
+    f'пополнения, покупки подписок и автопродления — регистрации '
+    f'останутся в своей.\n\nНомер темы покажет <code>/chatid</code>, '
+    f'отправленная внутрь неё. Ноль — сложить всё в одну тему '
+    f'с регистрациями.</blockquote>'
+)
+
+
+async def ask_pay_topic(call: types.CallbackQuery, callback_data: Adm,
+                        state: FSMContext, c, settings) -> None:
+    tag = domain.normalize(callback_data.a)
+    if not (await c.ref_tags.get(tag) or {}).get('chat_id'):
+        await call.answer('Сначала задайте чат уведомлений', show_alert=True)
+        return
+
+    await state.set_state(Partner.pay_topic)
+    await state.update_data(tag=tag)
+
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn(f'{e("back")} Отмена', 'pshow', tag))
+    await call.message.edit_text(PAY_ASK, reply_markup=kb.as_markup())
+    await call.answer()
+
+
+async def got_pay_topic(message: types.Message, state: FSMContext, c,
+                        settings) -> None:
+    data = await state.get_data()
+    tag = data.get('tag') or ''
+    raw = (message.text or '').strip()
+    if not raw.lstrip('-').isdigit():
+        await message.answer(f'{e("warning")} Нужно число — номер темы. '
+                             f'Например: <code>43</code>')
+        return
+
+    topic = max(0, int(raw))
+    partner = await c.ref_tags.get(tag) or {}
+    chat_id = int(partner.get('chat_id') or 0)
+
+    if topic:
+        # Та же проверка отправкой, что и для чата: тема могла быть закрыта
+        # или удалена, и узнать об этом при первой же оплате — плохой план.
+        try:
+            await message.bot.send_message(
+                chat_id=chat_id, message_thread_id=topic,
+                text=f'{e("money")} Сюда будут приходить оплаты по метке '
+                     f'<code>{tag}</code>.')
+        except Exception as exc:
+            await message.answer(
+                f'{e("cross")} В эту тему написать не вышло:\n'
+                f'<code>{exc}</code>\n\nПроверьте номер и права бота.')
+            return
+
+    await c.ref_tags.update(tag, topic_pay_id=topic)
+    await state.clear()
+    log.info('партнёр %s: тема оплат %s', tag, topic)
+
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn(f'{e("back")} К партнёру', 'pshow', tag))
+    await message.answer(
+        (f'{e("ok")} Оплаты по метке <code>{tag}</code> пойдут в тему '
+         f'<code>{topic}</code>.' if topic else
+         f'{e("ok")} Оплаты вернулись в тему регистраций.'),
+        reply_markup=kb.as_markup())
+
+
 async def clear_chat(call: types.CallbackQuery, callback_data: Adm,
                      state: FSMContext, c, settings) -> None:
     tag = domain.normalize(callback_data.a)
-    await c.ref_tags.update(tag, chat_id=0, topic_id=0)
+    await c.ref_tags.update(tag, chat_id=0, topic_id=0, topic_pay_id=0)
     await call.answer('Уведомления вернулись в общий админ-чат')
     await card(call, callback_data, state, c, settings)
 
@@ -331,9 +440,11 @@ def register(router: Router) -> None:
     router.callback_query.register(card, Adm.filter(F.act == 'pshow'))
     router.callback_query.register(toggle_channel, Adm.filter(F.act == 'pchan'))
     router.callback_query.register(ask_chat, Adm.filter(F.act == 'pchat'))
+    router.callback_query.register(ask_pay_topic, Adm.filter(F.act == 'pchatpay'))
     router.callback_query.register(clear_chat, Adm.filter(F.act == 'pchatoff'))
     router.callback_query.register(ask_new, Adm.filter(F.act == 'pnew'))
     router.callback_query.register(ask_delete, Adm.filter(F.act == 'pdel'))
     router.callback_query.register(delete, Adm.filter(F.act == 'pdelok'))
     router.message.register(got_chat, Partner.chat)
+    router.message.register(got_pay_topic, Partner.pay_topic)
     router.message.register(got_new, Partner.new)

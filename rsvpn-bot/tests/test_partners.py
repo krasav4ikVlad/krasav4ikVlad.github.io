@@ -369,3 +369,153 @@ async def test_an_ordinary_user_gets_no_tag_line(tags, users, settings, db):
     await notifier.registered(2, username='u2')
 
     assert 'Метка' not in bot.sent[0]['text']
+
+
+# ── регистрации и оплаты — по разным темам ──────────────────────────────────
+#
+# В одной ленте оплаты тонут среди заходов: людей приходит вдесятеро
+# больше, чем платит. Разделение тем — это возможность смотреть только на
+# то, что приносит деньги.
+
+def test_the_topic_depends_on_the_kind_of_event():
+    from app.services.notifier import partner_topic
+
+    partner = {'topic_id': 42, 'topic_pay_id': 43}
+
+    assert partner_topic(partner, paid=False) == 42
+    assert partner_topic(partner, paid=True) == 43
+
+
+def test_without_a_payments_topic_everything_goes_to_the_first():
+    """Одна лента лучше потерянного события."""
+    from app.services.notifier import partner_topic
+
+    assert partner_topic({'topic_id': 42}, paid=True) == 42
+
+
+def test_the_chat_itself_works_without_any_topics():
+    from app.services.notifier import partner_topic
+
+    assert partner_topic({}, paid=True) == 0
+
+
+async def test_a_registration_goes_to_the_first_topic(tags, users, settings, db):
+    await tags.create('vlad', 500)
+    await tags.update('vlad', chat_id=-100123, topic_id=42, topic_pay_id=43)
+    await person(users, 1, tag='vlad')
+    bot = FakeBot()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    await notifier.registered(1, username='u1')
+
+    copy = next(row for row in bot.sent if row['chat_id'] == -100123)
+    assert copy['topic'] == 42
+
+
+async def test_a_payment_goes_to_the_second(tags, users, settings, db):
+    await tags.create('vlad', 500)
+    await tags.update('vlad', chat_id=-100123, topic_id=42, topic_pay_id=43)
+    await person(users, 1, tag='vlad')
+    bot = FakeBot()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    await notifier.topup(1, amount=500, bonus=0, credit=500, provider='wata')
+
+    copy = next(row for row in bot.sent if row['chat_id'] == -100123)
+    assert copy['topic'] == 43
+
+
+async def test_a_purchase_counts_as_a_payment(tags, users, settings, db):
+    await tags.create('vlad', 500)
+    await tags.update('vlad', chat_id=-100123, topic_id=42, topic_pay_id=43)
+    await person(users, 1, tag='vlad')
+    bot = FakeBot()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    await notifier.subscription_created(1, {'title': 'Месяц'}, {})
+
+    copy = next(row for row in bot.sent if row['chat_id'] == -100123)
+    assert copy['topic'] == 43
+
+
+# ── кому засчитан приведённый ───────────────────────────────────────────────
+async def test_the_event_names_who_gets_the_referral(tags, users, settings, db):
+    """По одной метке не видно, на чей счёт идут проценты."""
+    await settings.set('notify.chat_id', -100777)
+    await tags.create('vlad', 7996131040)
+    await tags.update('vlad', chat_id=-100123)
+    await person(users, 1, tag='vlad')
+    bot = FakeBot()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    await notifier.topup(1, amount=500, bonus=0, credit=500, provider='wata')
+
+    for row in bot.sent:
+        assert '7996131040' in row['text']
+
+
+# ── админка: вторая тема ────────────────────────────────────────────────────
+async def test_the_payments_topic_is_saved(admin_env):
+    dp, bot, session, c = admin_env
+    await c.ref_tags.create('vlad', ADMIN.id)
+    await c.ref_tags.update('vlad', chat_id=-100999, topic_id=42)
+
+    await dp.feed_update(bot, callback(Adm(act='pchatpay', a='vlad').pack()))
+    await dp.feed_update(bot, message('43'))
+
+    partner = await c.ref_tags.get('vlad')
+    assert partner['topic_pay_id'] == 43 and partner['topic_id'] == 42
+
+
+async def test_the_payments_topic_needs_a_chat_first(admin_env):
+    """Тема без чата — это ничего: класть событие некуда."""
+    dp, bot, session, c = admin_env
+    await c.ref_tags.create('vlad', ADMIN.id)
+
+    await dp.feed_update(bot, callback(Adm(act='pchatpay', a='vlad').pack()))
+    await dp.feed_update(bot, message('43'))
+
+    assert not (await c.ref_tags.get('vlad')).get('topic_pay_id')
+
+
+async def test_zero_returns_payments_to_the_first_topic(admin_env):
+    dp, bot, session, c = admin_env
+    await c.ref_tags.create('vlad', ADMIN.id)
+    await c.ref_tags.update('vlad', chat_id=-100999, topic_id=42, topic_pay_id=43)
+
+    await dp.feed_update(bot, callback(Adm(act='pchatpay', a='vlad').pack()))
+    await dp.feed_update(bot, message('0'))
+
+    assert (await c.ref_tags.get('vlad'))['topic_pay_id'] == 0
+
+
+async def test_removing_the_chat_removes_both_topics(admin_env):
+    dp, bot, session, c = admin_env
+    await c.ref_tags.create('vlad', ADMIN.id)
+    await c.ref_tags.update('vlad', chat_id=-100999, topic_id=42, topic_pay_id=43)
+
+    await dp.feed_update(bot, callback(Adm(act='pchatoff', a='vlad').pack()))
+
+    partner = await c.ref_tags.get('vlad')
+    assert not partner['chat_id'] and not partner['topic_pay_id']
+
+
+# ── старые ссылки из настроек ───────────────────────────────────────────────
+async def test_old_aliases_are_shown_on_the_screen(admin_env):
+    """Они работают, но живут мимо этого экрана: ни счётчика, ни настроек.
+    Молчать о них — значит однажды искать «куда делась старая ссылка»."""
+    dp, bot, session, c = admin_env
+    await c.settings.set('link.ref_aliases', 'oldvlad:7996131040')
+
+    await dp.feed_update(bot, callback(Adm(act='partners').pack()))
+
+    assert 'oldvlad' in session.last_text and '7996131040' in session.last_text
+
+
+async def test_a_broken_alias_line_does_not_break_the_screen(admin_env):
+    dp, bot, session, c = admin_env
+    await c.settings.set('link.ref_aliases', 'мусор, без:двоеточия_цифр')
+
+    await dp.feed_update(bot, callback(Adm(act='partners').pack()))
+
+    assert 'Партнёры' in session.last_text
