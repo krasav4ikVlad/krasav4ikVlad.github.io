@@ -235,6 +235,10 @@ export default function UserCardPage() {
                   }
                 />
                 <Meta label="Баланс" value={fmtMoney(user.balance, true)} />
+                <Meta
+                  label="Реф. баланс"
+                  value={fmtMoney(user.ref_stats?.payout_pending ?? 0, true)}
+                />
                 <Meta label="Клиент" value={user.preferred_client ?? "—"} />
                 <Meta
                   label="Доп. устройств"

@@ -182,6 +182,13 @@ export interface UserCard {
     preferred_client: string | null;
     days_to_expire: number | null;
     segment_history: { segment: string; dt: string }[];
+    ref_stats?: {
+      payout_pending?: number;
+      earned_total?: number;
+      turnover_total?: number;
+      referrals?: number;
+      paying_referrals?: number;
+    } | null;
   };
   transactions: UserCardTx[];
   referrals: {
