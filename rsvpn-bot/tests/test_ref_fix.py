@@ -210,3 +210,62 @@ async def test_the_mark_stops_a_repair_that_slipped_through(repos, db):
 
     assert again['reward'] == 0
     assert (await users.get(OWNER))['info']['ref_stats']['withdrawable'] == 300
+
+
+# ── «почему так мало» ───────────────────────────────────────────────────────
+#
+# Число потерянных сверить не с чем, и «кажется, мало» проверяется только
+# данными: когда начались потери, какая конверсия в оплату и нет ли рядом
+# похожих ссылок, которые мы не считаем.
+
+async def test_similar_links_are_shown_but_not_repaired(repos, db):
+    """`ref_метка_yt` — другая метка. Чинить её вслепую нельзя, а не
+    показать — значит оставить вопрос «а почему так мало» без ответа."""
+    users, journal = repos
+    await owner_card(users)
+    await came(users, 1)
+    await came(users, 2, utm='ref_republickcheck_yt')
+    await came(users, 3, utm='ref_republickcheck_yt')
+
+    data = await look(repos)
+
+    assert len(data['fresh']) == 1
+    assert data['variants'] == [('ref_republickcheck_yt', 2)]
+
+
+async def test_those_who_came_earlier_are_counted_for_the_hint(repos, db):
+    """Дату поломки называют по памяти. Если до неё по ссылке тоже шли
+    люди, это повод взять дату пораньше."""
+    users, journal = repos
+    await owner_card(users)
+    await came(users, 1)
+    await came(users, 2, days_ago=100)
+    await came(users, 3, days_ago=120)
+
+    assert (await look(repos))['before'] == 2
+
+
+async def test_losses_are_broken_down_by_month(repos, db):
+    users, journal = repos
+    await owner_card(users)
+    await came(users, 1, days_ago=10)
+    await came(users, 2, days_ago=10)
+    await came(users, 3, days_ago=45)
+
+    months = dict((await look(repos))['months'])
+
+    assert sum(months.values()) == 3 and len(months) == 2
+
+
+async def test_the_average_payment_is_shown(repos, db):
+    """Средний чек отвечает на «мало или нормально» лучше суммы."""
+    users, journal = repos
+    await owner_card(users)
+    await came(users, 1)
+    await came(users, 2)
+    await topped_up(journal, 1, paid=300)
+    await topped_up(journal, 2, paid=100)
+
+    data = await look(repos)
+
+    assert data['payers'] == 2 and data['average'] == 200

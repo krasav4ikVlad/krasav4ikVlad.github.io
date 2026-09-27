@@ -45,15 +45,37 @@ def report_text(data: dict, rate: float, done: dict | None = None) -> str:
                          f'стоит — их и не должно быть в списке.</i>')
         return '\n'.join(lines)
 
+    share = round(data['payers'] * 100 / len(fresh)) if fresh else 0
     lines.append(f'{e("referrals")} Потеряно людей: <b>{len(fresh)}</b>')
     lines.append(f'{e("money")} Из них платили: <b>{data["payers"]}</b> '
-                 f'на <b>{data["paid"]}₽</b>')
+                 f'({share}%) на <b>{data["paid"]}₽</b>, '
+                 f'в среднем {data["average"]}₽')
     lines.append(f'{e("payout")} К доначислению: <b>{reward}₽</b> '
                  f'({round(rate * 100)}%)')
     if data['already']:
         lines.append(f'<i>Ещё у {data["already"]} чел. пригласивший уже '
                      f'стоит — их не трогаем.</i>')
     lines.append('')
+
+    if data.get('months'):
+        lines.append('<b>Потери по месяцам</b>')
+        for month, count in data['months']:
+            lines.append(f'{month} — {count} чел.')
+        lines.append('')
+
+    if data.get('before'):
+        lines.append(f'{e("calendar")} До {fmt(data["since"], "%d.%m.%Y")} по '
+                     f'этой ссылке пришло ещё <b>{data["before"]}</b> чел. — '
+                     f'если потери начались раньше, возьмите дату пораньше.')
+        lines.append('')
+
+    if data.get('variants'):
+        lines.append('<b>Похожие ссылки, которые не чиним</b>')
+        for name, count in data['variants'][:8]:
+            lines.append(f'<code>{name}</code> — {count} чел.')
+        lines.append('<i>Это другие метки. Если какая-то из них тоже его — '
+                     'заведите её и почините отдельно.</i>')
+        lines.append('')
 
     if done is None:
         lines.append(f'<blockquote>Это только показ, ничего не изменено. '

@@ -52,6 +52,9 @@ async def find(users, journal, *, tag: str, since: datetime,
 
     lost: list[dict] = []
     already: int = 0
+    before: int = 0
+    variants: dict[str, int] = {}
+    needle = (tag or '').strip().lower()
 
     cursor = users.col.find(
         {'user_data.utm': {'$exists': True}},
@@ -62,10 +65,16 @@ async def find(users, journal, *, tag: str, since: datetime,
     async for doc in cursor:
         utm = str(users.pick(doc, 'user_data.utm') or '').strip().lower()
         if utm not in payloads:
+            # Похожая, но не та же ссылка: `ref_метка_yt`, `метка2`,
+            # опечатка в раздаче. Их не чиним вслепую, но показываем —
+            # иначе «нашлось мало» не с чем сверить.
+            if needle and needle in utm:
+                variants[utm] = variants.get(utm, 0) + 1
             continue
 
         joined = parse_dt(users.pick(doc, 'user_data.date_joined'))
         if joined and joined < since:
+            before += 1
             continue
 
         user_id = users.pick(doc, 'user_data.user_id')
@@ -88,14 +97,35 @@ async def find(users, journal, *, tag: str, since: datetime,
         row['paid'] = paid.get(row['user_id'], 0)
 
     fresh = [row for row in lost if not row['fixed_at']]
+    payers = [row for row in fresh if row['paid']]
     return {
         'tag': tag, 'since': since, 'owner_id': int(owner_id),
         'found': lost,
         'fresh': fresh,
         'already': already,
-        'paid': sum(row['paid'] for row in fresh),
-        'payers': sum(1 for row in fresh if row['paid']),
+        'before': before,
+        'variants': sorted(variants.items(), key=lambda pair: -pair[1]),
+        'paid': sum(row['paid'] for row in payers),
+        'payers': len(payers),
+        'average': round(sum(row['paid'] for row in payers) / len(payers))
+                   if payers else 0,
+        'months': by_month(fresh),
     }
+
+
+def by_month(rows: list[dict]) -> list[tuple[str, int]]:
+    """Потери по месяцам — чтобы увидеть, когда всё началось на самом деле.
+
+    Дата поломки берётся из головы («примерно с восьмого»), и если потери
+    тянутся с более раннего месяца, это видно только так.
+    """
+    counts: dict[str, int] = {}
+    for row in rows:
+        at = row.get('at')
+        if at is None:
+            continue
+        counts[at.strftime('%m.%Y')] = counts.get(at.strftime('%m.%Y'), 0) + 1
+    return sorted(counts.items())
 
 
 async def _paid_by(journal, user_ids: list[int]) -> dict[int, int]:
