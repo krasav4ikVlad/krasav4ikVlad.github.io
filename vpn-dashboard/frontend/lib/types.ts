@@ -421,6 +421,24 @@ export interface OpportunitiesResponse {
   computed_at: string | null;
 }
 
+// ---- referral daily ----
+export interface ReferralDailyRow {
+  day: string;
+  registrations: number;
+  topups: number;
+  topup_count: number;
+  ref_income: number;
+}
+export interface ReferralDaily {
+  user_id: number;
+  window_days: number;
+  referrals_total: number;
+  sum_registrations: number;
+  sum_topups: number;
+  sum_ref_income: number;
+  series: ReferralDailyRow[];
+}
+
 // ---- lifetime ----
 export interface LifetimeResponse {
   paying_total: number;

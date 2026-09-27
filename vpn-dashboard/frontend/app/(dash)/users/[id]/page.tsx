@@ -3,6 +3,7 @@
 /** Карточка пользователя: профиль, KPI, транзакции, сегменты, рефералы, логи. */
 
 import Link from "next/link";
+import { useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import useSWR from "swr";
 import { ArrowLeft } from "lucide-react";
@@ -17,6 +18,9 @@ import { StatSkeleton, TableSkeleton } from "@/components/ui/skeleton";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { StatCard } from "@/components/live/stat-card";
+import { StackedBars } from "@/components/charts/stacked-bars";
+import { TimeSeries } from "@/components/charts/timeseries";
+import { fillTimeBuckets } from "@/lib/series";
 
 const KIND_LABELS: Record<string, string> = {
   topup: "Пополнение",
@@ -65,6 +69,88 @@ function Meta({ label, value }: { label: string; value: React.ReactNode }) {
 
 function EmptyNote({ text }: { text: string }) {
   return <div className="py-8 text-center text-sm text-muted">{text}</div>;
+}
+
+function ReferralDailySection({
+  userId,
+  hasReferrals,
+}: {
+  userId: string | undefined;
+  hasReferrals: boolean;
+}) {
+  const { data } = useSWR<T.ReferralDaily>(
+    userId && hasReferrals ? api.urls.referralDaily(userId) : null,
+    fetcher,
+    { keepPreviousData: true },
+  );
+  const series = useMemo(
+    () =>
+      fillTimeBuckets(
+        (data?.series ?? []) as unknown as Record<string, unknown>[],
+        "day",
+        (day) => ({
+          day,
+          registrations: 0,
+          topups: 0,
+          topup_count: 0,
+          ref_income: 0,
+        }),
+        "day",
+      ),
+    [data],
+  );
+  if (!data || (data.sum_registrations === 0 && data.sum_topups === 0
+      && data.sum_ref_income === 0)) {
+    return null;
+  }
+  return (
+    <div className="mb-4 space-y-3">
+      <div className="text-xs text-muted">
+        За {data.window_days} дней: приведено{" "}
+        <span className="font-medium text-ink-2">
+          {fmtNum(data.sum_registrations)}
+        </span>{" "}
+        · пополнения рефералов{" "}
+        <span className="font-medium text-ink-2">
+          {fmtMoney(data.sum_topups)}
+        </span>{" "}
+        · начислено ему{" "}
+        <span className="font-medium text-ink-2">
+          {fmtMoney(data.sum_ref_income)}
+        </span>
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="min-w-0">
+          <div className="mb-1 text-xs text-muted">Приведённые по дням</div>
+          <StackedBars
+            data={series}
+            keys={["registrations"]}
+            names={{ registrations: "Регистрации" }}
+            height={180}
+            xKey="day"
+            xFormatter={(d) => fmtDate(d)}
+            valueFormatter={(v) => fmtNum(v)}
+          />
+        </div>
+        <div className="min-w-0">
+          <div className="mb-1 text-xs text-muted">
+            Деньги по дням: пополнения рефералов и начисления рефереру
+          </div>
+          <TimeSeries
+            data={series}
+            series={[
+              { key: "topups", name: "Пополнения рефералов", kind: "area" },
+              { key: "ref_income", name: "Начислено рефереру" },
+            ]}
+            height={180}
+            xKey="day"
+            xFormatter={(d) => fmtDate(d)}
+            valueFormatter={(v) => fmtMoney(v)}
+          />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function UserCardPage() {
@@ -305,6 +391,10 @@ export default function UserCardPage() {
 
           {/* Рефералы */}
           <TabsContent value="refs">
+            <ReferralDailySection
+              userId={id}
+              hasReferrals={referrals.length > 0}
+            />
             {loading ? (
               <TableSkeleton rows={6} />
             ) : referrals.length === 0 ? (

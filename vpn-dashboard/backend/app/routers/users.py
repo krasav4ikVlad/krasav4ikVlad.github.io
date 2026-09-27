@@ -14,7 +14,7 @@ import logging
 import re
 import statistics
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -669,3 +669,87 @@ async def _lifetime() -> dict[str, Any]:
 async def lifetime() -> dict[str, Any]:
     """Время жизни платящего: выживаемость, средняя/медианная жизнь, LTV."""
     return await _lifetime()
+
+
+# ---------------------------------------------------------------------------
+# GET /users/{id}/referral-daily — что приносит рефералка юзера по дням
+# ---------------------------------------------------------------------------
+
+_REF_DAILY_DAYS = 60
+_REF_DAILY_MAX_REFS = 5000
+
+
+@cached(ttl=120, prefix="users:ref-daily")
+async def _referral_daily(*, user_id: int) -> dict[str, Any]:
+
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    since = today - timedelta(days=_REF_DAILY_DAYS)
+
+    ref_ids = [row["_id"] async for row in db[USERS_FLAT].find(
+        {"referrer_id": {"$in": [user_id, str(user_id)]}},
+        {"_id": 1}).limit(_REF_DAILY_MAX_REFS)]
+
+    daily: dict[str, dict[str, float]] = {}
+
+    def slot(day: Optional[datetime]) -> Optional[dict[str, float]]:
+        day = as_utc(day)
+        if day is None or day < since:
+            return None
+        return daily.setdefault(day.date().isoformat(), {
+            "registrations": 0, "topups": 0.0, "topup_count": 0,
+            "ref_income": 0.0})
+
+    # регистрации приведённых по дням
+    async for row in db[USERS_FLAT].find(
+            {"referrer_id": {"$in": [user_id, str(user_id)]},
+             "joined_at": {"$type": "date", "$gte": since}},
+            {"joined_at": 1}).limit(_REF_DAILY_MAX_REFS):
+        s = slot(row.get("joined_at"))
+        if s is not None:
+            s["registrations"] += 1
+
+    # пополнения рефералов (живые деньги от его аудитории)
+    if ref_ids:
+        async for row in db[TX_FLAT].find(
+                {"user_id": {"$in": ref_ids}, "direction": "credit",
+                 "kind": "topup", "dt": {"$type": "date", "$gte": since}},
+                {"dt": 1, "amount": 1, "bonus": 1}).limit(20000):
+            s = slot(row.get("dt"))
+            if s is not None:
+                s["topups"] += (float(row.get("amount") or 0)
+                                - float(row.get("bonus") or 0))
+                s["topup_count"] += 1
+
+    # реферальные начисления самому юзеру
+    async for row in db[TX_FLAT].find(
+            {"user_id": user_id, "direction": "credit",
+             "kind": "ref_income", "dt": {"$type": "date", "$gte": since}},
+            {"dt": 1, "amount": 1}).limit(20000):
+        s = slot(row.get("dt"))
+        if s is not None:
+            s["ref_income"] += float(row.get("amount") or 0)
+
+    series = [{"day": day,
+               "registrations": int(v["registrations"]),
+               "topups": r2(v["topups"]),
+               "topup_count": int(v["topup_count"]),
+               "ref_income": r2(v["ref_income"])}
+              for day, v in sorted(daily.items())]
+
+    return {
+        "user_id": user_id,
+        "window_days": _REF_DAILY_DAYS,
+        "referrals_total": len(ref_ids),
+        "sum_registrations": sum(s["registrations"] for s in series),
+        "sum_topups": r2(sum(s["topups"] for s in series)),
+        "sum_ref_income": r2(sum(s["ref_income"] for s in series)),
+        "series": series,
+    }
+
+
+@router.get("/{user_id}/referral-daily")
+async def referral_daily(user_id: int) -> dict[str, Any]:
+    """Рефералка юзера по дням: приведённые, их пополнения, начисления."""
+    return await _referral_daily(user_id=user_id)

@@ -123,6 +123,7 @@ export const api = {
     regEconomics: () => "/api/experiments/registration-economics",
     regSources: () => "/api/experiments/registration-sources",
     lifetime: () => "/api/users/lifetime",
+    referralDaily: (id: number | string) => `/api/users/${id}/referral-daily`,
   },
 
   alertsTest: () => request<{ sent: boolean }>("/api/alerts/test", { method: "POST" }),
