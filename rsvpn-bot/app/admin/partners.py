@@ -24,11 +24,11 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Admin as Adm
 from app.content import ids
-from app.content import ids
 from app.content.emoji import e
 from app.core.time import fmt, parse_dt
 from app.core.time import now as time_now
 from app.domain import ref_tags as domain
+from app.services import partner_stats
 
 log = logging.getLogger(__name__)
 
@@ -171,6 +171,7 @@ async def card(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
                  f'«Бесплатный период» это не меняет.</blockquote>')
 
     kb = InlineKeyboardBuilder()
+    kb.row(_btn(f'{e("stats")} Статистика по дням', 'pstat', tag))
     kb.row(_btn(f'{e("cross")} Требовать подписку на канал'
                 if partner.get('no_channel') else
                 f'{e("trial")} Разрешить триал без подписки', 'pchan', tag))
@@ -183,6 +184,75 @@ async def card(call: types.CallbackQuery, callback_data: Adm, state: FSMContext,
     kb.row(_btn(f'{e("trash")} Удалить метку', 'pdel', tag))
     kb.row(_btn(f'{e("back")} Назад', 'partners'))
     await edit(call, '\n'.join(lines), kb)
+
+
+# ── статистика по дням ──────────────────────────────────────────────────────
+#
+# «Сколько всего привёл» на вопрос о партнёре не отвечает: по одному числу
+# не видно ни всплеска после ролика, ни того, что ссылка неделю назад
+# перестала работать. Отвечают дни подряд.
+
+STAT_DAYS = 14
+STAT_LONG = 30
+
+
+def stats_text(data: dict, *, days: int) -> str:
+    rows = data['days']
+    top = max((row['people'] for row in rows), default=0)
+    today = data['today']
+
+    lines = [f'<b>{e("stats")} {data["tag"]} — по дням</b>', '',
+             f'{e("referrals")} За {days} дн. пришло: '
+             f'<b>{data["people"]}</b> чел.',
+             f'{e("money")} Внесли за это время: <b>{data["paid"]}₽</b>',
+             f'{e("calendar")} Сегодня: <b>{today["people"]}</b> чел., '
+             f'<b>{today["paid"]}₽</b>',
+             f'{e("friends")} Всего по метке: '
+             f'<b>{data["total_people"]}</b> чел.', '']
+
+    body = []
+    for row in reversed(rows):           # свежий день сверху: его и смотрят
+        bar = partner_stats.bar(row['people'], top)
+        money = f'{row["paid"]}₽' if row['paid'] else ''
+        body.append(f'{row["day"]} {row["people"]:>4} '
+                    f'{bar:<{partner_stats.BAR_WIDTH}} {money}'.rstrip())
+    lines.append('<code>' + '\n'.join(body) + '</code>')
+
+    lines.append('')
+    lines.append(f'<blockquote>Деньги — внесённое его людьми в этот день, '
+                 f'включая пришедших раньше: человек из августа платит '
+                 f'сегодня, и это сегодняшние деньги партнёра. Считается '
+                 f'оплаченное, а не зачисленное — бонус за пополнение наш, '
+                 f'и к его работе отношения не имеет.\n\n'
+                 f'Люди — по метке в карточке. Перешедшие по обычной '
+                 f'числовой ссылке того же человека сюда не попадают: это '
+                 f'другая ссылка.</blockquote>')
+    return '\n'.join(lines)
+
+
+async def stats(call: types.CallbackQuery, callback_data: Adm,
+                state: FSMContext, c, settings) -> None:
+    from app.admin.panel import edit
+
+    await state.clear()
+    tag = domain.normalize(callback_data.a)
+    if not await c.ref_tags.get(tag):
+        await call.answer('Метка не найдена', show_alert=True)
+        return
+
+    long = callback_data.b == 'long'
+    days = STAT_LONG if long else STAT_DAYS
+    # Перебор всех его людей по базе в другой стране занимает секунды, и
+    # молчащая кнопка в это время выглядит сломанной.
+    await call.answer('Считаю…')
+    data = await partner_stats.by_day(c.users, c.balance_log,
+                                      tag=tag, days=days)
+
+    kb = InlineKeyboardBuilder()
+    kb.row(_btn(f'{e("calendar")} За {STAT_DAYS if long else STAT_LONG} дн.',
+                'pstat', tag, '' if long else 'long'))
+    kb.row(_btn(f'{e("back")} К партнёру', 'pshow', tag))
+    await edit(call, stats_text(data, days=days), kb)
 
 
 async def toggle_channel(call: types.CallbackQuery, callback_data: Adm,
@@ -527,6 +597,7 @@ async def delete(call: types.CallbackQuery, callback_data: Adm, state: FSMContex
 def register(router: Router) -> None:
     router.callback_query.register(screen, Adm.filter(F.act == 'partners'))
     router.callback_query.register(card, Adm.filter(F.act == 'pshow'))
+    router.callback_query.register(stats, Adm.filter(F.act == 'pstat'))
     router.callback_query.register(toggle_channel, Adm.filter(F.act == 'pchan'))
     router.callback_query.register(ask_chat, Adm.filter(F.act == 'pchat'))
     router.callback_query.register(toggle_boost, Adm.filter(F.act == 'pboost'))
