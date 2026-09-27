@@ -129,8 +129,23 @@ async def command(message: types.Message, command, c, settings) -> None:
         await message.answer(report_text(data, rate))
         return
 
+    # Починка на четырёх тысячах человек идёт минуту-другую. Молчащий
+    # экран в это время неотличим от зависшего — и вторая попытка «а вдруг
+    # не сработало» приходит ровно сюда.
+    progress = await message.answer(f'{e("refresh")} Чиню: 0 из '
+                                    f'{len(data["fresh"])}…')
+
+    async def show(done_count: int, total: int, linked: int) -> None:
+        try:
+            await progress.edit_text(
+                f'{e("refresh")} Чиню: <b>{done_count}</b> из {total}, '
+                f'связано {linked}…')
+        except Exception:      # noqa: BLE001 — счётчик не важнее починки
+            pass
+
     done = await service.repair(c.users, data, rate=rate,
-                                admin_id=message.from_user.id)
+                                admin_id=message.from_user.id,
+                                on_progress=show)
     await message.answer(report_text(data, rate, done))
 
 

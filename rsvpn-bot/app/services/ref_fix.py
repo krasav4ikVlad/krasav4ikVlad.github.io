@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from uuid import uuid4
 
 from app.core.time import now, parse_dt
 
@@ -152,61 +153,112 @@ async def _paid_by(journal, user_ids: list[int]) -> dict[int, int]:
     return totals
 
 
-async def repair(users, data: dict, *, rate: float, admin_id: int = 0) -> dict:
-    """Проставить связь и доначислить процент. Возвращает, что вышло."""
+# Пустой «пригласивший» в базе выглядит по-разному: старый бот писал ''
+# и 0, новый — '' и отсутствие поля. Условие должно покрывать все четыре,
+# иначе починка молча не срабатывает: людей нашли, а update не совпал ни
+# с одним документом.
+EMPTY_REFERRER = [
+    {'user_data.referrer': ''},
+    {'user_data.referrer': 0},
+    {'user_data.referrer': '0'},
+    {'user_data.referrer': None},
+    {'user_data.referrer': {'$exists': False}},
+]
+
+
+async def repair(users, data: dict, *, rate: float, admin_id: int = 0,
+                 on_progress=None) -> dict:
+    """Проставить связь и доначислить процент. Возвращает, что вышло.
+
+    Пачками, а не по одному: на четырёх тысячах человек поштучные запросы
+    к базе в другой стране — это девять тысяч обращений и четверть часа
+    ожидания без единой строчки на экране. Здесь на всю починку уходит
+    десяток запросов.
+
+    Как отличить «связали мы» от «связал кто-то раньше»: у каждого запуска
+    свой номер, он ставится вместе с отметкой. Начисляем ровно по тем, у
+    кого стоит номер этого запуска, — никакой арифметики по разнице.
+    """
     owner_id = int(data['owner_id'])
     tag = data['tag']
-    report = {'linked': 0, 'reward': 0, 'payers': 0}
+    # Номер запуска — с случайным хвостом: два вызова в одну секунду
+    # получили бы одинаковый номер, и второй увидел бы чужих связанных
+    # как своих. То есть начислил бы за них второй раз.
+    run = f'{tag}-{int(now().timestamp())}-{uuid4().hex[:8]}'
+    paid_by = {row['user_id']: row['paid'] for row in data['fresh']}
+    ids = list(paid_by)
 
-    for row in data['fresh']:
-        user_id = row['user_id']
-        reward = int(row['paid'] * rate)
+    report = {'linked': 0, 'reward': 0, 'payers': 0, 'run': run}
+    linked_ids: list[int] = []
 
-        linked = await users.col.update_one(
-            # Условие — часть защиты от двойного начисления: если между
-            # показом и починкой связь появилась, второй раз не ставим.
-            {'user_data.user_id': user_id,
+    for begin in range(0, len(ids), CHUNK):
+        chunk = ids[begin:begin + CHUNK]
+        await users.col.update_many(
+            {'user_data.user_id': {'$in': chunk},
              'user_data.ref_fixed_at': {'$exists': False},
-             '$or': [{'user_data.referrer': ''},
-                     {'user_data.referrer': {'$exists': False}},
-                     {'user_data.referrer': None}]},
+             '$or': EMPTY_REFERRER},
             {'$set': {'user_data.referrer': owner_id,
                       'user_data.ref_tag': tag,
-                      'user_data.ref_fixed_at': now()}})
-        if not getattr(linked, 'modified_count', 0):
-            continue
+                      'user_data.ref_fixed_at': now(),
+                      'user_data.ref_fixed_run': run}})
 
-        report['linked'] += 1
+        cursor = users.col.find(
+            {'user_data.user_id': {'$in': chunk},
+             'user_data.ref_fixed_run': run},
+            {'user_data.user_id': 1})
+        async for doc in cursor:
+            found = users.pick(doc, 'user_data.user_id')
+            if found is not None:
+                linked_ids.append(int(found))
+
+        report['linked'] = len(linked_ids)
+        if on_progress:
+            await on_progress(min(begin + CHUNK, len(ids)), len(ids),
+                              report['linked'])
+
+    if not linked_ids:
+        log.warning('починка метки %s: связывать некого', tag)
+        return report
+
+    payers = [user_id for user_id in linked_ids if paid_by.get(user_id)]
+    turnover = sum(paid_by.get(user_id, 0) for user_id in payers)
+    reward = int(turnover * rate)
+    report['payers'] = len(payers)
+    report['reward'] = reward
+
+    # Список рефералов — тоже пачками: $addToSet с четырьмя тысячами
+    # значений разом Mongo принимает, но документ владельца от этого
+    # переписывается целиком на каждый вызов.
+    for begin in range(0, len(linked_ids), CHUNK):
         await users.col.update_one(
             {'user_data.user_id': owner_id},
-            {'$addToSet': {'info.ref_stats.referrals': user_id}})
+            {'$addToSet': {'info.ref_stats.referrals':
+                           {'$each': linked_ids[begin:begin + CHUNK]}}})
 
-        if reward <= 0:
-            continue
-
+    if reward > 0:
         await users.col.update_one(
             {'user_data.user_id': owner_id},
             {'$inc': {'info.ref_stats.withdrawable': reward,
                       'info.ref_stats.earned_total': reward,
-                      'info.ref_stats.turnover_total': row['paid'],
-                      'info.ref_stats.payments_count': 1},
-             '$addToSet': {'info.ref_stats.paying_referrals': user_id}})
+                      'info.ref_stats.turnover_total': turnover,
+                      'info.ref_stats.payments_count': len(payers)},
+             '$addToSet': {'info.ref_stats.paying_referrals':
+                           {'$each': payers}}})
 
-        # Начисление идёт сырым $inc мимо users.credit — журналим сами,
-        # иначе в истории появятся деньги ниоткуда.
+        # Одной строкой на всю починку, а не по строке на человека:
+        # четыреста строк «начисление от друга» в истории — это не история,
+        # это шум. Кто именно вошёл в начисление, видно по отметке запуска
+        # в их карточках.
         fresh = await users.get(owner_id, {'info.ref_stats.withdrawable': 1})
         await users.record_money(
             owner_id, reward,
-            f'Реферальное начисление от друга {user_id} (починка метки {tag})',
+            f'Доначисление по починке метки {tag}: {len(payers)} чел.',
             kind='referral', auto=False, admin_id=admin_id, account='referral',
             balance_after=int(users.pick(
                 fresh or {}, 'info.ref_stats.withdrawable', 0) or 0),
-            meta={'friend_id': user_id, 'friend_topup': row['paid'],
-                  'ref_fix': tag})
+            meta={'ref_fix': tag, 'run': run, 'friends': len(payers),
+                  'turnover': turnover, 'rate': rate})
 
-        report['reward'] += reward
-        report['payers'] += 1
-
-    log.warning('починка метки %s: связано %s, доначислено %s₽',
-                tag, report['linked'], report['reward'])
+    log.warning('починка метки %s (%s): связано %s, доначислено %s₽',
+                tag, run, report['linked'], report['reward'])
     return report

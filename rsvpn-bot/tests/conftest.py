@@ -67,7 +67,8 @@ class FakeResult:
 
 
 class FakeCollection:
-    """Минимальный Mongo: точечные пути, $set/$inc/$max/$push/$addToSet, $exists/$gte/$nin."""
+    """Минимальный Mongo: точечные пути, $set/$inc/$max/$push/$addToSet
+    (в том числе с $each), $exists/$gte/$nin."""
 
     def __init__(self, name='fake'):
         self.name = name
@@ -261,8 +262,14 @@ class FakeCollection:
                 self._set_path(doc, key, value)
         for key, value in (update.get('$addToSet') or {}).items():
             items = self._get(doc, key) or []
-            if value not in items:
-                items = items + [value]
+            # $each добавляет пачкой — как в Mongo. Без этого двойник
+            # клал бы в массив сам служебный словарь, и тест на массовое
+            # добавление проходил бы, ничего не проверяя.
+            incoming = list(value['$each']) if isinstance(value, dict) \
+                and '$each' in value else [value]
+            for item in incoming:
+                if item not in items:
+                    items = items + [item]
             self._set_path(doc, key, items)
         for key, value in (update.get('$pull') or {}).items():
             # значение — либо сам элемент, либо шаблон полей, как в Mongo

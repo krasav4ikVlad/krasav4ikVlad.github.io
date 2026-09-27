@@ -34,10 +34,12 @@ def repos(db):
 
 
 async def came(users, user_id: int, *, utm: str = 'ref_RepublickCheck',
-               days_ago: int = 30, referrer=None) -> None:
+               days_ago: int = 30, referrer='') -> None:
+    # referrer кладётся как есть: в базе пустота лежит и как '', и как 0,
+    # и проверка должна видеть оба.
     await users.create({
         'user_data': {'user_id': user_id, 'username': f'u{user_id}',
-                      'utm': utm, 'referrer': referrer or '',
+                      'utm': utm, 'referrer': referrer,
                       'date_joined': now() - timedelta(days=days_ago)},
         'info': {'balance': 0, 'ref_stats': {'referrals': []}},
     })
@@ -181,7 +183,7 @@ async def test_the_journal_explains_where_the_money_came_from(repos, db):
 
     rows = [row for row in db['balance_log'].docs
             if row.get('user_id') == OWNER]
-    assert rows and 'починка' in rows[0]['description']
+    assert rows and 'починк' in rows[0]['description']
     assert rows[0]['kind'] == 'referral'
 
 
@@ -269,3 +271,81 @@ async def test_the_average_payment_is_shown(repos, db):
     data = await look(repos)
 
     assert data['payers'] == 2 and data['average'] == 200
+
+
+# ── скорость и обратная связь ───────────────────────────────────────────────
+#
+# На четырёх тысячах человек поштучные запросы к базе в другой стране —
+# это девять тысяч обращений и четверть часа тишины на экране. Отсюда два
+# правила: работать пачками и показывать, сколько уже сделано.
+
+async def test_the_repair_works_in_batches(repos, db):
+    """Пятьдесят человек — одна пачка, а не полсотни обращений к базе."""
+    users, journal = repos
+    await owner_card(users)
+    for user_id in range(1, 51):
+        await came(users, user_id)
+        await topped_up(journal, user_id, paid=100)
+
+    data = await look(repos)
+    calls = {'n': 0}
+    original = users.col.update_many
+
+    async def counted(*args, **kwargs):
+        calls['n'] += 1
+        return await original(*args, **kwargs)
+
+    users.col.update_many = counted
+    await ref_fix.repair(users, data, rate=0.3)
+
+    assert len(data['fresh']) == 50
+    assert calls['n'] == 1, f'пачек на пятьдесят человек: {calls["n"]}'
+
+
+async def test_the_journal_gets_one_line_not_one_per_person(repos, db):
+    """Четыреста строк «начисление от друга» — это не история, это шум."""
+    users, journal = repos
+    await owner_card(users)
+    for user_id in range(1, 21):
+        await came(users, user_id)
+        await topped_up(journal, user_id, paid=100)
+
+    await ref_fix.repair(users, await look(repos), rate=0.3)
+
+    rows = [row for row in db['balance_log'].docs
+            if row.get('user_id') == OWNER]
+    assert len(rows) == 1 and rows[0]['amount'] == 600
+
+
+async def test_the_progress_is_reported(repos, db):
+    users, journal = repos
+    await owner_card(users)
+    await came(users, 1)
+    seen = []
+
+    async def remember(done, total, linked):
+        seen.append((done, total, linked))
+
+    await ref_fix.repair(users, await look(repos), rate=0.3,
+                         on_progress=remember)
+
+    assert seen and seen[-1][0] == seen[-1][1] == 1
+
+
+async def test_an_empty_referrer_is_recognised_in_every_form(repos, db):
+    """В базе пустой «пригласивший» лежит четырьмя способами сразу: '' и 0
+    от старого бота, отсутствие поля и None — от нового. Не покрой хоть
+    один — людей нашли, а update не совпал ни с кем, и починка молча
+    ничего не делает."""
+    users, journal = repos
+    await owner_card(users)
+    await came(users, 1, referrer='')
+    await came(users, 2, referrer=0)
+    await users.create({
+        'user_data': {'user_id': 3, 'utm': 'ref_RepublickCheck',
+                      'date_joined': now() - timedelta(days=30)},
+        'info': {'balance': 0}})
+
+    done = await ref_fix.repair(users, await look(repos), rate=0.3)
+
+    assert done['linked'] == 3
