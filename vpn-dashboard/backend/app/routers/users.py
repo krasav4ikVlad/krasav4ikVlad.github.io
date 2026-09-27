@@ -680,12 +680,12 @@ _REF_DAILY_MAX_REFS = 5000
 
 
 @cached(ttl=120, prefix="users:ref-daily")
-async def _referral_daily(*, user_id: int) -> dict[str, Any]:
+async def _referral_daily(*, user_id: int, days: int) -> dict[str, Any]:
 
     db = get_db()
     now = datetime.now(timezone.utc)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    since = today - timedelta(days=_REF_DAILY_DAYS)
+    since = today - timedelta(days=days)
 
     ref_ids = [row["_id"] async for row in db[USERS_FLAT].find(
         {"referrer_id": {"$in": [user_id, str(user_id)]}},
@@ -740,7 +740,7 @@ async def _referral_daily(*, user_id: int) -> dict[str, Any]:
 
     return {
         "user_id": user_id,
-        "window_days": _REF_DAILY_DAYS,
+        "window_days": days,
         "referrals_total": len(ref_ids),
         "sum_registrations": sum(s["registrations"] for s in series),
         "sum_topups": r2(sum(s["topups"] for s in series)),
@@ -750,6 +750,9 @@ async def _referral_daily(*, user_id: int) -> dict[str, Any]:
 
 
 @router.get("/{user_id}/referral-daily")
-async def referral_daily(user_id: int) -> dict[str, Any]:
+async def referral_daily(
+        user_id: int,
+        days: int = Query(_REF_DAILY_DAYS, ge=7, le=400),
+) -> dict[str, Any]:
     """Рефералка юзера по дням: приведённые, их пополнения, начисления."""
-    return await _referral_daily(user_id=user_id)
+    return await _referral_daily(user_id=user_id, days=days)

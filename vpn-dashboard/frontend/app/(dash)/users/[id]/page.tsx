@@ -3,7 +3,7 @@
 /** Карточка пользователя: профиль, KPI, транзакции, сегменты, рефералы, логи. */
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import useSWR from "swr";
 import { ArrowLeft } from "lucide-react";
@@ -20,7 +20,10 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { StatCard } from "@/components/live/stat-card";
 import { StackedBars } from "@/components/charts/stacked-bars";
 import { TimeSeries } from "@/components/charts/timeseries";
+import { PannableChart } from "@/components/charts/pannable";
 import { fillTimeBuckets } from "@/lib/series";
+
+const PAN_WINDOW = 30; // сколько дней видно в листаемых графиках
 
 const KIND_LABELS: Record<string, string> = {
   topup: "Пополнение",
@@ -78,8 +81,11 @@ function ReferralDailySection({
   userId: string | undefined;
   hasReferrals: boolean;
 }) {
+  const [panOffset, setPanOffset] = useState(0);
   const { data } = useSWR<T.ReferralDaily>(
-    userId && hasReferrals ? api.urls.referralDaily(userId) : null,
+    userId && hasReferrals
+      ? `${api.urls.referralDaily(userId)}?days=365`
+      : null,
     fetcher,
     { keepPreviousData: true },
   );
@@ -118,34 +124,55 @@ function ReferralDailySection({
         <span className="font-medium text-ink-2">
           {fmtMoney(data.sum_ref_income)}
         </span>
+        {series.length > PAN_WINDOW ? (
+          <span className="ml-2 text-muted/70">
+            — графики листаются: потяните влево/вправо
+          </span>
+        ) : null}
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="min-w-0">
           <div className="mb-1 text-xs text-muted">Приведённые по дням</div>
-          <StackedBars
+          <PannableChart
             data={series}
-            keys={["registrations"]}
-            names={{ registrations: "Регистрации" }}
-            height={180}
-            xKey="day"
-            xFormatter={(d) => fmtDate(d)}
-            valueFormatter={(v) => fmtNum(v)}
+            window={PAN_WINDOW}
+            offset={panOffset}
+            onOffsetChange={setPanOffset}
+            render={(visible) => (
+              <StackedBars
+                data={visible}
+                keys={["registrations"]}
+                names={{ registrations: "Регистрации" }}
+                height={180}
+                xKey="day"
+                xFormatter={(d) => fmtDate(d)}
+                valueFormatter={(v) => fmtNum(v)}
+              />
+            )}
           />
         </div>
         <div className="min-w-0">
           <div className="mb-1 text-xs text-muted">
             Деньги по дням: пополнения рефералов и начисления рефереру
           </div>
-          <TimeSeries
+          <PannableChart
             data={series}
-            series={[
-              { key: "topups", name: "Пополнения рефералов", kind: "area" },
-              { key: "ref_income", name: "Начислено рефереру" },
-            ]}
-            height={180}
-            xKey="day"
-            xFormatter={(d) => fmtDate(d)}
-            valueFormatter={(v) => fmtMoney(v)}
+            window={PAN_WINDOW}
+            offset={panOffset}
+            onOffsetChange={setPanOffset}
+            render={(visible) => (
+              <TimeSeries
+                data={visible}
+                series={[
+                  { key: "topups", name: "Пополнения рефералов", kind: "area" },
+                  { key: "ref_income", name: "Начислено рефереру" },
+                ]}
+                height={180}
+                xKey="day"
+                xFormatter={(d) => fmtDate(d)}
+                valueFormatter={(v) => fmtMoney(v)}
+              />
+            )}
           />
         </div>
       </div>

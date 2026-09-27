@@ -36,7 +36,7 @@ async def test_referral_daily(monkeypatch):
     ])
     monkeypatch.setattr(users_mod, "get_db", lambda: db)
 
-    out = await users_mod._referral_daily(user_id=100)
+    out = await users_mod._referral_daily(user_id=100, days=60)
 
     assert out["referrals_total"] == 2
     assert out["sum_registrations"] == 2
