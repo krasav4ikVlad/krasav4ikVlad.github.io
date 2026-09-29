@@ -652,3 +652,33 @@ def test_a_mixed_up_ladder_errs_on_the_mild_side():
 
     assert stage(3, freeze_at=5, block_at=2) == WARN
     assert stage(5, freeze_at=5, block_at=2) == BLOCK
+
+
+# ── чего человеку знать не надо ─────────────────────────────────────────────
+#
+# Настоящая причина запрета — что из-за торрентов блокируют сервер, и тогда
+# без интернета остаются все. Написать это человеку значит выдать рычаг:
+# обиженный узнает, что одним клиентом можно положить сервер целиком.
+# Поэтому в текстах — правила и его собственные последствия, и ничего про
+# то, чем ему вредно нам вредить.
+
+LEVERS = ('банят', 'бан сервер', 'блокируют сервер', 'заблокируют сервер',
+          'хостер', 'абуз', 'дата-центр', 'остаются все', 'положить')
+
+
+def test_the_texts_do_not_hand_out_a_lever():
+    from app.content.texts import REGISTRY
+
+    for key, template in REGISTRY.items():
+        if not key.startswith('torrent.'):
+            continue
+        body = template.default.lower()
+        found = [word for word in LEVERS if word in body]
+        assert not found, f'{key}: {found}'
+
+
+def test_the_ban_is_explained_by_the_rules():
+    """Причина всё-таки должна быть названа — иначе это выглядит произволом."""
+    from app.content.texts import REGISTRY
+
+    assert 'правил' in REGISTRY['torrent.warn'].default.lower()
