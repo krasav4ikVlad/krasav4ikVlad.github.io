@@ -9,8 +9,9 @@ from __future__ import annotations
 import logging
 
 from app.core.errors import (FeatureDisabled, NotEnoughBalance, PlanUnavailable,
-                             VpnPanelError)
+                             VpnLocked, VpnPanelError)
 from app.core.time import now, parse_dt
+from app.services.moderation import ModerationService
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,10 @@ class BillingService:
             raise PlanUnavailable
 
         user = await self.users.get(user_id)
+        # Отключённому за торренты покупка вернула бы доступ: панель на
+        # новой подписке включает существующую запись обратно.
+        if ModerationService.vpn_locked(user):
+            raise VpnLocked
         balance = self.users.pick(user or {}, 'info.balance', 0)
         # Только цена тарифа: доп. устройства оплачиваются своими пакетами
         # в DeviceBillingService, у них отдельный тридцатидневный цикл.
@@ -118,6 +123,8 @@ class BillingService:
             raise FeatureDisabled
 
         user = await self.users.get(user_id)
+        if ModerationService.vpn_locked(user):
+            raise VpnLocked
         vpn = (user or {}).get('vpn') or {}
 
         # подписки ещё нет — продлевать нечего, это первая покупка

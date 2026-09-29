@@ -95,6 +95,56 @@ async def unban_command(message: types.Message, command: CommandObject, c) -> No
     await message.answer('\n'.join(text))
 
 
+# ── торренты ────────────────────────────────────────────────────────────────
+#
+# Отдельно от банов: это не «надоел в поддержке», а причина, по которой
+# блокируют сервер целиком. Отключением занимается сам бот по вебхуку
+# панели, здесь — посмотреть и отменить.
+
+async def torrents_command(message: types.Message, c, settings) -> None:
+    locked = await c.moderation.locked(PAGE_SIZE)
+    after = await settings.int('torrents.block_after')
+
+    lines = [f'<b>{e("attention")} Торренты</b>', '',
+             f'Отключено подписок: <b>{len(locked)}</b>',
+             f'Порог отключения: <b>{after or "—"}</b> нарушение', '']
+
+    for doc in locked:
+        info = (doc.get('moderation') or {})
+        torrent = info.get('torrent') or {}
+        lines.append(
+            f'• {_who(doc)} — нарушений <b>{torrent.get("count", "?")}</b>, '
+            f'{fmt(info.get("vpn_locked_at"))}'
+            + (f'\n  нода {torrent["last_node"]}' if torrent.get('last_node') else ''))
+
+    if not locked:
+        lines.append('Никому не отключали.')
+    lines.append('')
+    lines.append(f'<blockquote>Вернуть доступ: <code>/torrentok id</code> — '
+                 f'подписка включается в панели, счётчик нарушений '
+                 f'обнуляется.\n\nБот у отключённых остаётся открытым: '
+                 f'человек должен видеть, за что, и уметь написать '
+                 f'в поддержку.</blockquote>')
+    await message.answer('\n'.join(lines))
+
+
+async def torrentok_command(message: types.Message, command: CommandObject, c) -> None:
+    target = await c.moderation.find_user((command.args or '').strip())
+    if not target:
+        await message.answer('Кому вернуть доступ? <code>/torrentok 123456789</code>')
+        return
+
+    user_id = (target.get('user_data') or {}).get('user_id')
+    result = await c.moderation.unlock_vpn(user_id, message.from_user.id)
+
+    text = [f'{e("ok")} Доступ возвращён {_who(target)}',
+            f'Подписок включено в панели: <code>{result.disabled}</code>']
+    if result.panel_failed:
+        text.append(f'{e("attention")} Не удалось включить: '
+                    f'<code>{result.panel_failed}</code> — проверьте панель.')
+    await message.answer('\n'.join(text))
+
+
 async def banned_list(call: types.CallbackQuery, c) -> None:
     from app.admin.panel import edit
 
@@ -136,5 +186,7 @@ def register(router: Router) -> None:
     router.message.register(ban_command, Command('ban'))
     router.message.register(hardban_command, Command('hardban'))
     router.message.register(unban_command, Command('unban'))
+    router.message.register(torrents_command, Command('torrents'))
+    router.message.register(torrentok_command, Command('torrentok'))
     router.callback_query.register(banned_list, Adm.filter(F.act == 'banned'))
     router.callback_query.register(unban_button, Adm.filter(F.act == 'unban'))

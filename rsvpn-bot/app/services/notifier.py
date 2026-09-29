@@ -227,6 +227,18 @@ class Notifier:
                                f'<b>Кому:</b> {await self._who(to_user_id)}\n'
                                f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>')
 
+    async def torrent(self, user_id: int, count: int, node: str = '',
+                      ip: str = '', blocked: bool = False) -> bool:
+        """Торрент у клиента. В общий чат — потому что из-за этого банят
+        сервер, и знать об этом надо раньше, чем придёт письмо от хостера."""
+        head = (f'{e("ban")} <b>Торрент: подписка отключена</b>' if blocked
+                else f'{e("attention")} <b>Торрент</b>')
+        return await self.send('torrent',
+                               f'{head}\n{await self._who(user_id)}\n'
+                               f'<b>Нарушение:</b> <code>{count}</code>\n'
+                               + (f'<b>Нода:</b> <code>{node}</code>\n' if node else '')
+                               + (f'<b>IP:</b> <code>{ip}</code>' if ip else ''))
+
     async def email_changed(self, user_id: int, email: str) -> bool:
         return await self.send('email',
                                f'{e("email")} <b>Почта привязана</b>\n{await self._who(user_id)}\n'

@@ -217,3 +217,41 @@ async def test_the_payer_hears_about_it_over_http(api, user_factory):
     sent = container.topup.bot.sent
     assert sent and sent[0]['user_id'] == 1
     assert 'Баланс пополнен' in sent[0]['text']
+
+
+async def test_a_torrent_report_reaches_the_person(api, user_factory):
+    """Сквозь настоящий роутер: событие плагина — сообщение клиенту.
+
+    Отдельным маршрутом внутри одного вебхука: торрент — не про сроки
+    подписки, и ExpiryNotifier его бы просто выбросил как чужое событие.
+    """
+    from app.core.security import hmac_sha256_hex
+
+    from app.campaigns.sender import Sender
+    from app.services.torrents import TorrentGuard
+
+    client, container = api
+    await user_factory()
+    # как в main_api.attach_bot: сервису нужен Bot, чтобы написать человеку
+    container.torrents = TorrentGuard(container.users, container.settings,
+                                      Sender(), container.topup.bot,
+                                      container.moderation)
+
+    body = json.dumps({
+        'scope': 'torrent_blocker',
+        'event': 'torrent_blocker.report',
+        'data': {
+            'node': {'name': 'NL-1'},
+            'user': {'username': '1', 'uuid': 'u-1'},
+            'report': {'actionReport': {'blocked': True, 'ip': '1.2.3.4',
+                                        'blockDuration': 360}},
+        }}).encode()
+
+    response = await client.post(
+        '/remnawave/webhook', content=body,
+        headers={'x-remnawave-signature': hmac_sha256_hex('секрет', body)})
+
+    assert response.json().get('note') == 'warned_1'
+    sent = container.topup.bot.sent
+    assert sent and sent[-1]['user_id'] == 1
+    assert 'торрент' in sent[-1]['text'].lower() and '6 мин' in sent[-1]['text']

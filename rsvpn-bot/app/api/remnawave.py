@@ -48,7 +48,12 @@ async def remnawave_webhook(request: Request):
     meta = payload.get('meta') or {}
 
     try:
-        result = await container.expiry.handle(event, data, meta)
+        # Событий у панели много, и разбирают их разные сервисы. Торрент —
+        # не про сроки подписки, поэтому и не идёт в ExpiryNotifier.
+        if event.startswith('torrent_blocker'):
+            result = await container.torrents.handle(data)
+        else:
+            result = await container.expiry.handle(event, data, meta)
     except Exception:
         log.exception('remnawave: ошибка обработки события %s', event)
         await container.health.mark(health.PANEL_WEBHOOK, event=event, note='error')

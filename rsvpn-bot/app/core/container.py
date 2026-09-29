@@ -43,6 +43,7 @@ class Container:
     notifier: Any = None
     analytics: Any = None
     expiry: Any = None
+    torrents: Any = None
     private: Any = None
     partner_bots: Any = None
     squads: Any = None
@@ -390,7 +391,7 @@ class Container:
     # планировщик. Собраны списком, чтобы забытый attach_bot был виден при
     # старте, а не всплывал ошибкой в чате через неделю.
     REQUIRED_AFTER_ATTACH = ('devices', 'device_billing', 'renewal',
-                             'expiry', 'lifeline', 'notifier')
+                             'expiry', 'lifeline', 'notifier', 'torrents')
 
     def missing_services(self) -> list[str]:
         return [name for name in self.REQUIRED_AFTER_ATTACH if getattr(self, name) is None]
@@ -436,6 +437,13 @@ class Container:
         self.expiry = ExpiryNotifier(self.users, self.settings,
                                      Sender(on_blocked=self.users.mark_blocked), bot,
                                      campaign_keyboards(), self.lifeline)
+        # Торренты приходят тем же вебхуком панели, что и сроки подписки,
+        # но это не про сроки — и разбирает их свой сервис.
+        from app.services.torrents import TorrentGuard
+
+        self.torrents = TorrentGuard(self.users, self.settings,
+                                     Sender(on_blocked=self.users.mark_blocked), bot,
+                                     self.moderation, notifier=self.notifier)
         self.renewal = RenewalService(self.users, self.plans, self.settings, self.vpn,
                                       self.topup, self.lifeline, self.expiry,
                                       notifier=self.notifier, discounts=self.discounts)

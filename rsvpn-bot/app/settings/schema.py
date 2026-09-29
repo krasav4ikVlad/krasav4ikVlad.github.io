@@ -214,6 +214,17 @@ SCHEMA: tuple[Group, ...] = (
                 f'{e("ban")} Доступ к боту ограничен. Если это ошибка — напишите в поддержку.'),
     )),
 
+    Group('torrents', f'{e("attention")} Торренты', (
+        Setting('torrents.enabled', 'Реагировать на торренты', 'bool', True,
+                hint='События присылает плагин Torrent Blocker панели'),
+        Setting('torrents.warn_user', 'Писать нарушителю в бота', 'bool', True),
+        Setting('torrents.block_after', 'Отключать подписку с нарушения', 'int', 2,
+                min=0, hint='0 — никогда не отключать, только предупреждать'),
+        Setting('torrents.cooldown_min', 'Окно тишины', 'int', 30, unit=' мин', min=1,
+                hint='Одно сообщение на одну блокировку: за сессию плагин '
+                     'присылает десятки отчётов'),
+    )),
+
     Group('bypass', f'{e("bypass")} ByPass (белые списки)', (
         Setting('bypass.squad_uuid', 'Сквад ByPass', 'str',
                 'ac03f8c3-0de7-4380-9774-00079d0385ce'),
@@ -454,6 +465,7 @@ SCHEMA: tuple[Group, ...] = (
         Setting('notify.topic_campaigns', 'Тема: отчёты кампаний', 'int', 470234),
         Setting('notify.topic_payout', 'Тема: заявки на вывод', 'int', 279680),
         Setting('notify.topic_servers', 'Тема: личные серверы', 'int', 1561465),
+        Setting('notify.topic_torrent', 'Тема: торренты', 'int', 0),
         Setting('notify.enabled', 'Слать уведомления админам', 'bool', True),
     )),
 

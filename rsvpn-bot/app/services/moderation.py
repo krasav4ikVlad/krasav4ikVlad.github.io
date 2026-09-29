@@ -74,6 +74,60 @@ class ModerationService:
         disabled, failed = await self._set_status(user, 'DISABLED')
         return BanResult(True, hard=True, disabled=disabled, panel_failed=failed)
 
+    # ── отключение доступа без бана ─────────────────────────────────────────
+    #
+    # Третий уровень, мягче жёсткого бана: подписки в панели отключены, а бот
+    # открыт. Нужен там, где человек должен понимать, за что, и иметь
+    # возможность написать в поддержку — например, за торренты. Закрыть ему
+    # ещё и бота значит оставить его с молчащим приложением и без объяснений.
+
+    @staticmethod
+    def vpn_locked(user: dict | None) -> bool:
+        return bool(((user or {}).get('moderation') or {}).get('vpn_locked'))
+
+    async def lock_vpn(self, user_id: int, reason: str = '',
+                       admin_id: int = 0) -> BanResult:
+        """Отключить подписки в панели. Бот остаётся доступным."""
+        user = await self.users.get(user_id)
+        if not user:
+            return BanResult(False)
+
+        await self.users.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$set': {'moderation.vpn_locked': True,
+                      'moderation.vpn_locked_at': now(),
+                      'moderation.vpn_locked_by': int(admin_id or 0),
+                      'moderation.vpn_locked_reason': reason}},
+        )
+        disabled, failed = await self._set_status(user, 'DISABLED')
+        log.warning('подписка %s отключена (%s): в панели %s, не вышло %s',
+                    user_id, reason or 'без причины', disabled, failed)
+        return BanResult(True, hard=True, disabled=disabled, panel_failed=failed)
+
+    async def unlock_vpn(self, user_id: int, admin_id: int = 0) -> BanResult:
+        """Вернуть доступ. Забаненного не воскрешаем — у него другой замок."""
+        user = await self.users.get(user_id)
+        if not user:
+            return BanResult(False)
+
+        await self.users.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$set': {'moderation.vpn_locked': False,
+                      'moderation.vpn_unlocked_at': now(),
+                      'moderation.vpn_unlocked_by': int(admin_id or 0)},
+             '$unset': {'moderation.torrent.count': ''}},
+        )
+        log.info('подписка %s разблокирована админом %s', user_id, admin_id)
+
+        if self.is_hard(user):
+            return BanResult(True)
+        restored, failed = await self._set_status(user, 'ACTIVE')
+        return BanResult(True, hard=True, disabled=restored, panel_failed=failed)
+
+    async def locked(self, limit: int = 50) -> list[dict]:
+        return await self.users.col.find({'moderation.vpn_locked': True}).to_list(
+            length=limit)
+
     async def unban(self, user_id: int, admin_id: int) -> BanResult:
         """Снять любую блокировку. После жёсткой — вернуть подписки в строй."""
         user = await self.users.get(user_id)

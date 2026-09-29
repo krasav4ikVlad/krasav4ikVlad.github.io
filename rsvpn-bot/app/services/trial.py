@@ -15,6 +15,7 @@ import logging
 from dataclasses import dataclass
 
 from app.core.time import now
+from app.services.moderation import ModerationService
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +135,8 @@ class TrialService:
             return TrialResult(False, 'disabled')
 
         user = await self.users.get(user_id)
+        if ModerationService.vpn_locked(user):
+            return TrialResult(False, 'locked')
         if self.claimed(user):
             return TrialResult(False, 'claimed')
         if self.blocked_by_subscription(user):
