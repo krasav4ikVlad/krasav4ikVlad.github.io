@@ -14,8 +14,8 @@ import logging
 
 from app.content import texts
 from app.core.time import now
-from app.domain import ref_tags as ref_tags_domain
 from app.domain.pricing import PricingRules, topup_credit
+from app.services import ref_boost
 
 log = logging.getLogger(__name__)
 
@@ -221,29 +221,17 @@ class TopupService:
         )
 
     async def _referral_rate(self, user: dict, rules: PricingRules) -> float:
-        """Процент пригласившему. Обычный — из настроек; по метке партнёра
-        может стоять повышенный на срок, и тогда действует он.
+        """Процент пригласившему. Обычный — из настроек; на срок акции —
+        повышенный.
 
-        Ставка берётся по метке ПРИВЕДЁННОГО: акция объявляется партнёру и
-        касается тех, кто пришёл по его ссылке.
+        Ставка берётся по ПРИГЛАСИВШЕМУ, а не по метке в карточке
+        приведённого: акция объявляется человеку, и неделю повышенного
+        процента он ждёт со всех своих людей — включая тех, кто пришёл по
+        числовой ссылке или год назад.
         """
         base = float(rules.referral_rate or 0)
-        tag = str(self.users.pick(user, 'user_data.ref_tag') or '')
-        if not tag or self.ref_tags is None:
-            return base
-
-        try:
-            partner = await self.ref_tags.get(tag)
-        except Exception as exc:      # noqa: BLE001 — метка не должна ломать оплату
-            log.warning('метка %s не прочитана при начислении: %s', tag, exc)
-            return base
-
-        boost = ref_tags_domain.boost_rate(partner or {}, now())
-        if boost > base:
-            log.info('метка %s: повышенный процент %s вместо %s',
-                     tag, boost, base)
-            return boost
-        return base
+        referrer_id = self.users.pick(user, 'user_data.referrer')
+        return await ref_boost.rate_for(self.ref_tags, referrer_id, base=base)
 
     # ── рефералка ───────────────────────────────────────────────────────────
     async def _pay_referrer(self, user: dict, amount: int,

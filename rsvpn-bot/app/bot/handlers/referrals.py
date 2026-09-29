@@ -10,8 +10,10 @@ from app.bot.filters.feature import Feature
 from app.bot.keyboards.common import footer
 from app.bot.screens.base import Screen, render
 from app.bot.screens.profile import profile_caption
+from app.core.time import fmt
 from app.domain import ref_tags
 from app.domain.referrals import referral_stats
+from app.services import ref_boost
 from app.content.emoji import e
 
 
@@ -31,7 +33,13 @@ async def own_links(c, user_id: int, bot_username: str) -> list[str]:
 
 async def referrals(call: types.CallbackQuery, c, user: dict, settings):
     stats = referral_stats(c.users.pick(user, 'info.ref_stats', {}))
-    percent = round(await settings.rate('bonus.ref_rate') * 100)
+    # Ставка — та же, по которой считаются деньги при пополнении друга:
+    # «обещали 50, начислили 30» это худшее, что может случиться с
+    # рефоводом, и разъехаться этим двум числам нельзя.
+    deal = await ref_boost.offer(getattr(c, 'ref_tags', None),
+                                 call.from_user.id,
+                                 base=await settings.rate('bonus.ref_rate'))
+    percent = round(deal['rate'] * 100)
     username = await settings.get('link.bot_username')
     links = await own_links(c, call.from_user.id, username)
 
@@ -49,6 +57,11 @@ async def referrals(call: types.CallbackQuery, c, user: dict, settings):
           f'— {e("growth")} Доход с 1 активного друга: <code>~{stats.per_active_friend} ₽</code>\n'
           f'— {e("payout")} Всего заработано: <code>{stats.earned} ₽</code>\n'
           f'— {e("exchange")} Доступно к выводу: <code>{stats.withdrawable} ₽</code>\n\n'
+        + (f'{e("hot")} <b>Повышенный процент: {percent}%</b> вместо '
+           f'{round(deal["base"] * 100)}% — до {fmt(deal["until"])}\n'
+           f'<i>Считается со всех ваших друзей, в том числе приглашённых '
+           f'давно. Потом процент вернётся к обычному.</i>\n\n'
+           if deal['boost'] else '')
         + f'<blockquote>{e("referrals")} Вы получаете {percent}% с каждого пополнения '
           f'приглашённого друга — без ограничения по времени и количеству.</blockquote>'
     )
