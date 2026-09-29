@@ -145,8 +145,8 @@ async def test_the_partner_events_go_to_their_own_chat(tags, users, settings, db
     assert partner_copy[0]['topic'] == 42 and 'vlad' in partner_copy[0]['text']
 
 
-async def test_a_purchase_reaches_the_partner_chat_too(tags, users, settings, db):
-    """Регистрация без покупки партнёру мало что говорит."""
+async def test_a_topup_reaches_the_partner_chat_too(tags, users, settings, db):
+    """Регистрация без денег партнёру мало что говорит."""
     await tags.create('vlad', 500)
     await tags.update('vlad', chat_id=-100123)
     await person(users, 1, tag='vlad')
@@ -425,7 +425,12 @@ async def test_a_payment_goes_to_the_second(tags, users, settings, db):
     assert copy['topic'] == 43
 
 
-async def test_a_purchase_counts_as_a_payment(tags, users, settings, db):
+# Списания с баланса партнёру не копируются вовсе — ни покупка, ни
+# автопродление. Это не пришедшие деньги: те же рубли он уже видел
+# пополнением, и процент с них ему уже посчитан. Автопродление вдобавок
+# идёт каждый месяц само и заполнило бы тему оплат целиком.
+
+async def test_a_purchase_does_not_reach_the_partner_chat(tags, users, settings, db):
     await tags.create('vlad', 500)
     await tags.update('vlad', chat_id=-100123, topic_id=42, topic_pay_id=43)
     await person(users, 1, tag='vlad')
@@ -434,8 +439,51 @@ async def test_a_purchase_counts_as_a_payment(tags, users, settings, db):
 
     await notifier.subscription_created(1, {'title': 'Месяц'}, {})
 
+    assert not [row for row in bot.sent if row['chat_id'] == -100123]
+
+
+async def test_an_autorenewal_does_not_reach_the_partner_chat(tags, users,
+                                                              settings, db):
+    """Главная причина: оно приходит каждый месяц само, и в теме оплат
+    вместо денег партнёра оказывается лента списаний."""
+    await tags.create('vlad', 500)
+    await tags.update('vlad', chat_id=-100123, topic_id=42, topic_pay_id=43)
+    await person(users, 1, tag='vlad')
+    bot = FakeBot()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    await notifier.renewed(1, {'title': 'Месяц'}, price=200)
+
+    assert not [row for row in bot.sent if row['chat_id'] == -100123]
+
+
+async def test_the_admin_chat_still_gets_the_autorenewal(tags, users, settings, db):
+    """Из общей ленты оно никуда не делось — там ему место."""
+    await settings.set('notify.chat_id', -100777)
+    await tags.create('vlad', 500)
+    await tags.update('vlad', chat_id=-100123)
+    await person(users, 1, tag='vlad')
+    bot = FakeBot()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    await notifier.renewed(1, {'title': 'Месяц'}, price=200)
+
+    admin_copy = next(row for row in bot.sent if row['chat_id'] == -100777)
+    assert 'Автопродление' in admin_copy['text'] and 'vlad' in admin_copy['text']
+
+
+async def test_a_topup_still_reaches_the_payments_topic(tags, users, settings, db):
+    """Ради чего тема и заводилась."""
+    await tags.create('vlad', 500)
+    await tags.update('vlad', chat_id=-100123, topic_id=42, topic_pay_id=43)
+    await person(users, 1, tag='vlad')
+    bot = FakeBot()
+    notifier = Notifier(bot, settings, users, ref_tags=tags)
+
+    await notifier.topup(1, amount=500, bonus=0, credit=500, provider='wata')
+
     copy = next(row for row in bot.sent if row['chat_id'] == -100123)
-    assert copy['topic'] == 43
+    assert copy['topic'] == 43 and 'Пополнение' in copy['text']
 
 
 # ── кому засчитан приведённый ───────────────────────────────────────────────

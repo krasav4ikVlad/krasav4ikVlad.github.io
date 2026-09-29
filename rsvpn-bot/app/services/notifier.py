@@ -130,9 +130,12 @@ class Notifier:
             return False
 
     async def about(self, topic: str, user_id: int, text: str,
-                    paid: bool = False) -> bool:
+                    paid: bool = False, copy: bool = True) -> bool:
         """Событие по человеку: в общий админ-чат и, если он пришёл по
         партнёрской метке, копией в чат этого партнёра.
+
+        `copy=False` — событие остаётся только в общем админ-чате. Так
+        уходят списания с баланса: см. комментарий у `renewed`.
 
         Возвращает судьбу основного уведомления: копия партнёру — дело
         второе, и её неудача не делает событие непрошедшим.
@@ -145,7 +148,7 @@ class Notifier:
             text += (f'\n{e("link")} <b>Метка:</b> <code>{tag}</code>'
                      + (f' → засчитан <code>{ids.show(owner)}</code>'
                         if owner else ''))
-            if int((partner or {}).get('chat_id') or 0):
+            if copy and int((partner or {}).get('chat_id') or 0):
                 await self.partner(user_id, text, paid=paid)
         return await self.send(topic, text)
 
@@ -180,20 +183,27 @@ class Notifier:
                                f'<b>Сумма:</b> <code>{amount}₽</code>\n'
                                f'<b>Способ:</b> <code>{provider}</code>')
 
+    # Покупки и автопродления в чат партнёра не идут — только в общий
+    # админ-чат. Причина простая: это списания с баланса, а не пришедшие
+    # деньги. Те же рубли партнёр уже видел пополнением, с них ему уже
+    # посчитан процент, и второй раз они означают только одно — что в
+    # ленте оплат больше строк, чем денег. Автопродление вдобавок идёт
+    # каждый месяц само и заполняет тему целиком.
+
     async def subscription_created(self, user_id: int, plan: dict,
                                    subscription: dict | None = None) -> bool:
         text = (f'{e("shield")} <b>Покупка подписки</b>\n{await self._who(user_id)}\n'
                 f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>\n'
                 f'<b>Действует до:</b> '
                 f'<code>{fmt((subscription or {}).get("expireAt"))}</code>')
-        return await self.about('subscription', user_id, text, paid=True)
+        return await self.about('subscription', user_id, text, copy=False)
 
     async def renewed(self, user_id: int, plan: dict, price: int, until=None) -> bool:
         text = (f'{e("renew")} <b>Автопродление</b>\n{await self._who(user_id)}\n'
                 f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>\n'
                 f'<b>Списано:</b> <code>{price}₽</code>\n'
                 f'<b>Действует до:</b> <code>{fmt(until)}</code>')
-        return await self.about('subscription', user_id, text, paid=True)
+        return await self.about('subscription', user_id, text, copy=False)
 
     async def devices_charged(self, user_id: int, amount: int, price: int,
                               next_charge=None) -> bool:
