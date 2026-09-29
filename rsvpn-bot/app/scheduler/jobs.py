@@ -36,6 +36,19 @@ async def watch_database(container, bot) -> None:
     await watchdog.check()
 
 
+async def thaw_torrents(container) -> None:
+    """Вернуть доступ тем, у кого заморозка за торренты кончилась.
+
+    Заморозку ставит вебхук панели, а снимать её некому: панель второй раз
+    не позвонит. Раз в минуту — потому что «на полчаса» должно означать
+    полчаса, а не «полчаса и сколько-то сверху».
+    """
+    guard = getattr(container, 'torrents', None)
+    if guard is None:
+        return
+    await guard.thaw()
+
+
 async def watch_broadcasts(container, bot) -> None:
     """Поднять рассылки, которые оборвались и сами не продолжатся."""
     from app.admin.broadcast import resume_stalled

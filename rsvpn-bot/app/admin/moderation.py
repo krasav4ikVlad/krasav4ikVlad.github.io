@@ -16,6 +16,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from app.bot.callbacks import Admin as Adm
+from app.bot.callbacks import Torrent
 from app.core.time import fmt
 from app.content.emoji import e
 
@@ -103,19 +104,32 @@ async def unban_command(message: types.Message, command: CommandObject, c) -> No
 
 async def torrents_command(message: types.Message, c, settings) -> None:
     locked = await c.moderation.locked(PAGE_SIZE)
-    after = await settings.int('torrents.block_after')
+    freeze_at = await settings.int('torrents.freeze_at')
+    block_at = await settings.int('torrents.block_at')
+    minutes = await settings.int('torrents.freeze_min')
+
+    frozen = [doc for doc in locked
+              if (doc.get('moderation') or {}).get('vpn_locked_until')]
+    forever = [doc for doc in locked if doc not in frozen]
 
     lines = [f'<b>{e("attention")} Торренты</b>', '',
-             f'Отключено подписок: <b>{len(locked)}</b>',
-             f'Порог отключения: <b>{after or "—"}</b> нарушение', '']
+             f'Отключено навсегда: <b>{len(forever)}</b>, '
+             f'заморожено сейчас: <b>{len(frozen)}</b>',
+             f'Лестница: предупреждение → заморозка на {minutes} мин. '
+             f'с {freeze_at or "—"}-го → отключение с {block_at or "—"}-го', '']
 
     for doc in locked:
         info = (doc.get('moderation') or {})
         torrent = info.get('torrent') or {}
+        until = info.get('vpn_locked_until')
         lines.append(
             f'• {_who(doc)} — нарушений <b>{torrent.get("count", "?")}</b>, '
-            f'{fmt(info.get("vpn_locked_at"))}'
-            + (f'\n  нода {torrent["last_node"]}' if torrent.get('last_node') else ''))
+            f'отчётов {torrent.get("reports", "?")}, '
+            + (f'заморожен до {fmt(until, "%H:%M")}' if until
+               else f'отключён {fmt(info.get("vpn_locked_at"))}')
+            + (f'\n  нода {torrent["last_node"]}' if torrent.get('last_node') else '')
+            + ('\n  <i>жаловался на ложное срабатывание</i>'
+               if torrent.get('appealed_at') else ''))
 
     if not locked:
         lines.append('Никому не отключали.')
@@ -124,7 +138,8 @@ async def torrents_command(message: types.Message, c, settings) -> None:
                  f'подписка включается в панели, счётчик нарушений '
                  f'обнуляется.\n\nБот у отключённых остаётся открытым: '
                  f'человек должен видеть, за что, и уметь написать '
-                 f'в поддержку.</blockquote>')
+                 f'в поддержку. Жалоба «я не качаю торренты» приходит сюда '
+                 f'карточкой с кнопками.</blockquote>')
     await message.answer('\n'.join(lines))
 
 
@@ -143,6 +158,30 @@ async def torrentok_command(message: types.Message, command: CommandObject, c) -
         text.append(f'{e("attention")} Не удалось включить: '
                     f'<code>{result.panel_failed}</code> — проверьте панель.')
     await message.answer('\n'.join(text))
+
+
+async def torrent_decision(call: types.CallbackQuery, callback_data: Torrent,
+                           c) -> None:
+    """Решение по жалобе — кнопкой под карточкой в админ-чате.
+
+    «Поверить» не просто возвращает доступ, а перестаёт наказывать этого
+    человека вообще: если у него срабатывает ложно, оно сработает снова,
+    и второй раз объясняться ему уже незачем. Отчёты по нему продолжают
+    приходить в чат — если окажется, что поверили зря, это будет видно.
+    """
+    trust = callback_data.action == 'trust'
+    await c.torrents.decide(callback_data.user_id, trust=trust,
+                            admin_id=call.from_user.id)
+
+    verdict = (f'{e("ok")} Поверили, доступ возвращён' if trust
+               else f'{e("cross")} Отказано')
+    await call.answer(verdict)
+    try:
+        await call.message.edit_text(
+            f'{call.message.html_text}\n\n{verdict} — '
+            f'{call.from_user.first_name}')
+    except Exception:      # noqa: BLE001 — решение важнее оформления карточки
+        pass
 
 
 async def banned_list(call: types.CallbackQuery, c) -> None:
@@ -188,5 +227,7 @@ def register(router: Router) -> None:
     router.message.register(unban_command, Command('unban'))
     router.message.register(torrents_command, Command('torrents'))
     router.message.register(torrentok_command, Command('torrentok'))
+    router.callback_query.register(torrent_decision,
+                                   Torrent.filter(F.action.in_({'trust', 'reject'})))
     router.callback_query.register(banned_list, Adm.filter(F.act == 'banned'))
     router.callback_query.register(unban_button, Adm.filter(F.act == 'unban'))

@@ -9,12 +9,18 @@
 Мы его не создаём и не перепроверяем — только объясняем человеку, что
 случилось, и считаем, сколько раз это было.
 
-Что делаем:
+Лестница из трёх ступеней, пороги — в настройках:
 
-  * первое нарушение — пишем в бота: торренты запрещены, доступ с этого
-    адреса закрыт на N минут, при повторе подписка отключается;
-  * повторное (порог в настройках) — отключаем подписки в панели навсегда
-    и говорим об этом.
+  * первое нарушение — только разговор: IP человеку уже закрыл сам плагин,
+    мы объясняем, что было и что будет дальше;
+  * второе — замораживаем подписку на полчаса своими руками; доступ
+    возвращает планировщик, когда срок выйдет;
+  * третье — отключаем навсегда, и включить заново нельзя даже новой
+    покупкой.
+
+Под каждым сообщением — кнопка «я не качаю торренты»: проверить это
+автоматически нечем, поэтому жалоба уходит в админ-чат вместе с числами,
+по которым настоящая раздача отличается от случайного срабатывания.
 
 Чего не делаем: не закрываем бота. Человек должен видеть, за что, и уметь
 написать в поддержку — и, если это была ошибка, получить доступ обратно.
@@ -30,12 +36,24 @@ import logging
 from datetime import timedelta
 
 from app.content import texts
+from app.content.emoji import e
 from app.core.time import fmt, now, parse_dt
+from app.domain import torrents as domain
 
 log = logging.getLogger(__name__)
 
 EVENT = 'torrent_blocker.report'
 REASON = 'торренты'
+
+# По умолчанию — полчаса: достаточно, чтобы человек заметил и выключил
+# клиент, и недостаточно, чтобы день был испорчен.
+DEFAULT_FREEZE_MIN = 30
+
+
+def trusted(user: dict | None) -> bool:
+    """Жалоба разобрана в его пользу — больше не наказываем."""
+    return bool((((user or {}).get('moderation') or {}).get('torrent')
+                 or {}).get('trusted'))
 
 # Отчёт приходит не по одному: торрент-клиент за сессию даёт их пачкой.
 # Окно тишины — чтобы человек получил одно сообщение на одну блокировку,
@@ -72,28 +90,105 @@ class TorrentGuard:
         if not user_id:
             return {'ok': True, 'note': 'no_user_id'}
 
-        count = await self._strike(user_id, str(action.get('ip') or ''), node)
+        count = await self._strike(user_id, action, node)
         if count is None:
             return {'ok': True, 'note': 'same_block', 'user_id': user_id}
 
-        limit = int(await self.settings.int('torrents.block_after') or 0)
-        blocked = bool(limit and count >= limit
-                       and not self.moderation.vpn_locked(user))
+        if trusted(user):
+            # Жалоба разобрана в его пользу: считаем, но не наказываем.
+            # Админ-уведомление остаётся — если «доверенный» вдруг начнёт
+            # давать отчёты пачками, это должно быть видно.
+            await self._tell_admins(user_id, count, action, node, domain.WARN)
+            return {'ok': True, 'note': 'trusted', 'user_id': user_id,
+                    'count': count}
 
-        if blocked:
-            await self.moderation.lock_vpn(user_id, f'{REASON}: {count}-е нарушение')
-        delivered = await self._tell(user, user_id, count, action, blocked)
-        await self._tell_admins(user_id, count, action, node, blocked)
+        step = domain.stage(
+            count,
+            freeze_at=int(await self.settings.int('torrents.freeze_at') or 0),
+            block_at=int(await self.settings.int('torrents.block_at') or 0))
+
+        minutes = int(await self.settings.int('torrents.freeze_min')
+                      or DEFAULT_FREEZE_MIN)
+        if step == domain.FREEZE and not self.moderation.vpn_locked(user):
+            await self.moderation.lock_vpn(
+                user_id, f'{REASON}: нарушение №{count}',
+                until=now() + timedelta(minutes=minutes))
+        elif step == domain.BLOCK and not self.moderation.locked_forever(user):
+            await self.moderation.lock_vpn(user_id,
+                                           f'{REASON}: нарушение №{count}')
+
+        delivered = await self._tell(user, user_id, count, action, step, minutes)
+        await self._tell_admins(user_id, count, action, node, step)
 
         log.warning('торрент у %s: нарушение %s, нода %s, %s',
-                    user_id, count, node or '?',
-                    'подписка отключена' if blocked else 'предупреждён')
+                    user_id, count, node or '?', step)
         return {'ok': True, 'user_id': user_id, 'count': count,
-                'note': f'blocked_{count}' if blocked else f'warned_{count}',
-                'delivered': delivered}
+                'note': f'{step}_{count}', 'delivered': delivered}
+
+    # ── разморозка ──────────────────────────────────────────────────────────
+    async def thaw(self) -> int:
+        """Вернуть доступ тем, у кого срок заморозки вышел.
+
+        Счётчик нарушений при этом НЕ обнуляется: заморозка — ступень
+        лестницы, а не прощение. Обнуляет его только человек, разобравший
+        жалобу.
+        """
+        thawed = 0
+        for user in await self.moderation.expired_locks():
+            user_id = int(self.users.pick(user, 'user_data.user_id') or 0)
+            if not user_id:
+                continue
+            await self.moderation.unlock_vpn(user_id, reset=False)
+            thawed += 1
+            if await self.settings.flag('torrents.warn_user'):
+                await self.sender.send(
+                    self.bot, user_id,
+                    texts.render('torrent.thawed',
+                                 name=self.users.pick(user, 'user_data.first_name')))
+        if thawed:
+            log.info('разморожено подписок после торрентов: %s', thawed)
+        return thawed
+
+    # ── жалоба «я ничего не качаю» ──────────────────────────────────────────
+    async def appeal(self, user_id: int) -> bool:
+        """Человек говорит, что это ошибка. Проверить нечем — зовём человека.
+
+        Содержимого трафика у нас нет и быть не должно, так что решение
+        всегда за админом. Наше дело — сложить в карточку то, по чему это
+        решение принимается: сколько отчётов, за какой срок, с каких нод.
+        """
+        user = await self.users.get(user_id)
+        stats = (self.users.pick(user or {}, 'moderation.torrent') or {})
+        if not stats:
+            return False
+
+        await self.users.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$set': {'moderation.torrent.appealed_at': now()}})
+
+        if self.notifier is None:
+            return False
+        code, hint = domain.verdict(stats)
+        return await self.notifier.torrent_appeal(
+            user_id, stats=stats, hint=hint, code=code,
+            locked=self.moderation.locked_forever(user))
+
+    async def decide(self, user_id: int, *, trust: bool, admin_id: int = 0) -> bool:
+        """Решение по жалобе: вернуть доступ и больше не трогать — или нет."""
+        if trust:
+            await self.moderation.unlock_vpn(user_id, admin_id=admin_id)
+            await self.users.col.update_one(
+                {'user_data.user_id': user_id},
+                {'$set': {'moderation.torrent.trusted': True,
+                          'moderation.torrent.trusted_by': int(admin_id or 0),
+                          'moderation.torrent.trusted_at': now()}})
+        return await self.sender.send(
+            self.bot, user_id,
+            texts.render('torrent.appeal_ok' if trust else 'torrent.appeal_no',
+                         support_url=await self.settings.get('link.support')))
 
     # ── счёт нарушений ──────────────────────────────────────────────────────
-    async def _strike(self, user_id: int, ip: str, node: str) -> int | None:
+    async def _strike(self, user_id: int, action: dict, node: str) -> int | None:
         """Засчитать нарушение. None — это та же блокировка, что и минуту назад.
 
         Окно закрывается атомарно самим update: панель ретраит вебхуки, а
@@ -112,8 +207,11 @@ class TorrentGuard:
             {'$inc': {'moderation.torrent.count': 1,
                       'moderation.torrent.reports': 1},
              '$set': {'moderation.torrent.last_at': now(),
-                      'moderation.torrent.last_ip': ip,
-                      'moderation.torrent.last_node': node}})
+                      'moderation.torrent.last_ip': str(action.get('ip') or ''),
+                      'moderation.torrent.last_node': node},
+             # Ноды копим списком: раздача с двух серверов за вечер — это
+             # уже не «сосед по вайфаю», это его клиент.
+             '$addToSet': {'moderation.torrent.nodes': node}})
 
         if getattr(claimed, 'modified_count', 0) != 1:
             # Отчёт всё равно считаем: по этому числу видно, качает человек
@@ -128,29 +226,51 @@ class TorrentGuard:
 
     # ── разговор ────────────────────────────────────────────────────────────
     async def _tell(self, user: dict, user_id: int, count: int, action: dict,
-                    blocked: bool) -> bool:
+                    step: str, freeze_min: int) -> bool:
         if not await self.settings.flag('torrents.warn_user'):
             return False
 
         seconds = int(action.get('blockDuration') or 0)
         text = texts.render(
-            'torrent.blocked' if blocked else 'torrent.warning',
+            f'torrent.{step}',
             name=self.users.pick(user, 'user_data.first_name'),
+            # Сколько закрыт адрес — из самого отчёта: в конфиге плагина это
+            # число меняется в один клик, и зашитое в текст станет враньём.
             minutes=max(1, round(seconds / 60)) if seconds else '',
             until=fmt(parse_dt(action.get('willUnblockAt')), '%H:%M'),
+            freeze=freeze_min,
             count=count,
             support_url=await self.settings.get('link.support'),
         )
-        return await self.sender.send(self.bot, user_id, text)
+        return await self.sender.send(self.bot, user_id, text,
+                                      await self._appeal_button())
+
+    async def _appeal_button(self):
+        """«Это ошибка» — под каждым сообщением, начиная с первого.
+
+        Раньше кнопки: человек, у которого срабатывает ложно, должен иметь
+        возможность сказать об этом до того, как ему отключат подписку.
+        """
+        if not await self.settings.flag('torrents.appeal'):
+            return None
+
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+        from app.bot.callbacks import Torrent
+
+        kb = InlineKeyboardBuilder()
+        kb.button(text=f'{e("question")} Я не качаю торренты',
+                  callback_data=Torrent(action='appeal').pack())
+        return kb.as_markup()
 
     async def _tell_admins(self, user_id: int, count: int, action: dict,
-                           node: str, blocked: bool) -> None:
+                           node: str, step: str) -> None:
         if self.notifier is None:
             return
         try:
             await self.notifier.torrent(user_id, count=count, node=node,
                                         ip=str(action.get('ip') or ''),
-                                        blocked=blocked)
+                                        step=step)
         except Exception as exc:      # noqa: BLE001 — уведомление не главное
             log.warning('торрент: админ-уведомление не ушло: %s', exc)
 

@@ -36,6 +36,11 @@ def create_scheduler(container, bot) -> AsyncIOScheduler:
     scheduler.add_job(jobs.update_segments, 'interval', minutes=60,
                       args=[container], id='update_segments',
                       next_run_time=now() + timedelta(minutes=5))
+    # Раз в минуту: заморозка за торренты должна кончаться вовремя —
+    # «на полчаса» не должно превращаться в «полчаса и сколько-то сверху».
+    scheduler.add_job(jobs.thaw_torrents, 'interval', minutes=1,
+                      args=[container], id='thaw_torrents',
+                      next_run_time=now() + timedelta(seconds=45))
     # Раз в минуту: рассылка на 190 тысяч писем идёт часами и переживает
     # не всё. Продолжать её руками — значит следить за экраном; сторож
     # делает это сам.

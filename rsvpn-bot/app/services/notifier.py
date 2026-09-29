@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import logging
 
+from aiogram import types
+
 from app.content import ids
 from app.core.time import fmt
 from app.content.emoji import e, plain
@@ -227,17 +229,58 @@ class Notifier:
                                f'<b>Кому:</b> {await self._who(to_user_id)}\n'
                                f'<b>Тариф:</b> <code>{(plan or {}).get("title", "")}</code>')
 
+    TORRENT_HEADS = {
+        'warn': 'Торрент: предупреждение',
+        'freeze': 'Торрент: подписка заморожена',
+        'block': 'Торрент: подписка отключена',
+    }
+
     async def torrent(self, user_id: int, count: int, node: str = '',
-                      ip: str = '', blocked: bool = False) -> bool:
+                      ip: str = '', step: str = 'warn') -> bool:
         """Торрент у клиента. В общий чат — потому что из-за этого банят
         сервер, и знать об этом надо раньше, чем придёт письмо от хостера."""
-        head = (f'{e("ban")} <b>Торрент: подписка отключена</b>' if blocked
-                else f'{e("attention")} <b>Торрент</b>')
+        mark = e('ban') if step == 'block' else e('attention')
+        head = self.TORRENT_HEADS.get(step, self.TORRENT_HEADS['warn'])
         return await self.send('torrent',
-                               f'{head}\n{await self._who(user_id)}\n'
+                               f'{mark} <b>{head}</b>\n{await self._who(user_id)}\n'
                                f'<b>Нарушение:</b> <code>{count}</code>\n'
                                + (f'<b>Нода:</b> <code>{node}</code>\n' if node else '')
                                + (f'<b>IP:</b> <code>{ip}</code>' if ip else ''))
+
+    async def torrent_appeal(self, user_id: int, stats: dict, hint: str,
+                             code: str = '', locked: bool = False) -> bool:
+        """«Я не качаю торренты». Проверить это нечем — решает человек.
+
+        Поэтому в карточке не вердикт, а то, по чему решают: сколько
+        отчётов, за какой срок, с каких нод. Настоящая раздача даёт их
+        десятками и с разных серверов; ложное срабатывание — один и тишину.
+        """
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+        from app.bot.callbacks import Torrent
+
+        nodes = [str(name) for name in (stats.get('nodes') or []) if name]
+        lines = [f'{e("question")} <b>Жалоба на ложное срабатывание</b>',
+                 await self._who(user_id),
+                 f'<b>Нарушений:</b> <code>{stats.get("count", 0)}</code>, '
+                 f'отчётов <code>{stats.get("reports", 0)}</code>',
+                 f'<b>Последний:</b> {fmt(stats.get("last_at"))}'
+                 + (f', нода {stats.get("last_node")}' if stats.get('last_node') else ''),
+                 (f'<b>Ноды:</b> {", ".join(nodes[:5])}' if len(nodes) > 1 else ''),
+                 f'<b>Статус:</b> ' + ('подписка отключена' if locked
+                                       else 'доступ работает'),
+                 '', f'<blockquote>{hint}</blockquote>']
+
+        kb = InlineKeyboardBuilder()
+        kb.row(types.InlineKeyboardButton(
+            text=f'{e("ok")} Поверить и вернуть доступ',
+            callback_data=Torrent(action='trust', user_id=user_id).pack()))
+        kb.row(types.InlineKeyboardButton(
+            text=f'{e("cross")} Отказать',
+            callback_data=Torrent(action='reject', user_id=user_id).pack()))
+        return await self.send('torrent',
+                               '\n'.join(line for line in lines if line != ''),
+                               markup=kb.as_markup())
 
     async def email_changed(self, user_id: int, email: str) -> bool:
         return await self.send('email',

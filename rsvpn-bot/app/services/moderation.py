@@ -85,9 +85,24 @@ class ModerationService:
     def vpn_locked(user: dict | None) -> bool:
         return bool(((user or {}).get('moderation') or {}).get('vpn_locked'))
 
+    @staticmethod
+    def locked_forever(user: dict | None) -> bool:
+        """Отключён насовсем, а не до вечера.
+
+        Отличать важно: заморозку снимает время, и повторно «отключать
+        навсегда» замороженного нельзя — иначе срок тихо превратится
+        в бессрочный.
+        """
+        info = (user or {}).get('moderation') or {}
+        return bool(info.get('vpn_locked')) and not info.get('vpn_locked_until')
+
     async def lock_vpn(self, user_id: int, reason: str = '',
-                       admin_id: int = 0) -> BanResult:
-        """Отключить подписки в панели. Бот остаётся доступным."""
+                       admin_id: int = 0, until=None) -> BanResult:
+        """Отключить подписки в панели. Бот остаётся доступным.
+
+        `until` — временная заморозка: доступ вернёт планировщик, когда
+        срок выйдет. Без него отключение бессрочное.
+        """
         user = await self.users.get(user_id)
         if not user:
             return BanResult(False)
@@ -96,6 +111,7 @@ class ModerationService:
             {'user_data.user_id': user_id},
             {'$set': {'moderation.vpn_locked': True,
                       'moderation.vpn_locked_at': now(),
+                      'moderation.vpn_locked_until': until,
                       'moderation.vpn_locked_by': int(admin_id or 0),
                       'moderation.vpn_locked_reason': reason}},
         )
@@ -104,19 +120,25 @@ class ModerationService:
                     user_id, reason or 'без причины', disabled, failed)
         return BanResult(True, hard=True, disabled=disabled, panel_failed=failed)
 
-    async def unlock_vpn(self, user_id: int, admin_id: int = 0) -> BanResult:
-        """Вернуть доступ. Забаненного не воскрешаем — у него другой замок."""
+    async def unlock_vpn(self, user_id: int, admin_id: int = 0,
+                         reset: bool = True) -> BanResult:
+        """Вернуть доступ. Забаненного не воскрешаем — у него другой замок.
+
+        `reset=False` — разморозка по времени: счётчик нарушений остаётся,
+        иначе лестница обнулялась бы каждые полчаса и до отключения дело
+        не доходило бы никогда.
+        """
         user = await self.users.get(user_id)
         if not user:
             return BanResult(False)
 
-        await self.users.col.update_one(
-            {'user_data.user_id': user_id},
-            {'$set': {'moderation.vpn_locked': False,
-                      'moderation.vpn_unlocked_at': now(),
-                      'moderation.vpn_unlocked_by': int(admin_id or 0)},
-             '$unset': {'moderation.torrent.count': ''}},
-        )
+        changes = {'$set': {'moderation.vpn_locked': False,
+                            'moderation.vpn_locked_until': None,
+                            'moderation.vpn_unlocked_at': now(),
+                            'moderation.vpn_unlocked_by': int(admin_id or 0)}}
+        if reset:
+            changes['$unset'] = {'moderation.torrent.count': ''}
+        await self.users.col.update_one({'user_data.user_id': user_id}, changes)
         log.info('подписка %s разблокирована админом %s', user_id, admin_id)
 
         if self.is_hard(user):
@@ -127,6 +149,12 @@ class ModerationService:
     async def locked(self, limit: int = 50) -> list[dict]:
         return await self.users.col.find({'moderation.vpn_locked': True}).to_list(
             length=limit)
+
+    async def expired_locks(self, limit: int = 200) -> list[dict]:
+        """Замороженные, у кого срок вышел."""
+        return await self.users.col.find(
+            {'moderation.vpn_locked': True,
+             'moderation.vpn_locked_until': {'$lte': now()}}).to_list(length=limit)
 
     async def unban(self, user_id: int, admin_id: int) -> BanResult:
         """Снять любую блокировку. После жёсткой — вернуть подписки в строй."""

@@ -218,8 +218,16 @@ SCHEMA: tuple[Group, ...] = (
         Setting('torrents.enabled', 'Реагировать на торренты', 'bool', True,
                 hint='События присылает плагин Torrent Blocker панели'),
         Setting('torrents.warn_user', 'Писать нарушителю в бота', 'bool', True),
-        Setting('torrents.block_after', 'Отключать подписку с нарушения', 'int', 2,
-                min=0, hint='0 — никогда не отключать, только предупреждать'),
+        Setting('torrents.freeze_at', 'Замораживать с нарушения', 'int', 2,
+                min=0, hint='0 — не замораживать'),
+        Setting('torrents.freeze_min', 'Насколько замораживать', 'int', 30,
+                unit=' мин', min=1),
+        Setting('torrents.block_at', 'Отключать навсегда с нарушения', 'int', 3,
+                min=0, hint='0 — никогда не отключать, только предупреждать. '
+                            'Отключённый не сможет включить подписку заново, '
+                            'в том числе новой покупкой'),
+        Setting('torrents.appeal', 'Кнопка «я не качаю торренты»', 'bool', True,
+                hint='Жалоба приходит в админ-чат с кнопками решения'),
         Setting('torrents.cooldown_min', 'Окно тишины', 'int', 30, unit=' мин', min=1,
                 hint='Одно сообщение на одну блокировку: за сессию плагин '
                      'присылает десятки отчётов'),

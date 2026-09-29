@@ -251,7 +251,7 @@ async def test_a_torrent_report_reaches_the_person(api, user_factory):
         '/remnawave/webhook', content=body,
         headers={'x-remnawave-signature': hmac_sha256_hex('секрет', body)})
 
-    assert response.json().get('note') == 'warned_1'
+    assert response.json().get('note') == 'warn_1'
     sent = container.topup.bot.sent
     assert sent and sent[-1]['user_id'] == 1
     assert 'торрент' in sent[-1]['text'].lower() and '6 мин' in sent[-1]['text']

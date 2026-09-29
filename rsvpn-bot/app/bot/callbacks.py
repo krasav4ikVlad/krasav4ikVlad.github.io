@@ -68,6 +68,12 @@ class Game(CallbackData, prefix='g'):
     value: str = ''
 
 
+class Torrent(CallbackData, prefix='trn'):
+    """Торренты: жалоба человека и решение по ней в админ-чате."""
+    action: str          # appeal (от человека) | trust | reject (решение)
+    user_id: int = 0
+
+
 class ServerAdmin(CallbackData, prefix='srva'):
     """Заявка на личный сервер — кнопки под карточкой в админ-чате."""
     action: str          # give | reject

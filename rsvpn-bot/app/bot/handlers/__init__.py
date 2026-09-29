@@ -12,13 +12,13 @@ from aiogram import Dispatcher
 from app.bot.handlers import (bypass, common, devices, fallback, gifts,
                               maintenance, payments, payouts, private_servers,
                               profile, promo, raffle, referrals, start,
-                              subscription, support, trial)
+                              subscription, support, torrents, trial)
 
 # Сапёр — раньше остальных: во время техработ перехватчик пропускает только
 # его, и роутер должен быть на месте независимо от того, что там дальше.
 SECTIONS = (maintenance, common, start, profile, subscription, devices, bypass,
             payments, referrals, payouts, private_servers, gifts, promo, trial,
-            raffle, support, fallback)
+            raffle, support, torrents, fallback)
 
 
 def register(dp: Dispatcher) -> None:
