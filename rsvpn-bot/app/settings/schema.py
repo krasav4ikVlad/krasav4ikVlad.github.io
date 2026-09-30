@@ -218,6 +218,10 @@ SCHEMA: tuple[Group, ...] = (
         Setting('torrents.enabled', 'Реагировать на торренты', 'bool', True,
                 hint='События присылает плагин Torrent Blocker панели'),
         Setting('torrents.warn_user', 'Писать нарушителю в бота', 'bool', True),
+        Setting('torrents.window_days', 'Помнить нарушения', 'int', 7,
+                unit=' дн', min=0,
+                hint='Лестница считает только нарушения за этот срок, '
+                     'старое забывается само. 0 — помнить всегда'),
         Setting('torrents.freeze_at', 'Замораживать с нарушения', 'int', 2,
                 min=0, hint='0 — не замораживать'),
         Setting('torrents.freeze_min', 'Насколько замораживать', 'int', 30,

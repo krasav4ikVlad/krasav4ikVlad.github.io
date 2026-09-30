@@ -124,9 +124,9 @@ class ModerationService:
                          reset: bool = True) -> BanResult:
         """Вернуть доступ. Забаненного не воскрешаем — у него другой замок.
 
-        `reset=False` — разморозка по времени: счётчик нарушений остаётся,
-        иначе лестница обнулялась бы каждые полчаса и до отключения дело
-        не доходило бы никогда.
+        `reset=False` — разморозка по времени: ступени остаются, иначе
+        лестница обнулялась бы каждые полчаса и до отключения дело не
+        доходило бы никогда.
         """
         user = await self.users.get(user_id)
         if not user:
@@ -137,7 +137,9 @@ class ModerationService:
                             'moderation.vpn_unlocked_at': now(),
                             'moderation.vpn_unlocked_by': int(admin_id or 0)}}
         if reset:
-            changes['$unset'] = {'moderation.torrent.count': ''}
+            # Сбрасываем лестницу, а не счётчик за всё время: сколько раз
+            # человек попадался, должно остаться видно и после прощения.
+            changes['$unset'] = {'moderation.torrent.strikes': ''}
         await self.users.col.update_one({'user_data.user_id': user_id}, changes)
         log.info('подписка %s разблокирована админом %s', user_id, admin_id)
 

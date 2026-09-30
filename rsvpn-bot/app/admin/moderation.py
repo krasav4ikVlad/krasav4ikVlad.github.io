@@ -107,6 +107,7 @@ async def torrents_command(message: types.Message, c, settings) -> None:
     freeze_at = await settings.int('torrents.freeze_at')
     block_at = await settings.int('torrents.block_at')
     minutes = await settings.int('torrents.freeze_min')
+    window = await settings.int('torrents.window_days')
 
     frozen = [doc for doc in locked
               if (doc.get('moderation') or {}).get('vpn_locked_until')]
@@ -116,20 +117,25 @@ async def torrents_command(message: types.Message, c, settings) -> None:
              f'Отключено навсегда: <b>{len(forever)}</b>, '
              f'заморожено сейчас: <b>{len(frozen)}</b>',
              f'Лестница: предупреждение → заморозка на {minutes} мин. '
-             f'с {freeze_at or "—"}-го → отключение с {block_at or "—"}-го', '']
+             f'с {freeze_at or "—"}-го → отключение с {block_at or "—"}-го',
+             f'Считаются нарушения '
+             + (f'за последние <b>{window}</b> дн.' if window
+                else '<b>за всё время</b>'), '']
 
     for doc in locked:
         info = (doc.get('moderation') or {})
         torrent = info.get('torrent') or {}
         until = info.get('vpn_locked_until')
         lines.append(
-            f'• {_who(doc)} — нарушений <b>{torrent.get("count", "?")}</b>, '
+            f'• {_who(doc)} — нарушений всего <b>{torrent.get("count", "?")}</b>, '
             f'отчётов {torrent.get("reports", "?")}, '
             + (f'заморожен до {fmt(until, "%H:%M")}' if until
                else f'отключён {fmt(info.get("vpn_locked_at"))}')
             + (f'\n  нода {torrent["last_node"]}' if torrent.get('last_node') else '')
             + ('\n  <i>жаловался на ложное срабатывание</i>'
-               if torrent.get('appealed_at') else ''))
+               if torrent.get('appealed_at') else '')
+            + (f'\n  <i>предупреждения списывали {torrent["forgiven"]} раз</i>'
+               if torrent.get('forgiven') else ''))
 
     if not locked:
         lines.append('Никому не отключали.')
@@ -164,16 +170,16 @@ async def torrent_decision(call: types.CallbackQuery, callback_data: Torrent,
                            c) -> None:
     """Решение по жалобе — кнопкой под карточкой в админ-чате.
 
-    «Поверить» не просто возвращает доступ, а перестаёт наказывать этого
-    человека вообще: если у него срабатывает ложно, оно сработает снова,
-    и второй раз объясняться ему уже незачем. Отчёты по нему продолжают
-    приходить в чат — если окажется, что поверили зря, это будет видно.
+    «Сбросить» возвращает доступ и списывает ступени: следующее
+    срабатывание у человека снова первое, с предупреждения. Неприкасаемым
+    он при этом не становится — иначе «пожаловался один раз, качай
+    сколько хочешь». Сколько раз ему уже списывали, видно в карточке.
     """
     trust = callback_data.action == 'trust'
     await c.torrents.decide(callback_data.user_id, trust=trust,
                             admin_id=call.from_user.id)
 
-    verdict = (f'{e("ok")} Поверили, доступ возвращён' if trust
+    verdict = (f'{e("ok")} Предупреждения списаны, доступ возвращён' if trust
                else f'{e("cross")} Отказано')
     await call.answer(verdict)
     try:

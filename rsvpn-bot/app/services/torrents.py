@@ -50,10 +50,9 @@ REASON = 'торренты'
 DEFAULT_FREEZE_MIN = 30
 
 
-def trusted(user: dict | None) -> bool:
-    """Жалоба разобрана в его пользу — больше не наказываем."""
-    return bool((((user or {}).get('moderation') or {}).get('torrent')
-                 or {}).get('trusted'))
+# Лестница помнит неделю: три срабатывания за год — это три разных вечера,
+# а не злостный нарушитель.
+DEFAULT_WINDOW_DAYS = 7
 
 # Отчёт приходит не по одному: торрент-клиент за сессию даёт их пачкой.
 # Окно тишины — чтобы человек получил одно сообщение на одну блокировку,
@@ -93,14 +92,6 @@ class TorrentGuard:
         count = await self._strike(user_id, action, node)
         if count is None:
             return {'ok': True, 'note': 'same_block', 'user_id': user_id}
-
-        if trusted(user):
-            # Жалоба разобрана в его пользу: считаем, но не наказываем.
-            # Админ-уведомление остаётся — если «доверенный» вдруг начнёт
-            # давать отчёты пачками, это должно быть видно.
-            await self._tell_admins(user_id, count, action, node, domain.WARN)
-            return {'ok': True, 'note': 'trusted', 'user_id': user_id,
-                    'count': count}
 
         step = domain.stage(
             count,
@@ -171,17 +162,25 @@ class TorrentGuard:
         code, hint = domain.verdict(stats)
         return await self.notifier.torrent_appeal(
             user_id, stats=stats, hint=hint, code=code,
+            ladder=domain.recent(stats.get('strikes'), days=await self.window_days()),
             locked=self.moderation.locked_forever(user))
 
     async def decide(self, user_id: int, *, trust: bool, admin_id: int = 0) -> bool:
-        """Решение по жалобе: вернуть доступ и больше не трогать — или нет."""
+        """Решение по жалобе: сбросить лестницу — или оставить как есть.
+
+        Одобрение не делает человека неприкасаемым: оно обнуляет ступени
+        и возвращает доступ. Следующее срабатывание у него снова первое,
+        с предупреждения. Так ошибка исправляется, а лазейка «пожаловался
+        один раз — качай сколько хочешь» не появляется.
+        """
         if trust:
             await self.moderation.unlock_vpn(user_id, admin_id=admin_id)
             await self.users.col.update_one(
                 {'user_data.user_id': user_id},
-                {'$set': {'moderation.torrent.trusted': True,
-                          'moderation.torrent.trusted_by': int(admin_id or 0),
-                          'moderation.torrent.trusted_at': now()}})
+                {'$set': {'moderation.torrent.forgiven_at': now(),
+                          'moderation.torrent.forgiven_by': int(admin_id or 0)},
+                 '$inc': {'moderation.torrent.forgiven': 1},
+                 '$unset': {'moderation.torrent.appealed_at': ''}})
         return await self.sender.send(
             self.bot, user_id,
             texts.render('torrent.appeal_ok' if trust else 'torrent.appeal_no',
@@ -209,6 +208,11 @@ class TorrentGuard:
              '$set': {'moderation.torrent.last_at': now(),
                       'moderation.torrent.last_ip': str(action.get('ip') or ''),
                       'moderation.torrent.last_node': node},
+             # Отметки времени, а не только счётчик: лестница смотрит на
+             # последнюю неделю, и без дат отличить «три раза за вечер» от
+             # «три раза за год» нечем.
+             '$push': {'moderation.torrent.strikes': {
+                 '$each': [now()], '$slice': -domain.KEEP_STRIKES}},
              # Ноды копим списком: раздача с двух серверов за вечер — это
              # уже не «сосед по вайфаю», это его клиент.
              '$addToSet': {'moderation.torrent.nodes': node}})
@@ -221,8 +225,20 @@ class TorrentGuard:
                 {'$inc': {'moderation.torrent.reports': 1}})
             return None
 
-        fresh = await self.users.get(user_id, {'moderation.torrent.count': 1})
-        return int(self.users.pick(fresh or {}, 'moderation.torrent.count', 0) or 0)
+        fresh = await self.users.get(user_id, {'moderation.torrent': 1})
+        return domain.recent(
+            self.users.pick(fresh or {}, 'moderation.torrent.strikes'),
+            days=await self.window_days())
+
+    async def window_days(self) -> int:
+        value = await self.settings.int('torrents.window_days')
+        return DEFAULT_WINDOW_DAYS if value is None else int(value)
+
+    async def window_text(self) -> str:
+        """«за 7 дней» — готовой фразой, а не числом: при выключенном окне
+        в тексте получилось бы «за 0 дней»."""
+        days = await self.window_days()
+        return f'за {days} дн.' if days else 'за всё время' 
 
     # ── разговор ────────────────────────────────────────────────────────────
     async def _tell(self, user: dict, user_id: int, count: int, action: dict,
@@ -240,6 +256,7 @@ class TorrentGuard:
             until=fmt(parse_dt(action.get('willUnblockAt')), '%H:%M'),
             freeze=freeze_min,
             count=count,
+            window=await self.window_text(),
             support_url=await self.settings.get('link.support'),
         )
         return await self.sender.send(self.bot, user_id, text,

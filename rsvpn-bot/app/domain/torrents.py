@@ -17,6 +17,34 @@ WARN = 'warn'
 FREEZE = 'freeze'
 BLOCK = 'block'
 
+# Сколько отметок о нарушениях храним в карточке. Лестница смотрит на
+# неделю, так что полсотни — это заведомо больше, чем когда-либо
+# понадобится, и при этом документ не растёт без конца.
+KEEP_STRIKES = 50
+
+
+def recent(strikes, *, days: int, moment=None) -> int:
+    """Сколько нарушений попадает в окно лестницы.
+
+    Три срабатывания за год — это не злостный нарушитель, а три разных
+    вечера, о двух из которых человек давно забыл. Поэтому лестница
+    считает только то, что случилось за последние `days` дней, а старое
+    перестаёт учитываться само.
+
+    `days=0` — окна нет, считаем за всё время.
+    """
+    from datetime import timedelta
+
+    from app.core.time import now, parse_dt
+
+    marks = [parse_dt(mark) for mark in (strikes or [])]
+    marks = [mark for mark in marks if mark is not None]
+    if not days:
+        return len(marks)
+
+    border = (moment or now()) - timedelta(days=days)
+    return sum(1 for mark in marks if mark >= border)
+
 
 def stage(count: int, *, freeze_at: int, block_at: int) -> str:
     """Что делаем на этом по счёту нарушении.

@@ -85,9 +85,10 @@ class FakeNotifier:
                           'ip': ip, 'step': step})
         return True
 
-    async def torrent_appeal(self, user_id, stats, hint, code='', locked=False):
+    async def torrent_appeal(self, user_id, stats, hint, code='', locked=False,
+                             ladder=0):
         self.appeals.append({'user_id': user_id, 'stats': stats, 'hint': hint,
-                             'code': code, 'locked': locked})
+                             'code': code, 'locked': locked, 'ladder': ladder})
         return True
 
 
@@ -414,17 +415,22 @@ async def test_unlocking_does_not_resurrect_a_hard_ban(users, settings, vpn, db)
     assert ('uuid-802421217', 'ACTIVE') not in vpn.statuses
 
 
-async def test_the_counter_is_reset_on_unlock(users, settings, vpn, db):
+async def test_the_ladder_is_reset_on_unlock(users, settings, vpn, db):
     """Иначе следующий торрент сразу отключит подписку снова."""
     await client(users)
     moderation = ModerationService(users, settings, vpn=vpn)
-    await users.col.update_one({'user_data.user_id': USER},
-                               {'$set': {'moderation.torrent.count': 2}})
+    await users.col.update_one(
+        {'user_data.user_id': USER},
+        {'$set': {'moderation.torrent.count': 2,
+                  'moderation.torrent.strikes': [now(), now()]}})
     await moderation.lock_vpn(USER, 'торренты')
 
     await moderation.unlock_vpn(USER, admin_id=1)
 
-    assert not users.pick(await users.get(USER), 'moderation.torrent.count')
+    card = await users.get(USER)
+    assert not users.pick(card, 'moderation.torrent.strikes')
+    # а сколько раз он попадался всего — остаётся видно
+    assert users.pick(card, 'moderation.torrent.count') == 2
 
 
 # ── выключатель ─────────────────────────────────────────────────────────────
@@ -546,7 +552,7 @@ async def test_the_appeal_reaches_the_admins_with_the_evidence(guard, users,
     assert await guard.appeal(USER) is True
     card = notifier.appeals[0]
     assert card['user_id'] == USER
-    assert card['stats']['count'] == 1 and card['hint']
+    assert card['ladder'] == 1 and card['hint']
 
 
 async def test_an_appeal_without_a_single_report_goes_nowhere(guard, users,
@@ -570,29 +576,28 @@ async def test_believing_returns_the_access(guard, users, vpn, sender, db):
     assert 'ложное срабатывание' in sender.sent[-1][1]
 
 
-async def test_the_believed_are_not_punished_again(guard, users, vpn, sender, db):
-    """Если у человека срабатывает ложно, оно сработает снова — второй раз
-    объясняться ему незачем."""
+async def test_approval_starts_the_ladder_over(guard, users, vpn, sender, db):
+    """Одобрение не делает человека неприкасаемым — оно списывает ступени.
+    Следующее срабатывание у него снова первое, с предупреждения."""
     await client(users)
+    await guard.handle(report())
+    await again(guard, users)          # заморозка
     await guard.decide(USER, trust=True, admin_id=1)
-    sender.sent.clear()
     vpn.statuses.clear()
 
-    for _ in range(3):
-        await again(guard, users)
+    result = await again(guard, users)
 
-    assert vpn.statuses == [] and sender.sent == []
+    assert result['note'] == 'warn_1' and vpn.statuses == []
 
 
-async def test_the_believed_are_still_visible_to_admins(guard, users, notifier, db):
-    """Поверили зря — это должно быть видно, а не исчезнуть из ленты."""
+async def test_approval_is_remembered(guard, users, db):
+    """Второй заход с той же жалобой выглядит иначе, чем первый."""
     await client(users)
+    await guard.handle(report())
     await guard.decide(USER, trust=True, admin_id=1)
-    notifier.said.clear()
 
-    await again(guard, users)
-
-    assert notifier.said
+    assert users.pick(await users.get(USER),
+                      'moderation.torrent.forgiven') == 1
 
 
 async def test_refusing_keeps_everything_as_it_was(guard, users, sender, db):
@@ -682,3 +687,107 @@ def test_the_ban_is_explained_by_the_rules():
     from app.content.texts import REGISTRY
 
     assert 'правил' in REGISTRY['torrent.warn'].default.lower()
+
+
+# ── лестница помнит неделю ──────────────────────────────────────────────────
+#
+# Три срабатывания за год — это три разных вечера, о двух из которых человек
+# давно забыл. Отключать за это навсегда нельзя. Поэтому ступени считаются
+# по окну: старые нарушения перестают учитываться сами.
+
+async def old_strike(users, days_ago: int) -> None:
+    """Нарушение, случившееся давно."""
+    await users.col.update_one(
+        {'user_data.user_id': USER},
+        {'$push': {'moderation.torrent.strikes': now() - timedelta(days=days_ago)},
+         '$inc': {'moderation.torrent.count': 1}})
+
+
+async def test_a_violation_a_year_ago_does_not_count(guard, users, vpn,
+                                                     sender, db):
+    await client(users)
+    await old_strike(users, days_ago=300)
+    await old_strike(users, days_ago=200)
+
+    result = await guard.handle(report())
+
+    assert result['note'] == 'warn_1' and vpn.statuses == []
+
+
+async def test_violations_inside_the_week_do_count(guard, users, vpn, db):
+    await client(users)
+    await old_strike(users, days_ago=2)
+    await old_strike(users, days_ago=5)
+
+    result = await guard.handle(report())
+
+    assert result['note'] == 'block_3'
+    assert ModerationService.locked_forever(await users.get(USER))
+
+
+async def test_the_edge_of_the_window_is_the_week(guard, users, db):
+    """Ровно на границе — уже не считается: неделя есть неделя."""
+    await client(users)
+    await old_strike(users, days_ago=8)
+
+    assert (await guard.handle(report()))['note'] == 'warn_1'
+
+
+async def test_the_window_is_a_setting(guard, users, settings, db):
+    await client(users)
+    await settings.set('torrents.window_days', 30)
+    await old_strike(users, days_ago=20)
+
+    assert (await guard.handle(report()))['note'] == 'freeze_2'
+
+
+async def test_zero_days_means_never_forget(guard, users, settings, db):
+    await client(users)
+    await settings.set('torrents.window_days', 0)
+    await old_strike(users, days_ago=300)
+    await old_strike(users, days_ago=200)
+
+    assert (await guard.handle(report()))['note'] == 'block_3'
+
+
+async def test_the_person_is_told_the_window(guard, users, sender, db):
+    """«Нарушение №2» без срока звучит как приговор за всю жизнь."""
+    await client(users)
+    await old_strike(users, days_ago=1)
+
+    await guard.handle(report())
+
+    assert 'за 7 дн.' in sender.sent[-1][1]
+
+
+async def test_the_marks_do_not_pile_up_forever(guard, users, db):
+    """Документ пользователя не должен расти без конца."""
+    from app.domain.torrents import KEEP_STRIKES
+
+    await client(users)
+    for _ in range(KEEP_STRIKES + 10):
+        await old_strike(users, days_ago=1)
+    await guard.handle(report())
+
+    strikes = users.pick(await users.get(USER), 'moderation.torrent.strikes')
+    assert len(strikes) == KEEP_STRIKES
+
+
+def test_the_window_counts_only_what_fits():
+    from datetime import timedelta as td
+
+    from app.domain.torrents import recent
+
+    marks = [now() - td(days=1), now() - td(days=6), now() - td(days=30)]
+
+    assert recent(marks, days=7) == 2
+    assert recent(marks, days=0) == 3
+    assert recent([], days=7) == 0
+
+
+def test_a_card_from_an_older_build_is_read_as_empty():
+    """У тех, кто попался до этой сборки, отметок времени нет — лестница
+    для них начинается заново. Мягко, и это правильно."""
+    from app.domain.torrents import recent
+
+    assert recent(None, days=7) == 0

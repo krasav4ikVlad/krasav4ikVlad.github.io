@@ -248,7 +248,8 @@ class Notifier:
                                + (f'<b>IP:</b> <code>{ip}</code>' if ip else ''))
 
     async def torrent_appeal(self, user_id: int, stats: dict, hint: str,
-                             code: str = '', locked: bool = False) -> bool:
+                             code: str = '', locked: bool = False,
+                             ladder: int = 0) -> bool:
         """«Я не качаю торренты». Проверить это нечем — решает человек.
 
         Поэтому в карточке не вердикт, а то, по чему решают: сколько
@@ -262,7 +263,8 @@ class Notifier:
         nodes = [str(name) for name in (stats.get('nodes') or []) if name]
         lines = [f'{e("question")} <b>Жалоба на ложное срабатывание</b>',
                  await self._who(user_id),
-                 f'<b>Нарушений:</b> <code>{stats.get("count", 0)}</code>, '
+                 f'<b>По лестнице:</b> <code>{ladder}</code>, '
+                 f'всего <code>{stats.get("count", 0)}</code>, '
                  f'отчётов <code>{stats.get("reports", 0)}</code>',
                  f'<b>Последний:</b> {fmt(stats.get("last_at"))}'
                  + (f', нода {stats.get("last_node")}' if stats.get('last_node') else ''),
@@ -271,9 +273,15 @@ class Notifier:
                                        else 'доступ работает'),
                  '', f'<blockquote>{hint}</blockquote>']
 
+        if stats.get('forgiven'):
+            # Прощали раньше — это важнее любой подсказки: второй заход
+            # с той же жалобой выглядит иначе, чем первый.
+            lines.insert(-2, f'{e("warning")} <b>Уже прощали:</b> '
+                             f'<code>{stats["forgiven"]}</code> раз')
+
         kb = InlineKeyboardBuilder()
         kb.row(types.InlineKeyboardButton(
-            text=f'{e("ok")} Поверить и вернуть доступ',
+            text=f'{e("ok")} Сбросить предупреждения',
             callback_data=Torrent(action='trust', user_id=user_id).pack()))
         kb.row(types.InlineKeyboardButton(
             text=f'{e("cross")} Отказать',

@@ -8,6 +8,7 @@ container.missing_services() обязан быть пустым. Здесь ха
 import pytest
 
 from app.bot.callbacks import Torrent
+from app.core.time import now
 from app.campaigns.sender import Sender
 from app.services.torrents import TorrentGuard
 from tests.test_admin_panel import ADMIN, admin_env, callback, message  # noqa: F401
@@ -25,11 +26,13 @@ async def test_the_admin_decision_reaches_the_person(admin_env):
                               c.moderation, notifier=c.notifier)
     await c.users.create({'user_data': {'user_id': 42}, 'info': {'balance': 0},
                           'moderation': {'vpn_locked': True,
-                                         'torrent': {'count': 3}}})
+                                         'torrent': {'count': 3,
+                                                     'strikes': [now()]}}})
 
     await dp.feed_update(bot, callback(
         Torrent(action='trust', user_id=42).pack()))
 
     card = await c.users.get(42)
     assert not (card.get('moderation') or {}).get('vpn_locked')
-    assert (card['moderation']['torrent'] or {}).get('trusted') is True
+    assert not (card['moderation']['torrent'] or {}).get('strikes')
+    assert (card['moderation']['torrent'] or {}).get('forgiven') == 1
