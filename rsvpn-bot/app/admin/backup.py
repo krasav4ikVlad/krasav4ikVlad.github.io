@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 
 from aiogram import Router, types
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 
 from app.content import progress
 from app.content.emoji import e
@@ -61,7 +61,10 @@ async def say(note, message: types.Message, text: str,
 TITLE = 'Копия базы'
 
 
-async def backup_now(message: types.Message, c, settings) -> None:
+async def backup_now(message: types.Message, command: CommandObject, c,
+                     settings) -> None:
+    force = (command.args or '').strip().lower() in ('force', '!', 'force!',
+                                                     'всё равно', 'давай')
     note = await message.answer(progress.screen(
         f'{e("document")} {TITLE}', 'Считаю, сколько всего документов…'))
     ticker = progress.Ticker()
@@ -75,12 +78,18 @@ async def backup_now(message: types.Message, c, settings) -> None:
         await say(note, message, progress.screen(
             f'{e("document")} {TITLE}', step, done, total), quiet=True)
 
-    report = await c.backup.run(on_progress=show)
+    report = await c.backup.run(on_progress=show, force=force)
 
     if report.busy:
+        running = await c.backup.in_progress()
+        idle = c.backup.idle_minutes(running) if running else 0
         await say(note, message,
-                  f'{e("clock")} Копия уже делается — дождитесь её. '
-                  f'Что есть на сервере, покажет <code>/backups</code>.')
+                  f'{e("clock")} Копия уже делается'
+                  + (f' (<code>{running.name}</code>, последняя запись '
+                     f'{idle:.0f} мин назад)' if running else '')
+                  + f'.\n\nЕсли уверены, что она зависла: '
+                    f'<code>/backup force</code> — начнёт новую, не глядя '
+                    f'на эту.')
         return
 
     if not report.ok:
@@ -137,12 +146,16 @@ async def backups_list(message: types.Message, c, settings) -> None:
 
     running = await c.backup.in_progress()
     if running is not None:
-        lines.append(f'{e("refresh")} <b>Копия делается прямо сейчас</b> '
-                     f'(<code>{running.name}</code>)')
+        # Не «файл есть», а «в него пишут»: без времени последней записи
+        # брошенный обрывок неотличим от работы.
+        lines.append(f'{e("refresh")} <b>Копия делается прямо сейчас</b>\n'
+                     f'   <code>{running.name}</code>, последняя запись '
+                     f'{c.backup.idle_minutes(running):.0f} мин назад')
     broken = await c.backup.broken_leftovers()
     if broken:
         lines.append(f'{e("warning")} Оборванных попыток: '
-                     f'<b>{len(broken)}</b> — их уберёт следующий снимок')
+                     f'<b>{len(broken)}</b> — в них давно никто не пишет, '
+                     f'их уберёт следующий снимок')
 
     if age is None:
         lines.append(f'{e("attention")} <b>Копий нет вообще.</b> '

@@ -39,3 +39,41 @@ async def test_an_empty_list_says_so_loudly(ready):
     await dp.feed_update(bot, message('/backups'))
 
     assert 'Копий нет' in session.last_text
+
+
+async def test_the_screen_shows_the_idle_time(ready):
+    """«Копия делается» без времени последней записи ничего не говорит:
+    именно так брошенный обрывок и выглядел работой."""
+    import os
+    import time
+
+    dp, bot, session, c = ready
+    folder = await c.backup.directory()
+    part = folder / 'RS_TEST-2026-01-01-0055.jsonl.part'
+    part.write_bytes(b'x')
+    fresh = time.time() - 30
+    os.utime(part, (fresh, fresh))
+
+    await dp.feed_update(bot, message('/backups'))
+
+    assert 'последняя запись' in session.last_text
+
+
+async def test_a_forced_copy_ignores_the_marker(ready):
+    dp, bot, session, c = ready
+    folder = await c.backup.directory()
+    (folder / 'RS_TEST-2026-01-01-0055.jsonl.part').write_bytes(b'x')
+
+    await dp.feed_update(bot, message('/backup force'))
+
+    assert (await c.backup.last()) is not None
+
+
+async def test_a_refusal_explains_the_way_out(ready):
+    dp, bot, session, c = ready
+    folder = await c.backup.directory()
+    (folder / 'RS_TEST-2026-01-01-0055.jsonl.part').write_bytes(b'x')
+
+    await dp.feed_update(bot, message('/backup'))
+
+    assert '/backup force' in session.last_text

@@ -44,9 +44,15 @@ BATCH = 500
 # в обновлении не должен даже теоретически соседствовать со снимками.
 DEFAULT_DIR = '~/rsvpn-backups'
 PART = '.part'
-# Недописанный файл старше этого — след убитого процесса, а не работа.
-# Час: снимок в норме идёт минуты, и запас тут дешевле ошибки.
-STALE_MIN = 60
+# Как отличить идущую копию от брошенной. Не по возрасту файла, а по тому,
+# растёт ли он: живой снимок дописывает пачку каждые несколько секунд, и
+# время изменения файла всё время сдвигается. Если файл не трогали
+# ALIVE_MIN минут — писать в него уже некому, чей бы процесс его ни начал.
+#
+# Час, стоявший здесь раньше, означал вот что: бота обновили посреди ночной
+# копии — и следующий час бот отказывался делать снимок, потому что «копия
+# уже делается». Её в этот момент уже никто не делал.
+ALIVE_MIN = 5
 DEFAULT_KEEP = 14
 DEFAULT_HOUR = 0        # полночь
 
@@ -153,39 +159,45 @@ class BackupService:
         return self._lock.locked()
 
     async def in_progress(self) -> Path | None:
-        """Свежий недописанный файл — значит копия уже делается.
+        """Растущий недописанный файл — значит копия делается прямо сейчас.
 
         По файлу, а не по флагу в памяти: процесс могли перезапустить,
-        и новый о начатой копии ничего не знает.
+        и новый о начатой копии ничего не знает. И по росту файла, а не по
+        его возрасту: иначе брошенный обрывок часами выглядит работой.
         """
         for item in (await self.directory()).glob(f'*{PART}'):
-            try:
-                if time.time() - item.stat().st_mtime < STALE_MIN * 60:
-                    return item
-            except OSError:
-                continue
+            if self.alive(item):
+                return item
         return None
+
+    @staticmethod
+    def alive(item: Path) -> bool:
+        try:
+            return time.time() - item.stat().st_mtime < ALIVE_MIN * 60
+        except OSError:
+            return False
+
+    @staticmethod
+    def idle_minutes(item: Path) -> float:
+        try:
+            return (time.time() - item.stat().st_mtime) / 60
+        except OSError:
+            return 0.0
 
     async def broken_leftovers(self) -> list[Path]:
         """Недописанные файлы, которые уже некому дописать."""
-        found = []
-        for item in (await self.directory()).glob(f'*{PART}'):
-            try:
-                if time.time() - item.stat().st_mtime >= STALE_MIN * 60:
-                    found.append(item)
-            except OSError:
-                continue
-        return found
+        return [item for item in (await self.directory()).glob(f'*{PART}')
+                if not self.alive(item)]
 
     # ── снимок ──────────────────────────────────────────────────────────────
-    async def run(self, on_progress=None) -> BackupReport:
+    async def run(self, on_progress=None, force: bool = False) -> BackupReport:
         if self._lock.locked():
             log.info('копия уже делается — второй запуск пропущен')
             return BackupReport(busy=True, error='копия уже делается')
         async with self._lock:
-            return await self._run(on_progress)
+            return await self._run(on_progress, force=force)
 
-    async def _run(self, on_progress=None) -> BackupReport:
+    async def _run(self, on_progress=None, force: bool = False) -> BackupReport:
         started = time.monotonic()
         report = BackupReport()
         try:
@@ -195,7 +207,7 @@ class BackupService:
             log.error('бекап: %s', report.error)
             return report
 
-        busy = await self.in_progress()
+        busy = None if force else await self.in_progress()
         if busy is not None:
             log.info('копия уже делается (%s) — второй запуск пропущен',
                      busy.name)

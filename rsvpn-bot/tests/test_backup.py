@@ -930,3 +930,58 @@ async def test_a_stop_is_one_line_in_the_log_not_a_traceback(service, db,
 
     assert any('прервана остановкой' in record.message
                for record in caplog.records)
+
+
+# ── «оно точно идёт или зависло?» ───────────────────────────────────────────
+#
+# Файл сам по себе не отвечает на этот вопрос. Отвечает его рост: живой
+# снимок дописывает пачку каждые несколько секунд. Брошенный обрывок не
+# должен часами выглядеть работой — из-за этого бот отказывался делать
+# копию после обновления посреди ночной.
+
+async def idle_part(folder, minutes: float,
+                    name='RS_TEST-2026-01-01-0055.jsonl.part'):
+    import os
+
+    folder.mkdir(parents=True, exist_ok=True)
+    item = folder / name
+    item.write_bytes(b'x')
+    quiet = time.time() - minutes * 60
+    os.utime(item, (quiet, quiet))
+    return item
+
+
+async def test_a_growing_file_means_the_copy_is_running(service, folder):
+    await idle_part(folder, minutes=0.1)
+
+    assert await service.in_progress() is not None
+
+
+async def test_a_file_nobody_writes_to_is_not_a_copy(service, db, folder):
+    """Главное следствие: после обновления посреди копии бот не должен
+    отказываться делать снимок следующий час."""
+    await fill(db)
+    await idle_part(folder, minutes=10)
+
+    assert await service.in_progress() is None
+    assert await service.due() is True
+    assert (await service.run()).ok
+
+
+async def test_the_screen_says_how_long_ago_it_was_written(service, folder):
+    item = await idle_part(folder, minutes=7)
+
+    assert 6 < service.idle_minutes(item) < 8
+
+
+async def test_a_manual_copy_can_be_forced(service, db, folder):
+    """Человек смотрит на застывшую полоску и хочет копию сейчас. Метка на
+    диске не должна быть дверью без ручки."""
+    await fill(db)
+    await idle_part(folder, minutes=0.1)      # «идёт прямо сейчас»
+
+    refused = await service.run()
+    forced = await service.run(force=True)
+
+    assert refused.busy and not refused.ok
+    assert forced.ok
