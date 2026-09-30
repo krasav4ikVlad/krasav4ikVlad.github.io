@@ -17,6 +17,7 @@ from pathlib import Path
 from aiogram import Router, types
 from aiogram.filters import Command
 
+from app.content import progress
 from app.content.emoji import e
 from app.core.time import fmt, now
 from app.services.backup import human_size
@@ -40,7 +41,8 @@ def file_line(item: Path) -> str:
             f'  {fmt(made)}, {human_size(item.stat().st_size)}')
 
 
-async def say(note, message: types.Message, text: str) -> None:
+async def say(note, message: types.Message, text: str,
+              quiet: bool = False) -> None:
     """Дописать в сообщение «снимаю…», а если не вышло — прислать новым.
 
     Снимок идёт минуту-другую, и ответ на него терять нельзя: правка
@@ -50,12 +52,30 @@ async def say(note, message: types.Message, text: str) -> None:
     try:
         await note.edit_text(text)
     except Exception:      # noqa: BLE001 — результат важнее оформления
-        await message.answer(text)
+        # Промежуточный шаг не дублируем новым сообщением: не дошла
+        # полоска — не беда, а десяток сообщений подряд — беда.
+        if not quiet:
+            await message.answer(text)
+
+
+TITLE = 'Копия базы'
 
 
 async def backup_now(message: types.Message, c, settings) -> None:
-    note = await message.answer(f'{e("refresh")} Снимаю копию базы…')
-    report = await c.backup.run()
+    note = await message.answer(progress.screen(
+        f'{e("document")} {TITLE}', 'Считаю, сколько всего документов…'))
+    ticker = progress.Ticker()
+
+    async def show(step: str, done: int, total: int) -> None:
+        # Правим не чаще раза в пару секунд и только когда сдвинулся
+        # процент: Telegram отвечает ошибкой и на слишком частые правки,
+        # и на правку тем же самым текстом.
+        if not ticker.should(progress.percent(done, total)):
+            return
+        await say(note, message, progress.screen(
+            f'{e("document")} {TITLE}', step, done, total), quiet=True)
+
+    report = await c.backup.run(on_progress=show)
 
     if not report.ok:
         await say(note, message,

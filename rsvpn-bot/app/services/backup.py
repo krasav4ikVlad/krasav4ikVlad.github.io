@@ -112,8 +112,29 @@ class BackupService:
         found = await self.files()
         return found[0] if found else None
 
+    async def total_docs(self) -> tuple[int, list[str]]:
+        """Сколько всего документов и в каких коллекциях.
+
+        Нужно ради полоски: без общего числа она превращается в «что-то
+        происходит». Считаем оценкой (estimated_document_count) — это
+        метаданные коллекции, а не перебор, и на большой базе разница
+        между «мгновенно» и «ещё полминуты ожидания».
+        """
+        names = [name for name in await self.db.list_collection_names()
+                 if not name.startswith(SYSTEM_PREFIX)]
+        total = 0
+        for name in sorted(names):
+            col = self.db[name]
+            counter = getattr(col, 'estimated_document_count', None)
+            try:
+                total += int(await counter() if counter
+                             else await col.count_documents({}))
+            except Exception as exc:      # noqa: BLE001 — оценка не критична
+                log.debug('не посчитал %s: %s', name, exc)
+        return total, sorted(names)
+
     # ── снимок ──────────────────────────────────────────────────────────────
-    async def run(self) -> BackupReport:
+    async def run(self, on_progress=None) -> BackupReport:
         started = time.monotonic()
         report = BackupReport()
         try:
@@ -129,8 +150,21 @@ class BackupService:
         # середине снимок не должен выглядеть как готовый.
         temp = target.with_suffix('.part')
 
+        async def tell(note: str, done: int = 0, total: int = 0) -> None:
+            if on_progress is None:
+                return
+            try:
+                await on_progress(note, done, total)
+            except Exception as exc:      # noqa: BLE001 — полоска не важнее
+                log.debug('полоска не обновилась: %s', exc)
+
         try:
-            report.docs, report.collections = await self._dump(temp)
+            expected, names = await self.total_docs()
+            await tell(f'Коллекций: {len(names)}, документов ~{expected}', 0,
+                       expected)
+            report.docs, report.collections = await self._dump(temp, tell,
+                                                               expected)
+            await tell('Проверяю архив', expected, expected)
             report.checked = await self._verify(temp)
             if report.checked != report.docs:
                 raise RuntimeError(f'записано {report.docs}, '
@@ -153,7 +187,8 @@ class BackupService:
                     report.seconds)
         return report
 
-    async def _dump(self, target: Path) -> tuple[int, dict]:
+    async def _dump(self, target: Path, tell=None,
+                    expected: int = 0) -> tuple[int, dict]:
         """Записать всю базу в файл, не останавливая бота.
 
         Сжатие — работа процессора, и на большой базе её достаточно, чтобы
@@ -178,6 +213,9 @@ class BackupService:
                     if len(batch) >= BATCH:
                         await asyncio.to_thread(handle.write, ''.join(batch))
                         batch = []
+                        if tell is not None:
+                            await tell(f'Выгружаю {name}: {written}',
+                                       total + written, expected)
                 if batch:
                     await asyncio.to_thread(handle.write, ''.join(batch))
                 counts[name] = written

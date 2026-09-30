@@ -285,10 +285,22 @@ class Container:
 
 
 class Told:
+    """Notifier глазами задачи: карточка в личке, которую потом правят."""
+
     def __init__(self):
         self.done: list[dict] = []
         self.failed: list[str] = []
         self.files: list[str] = []
+        self.cards: list[str] = []      # что отправили в личку
+        self.edits: list[str] = []      # как правили
+
+    async def dm_progress(self, text):
+        self.cards.append(text)
+        return ['card']
+
+    async def edit_all(self, cards, text):
+        if cards:
+            self.edits.append(text)
 
     async def backup_done(self, name, size, docs, seconds=0, removed=0):
         self.done.append({'name': name, 'size': size, 'docs': docs})
@@ -311,7 +323,8 @@ async def test_the_job_makes_a_copy_when_it_is_time(service, db, settings, folde
 
     await jobs.backup_database(Container(service, settings, told), bot=None)
 
-    assert list(folder.glob('*.jsonl.gz')) and told.done
+    assert list(folder.glob('*.jsonl.gz'))
+    assert told.edits and 'готова' in told.edits[-1]
 
 
 async def test_the_job_does_nothing_right_after_a_copy(service, db, settings):
@@ -632,3 +645,115 @@ async def test_the_loop_stays_free_while_the_copy_is_made(service, db):
     # если бы запись и проверка шли в цикле событий, соседняя задача не
     # получила бы управление ни разу
     assert ticks > 10, f'цикл событий был занят: тиков {ticks}'
+
+
+# ── полоска ─────────────────────────────────────────────────────────────────
+#
+# Минута молчащего «снимаю…» неотличима от зависшего бота. Полоска отвечает
+# сразу на два вопроса: идёт ли дело и сколько ещё ждать.
+
+def test_the_bar_fills_up():
+    from app.content.progress import bar
+
+    assert bar(0, 100, width=10) == '░' * 10
+    assert bar(50, 100, width=10) == '█' * 5 + '░' * 5
+    assert bar(100, 100, width=10) == '█' * 10
+
+
+def test_the_bar_survives_nonsense():
+    """Оценка числа документов может разойтись с правдой — полоска от
+    этого не должна ни падать, ни рисовать 300%."""
+    from app.content.progress import bar, percent
+
+    assert bar(5, 0, width=10) == '░' * 10
+    assert percent(500, 100) == 100
+    assert percent(0, 0) == 0
+
+
+def test_the_screen_has_a_bar_and_a_line_under_it():
+    from app.content.progress import screen
+
+    text = screen('Копия базы', 'Выгружаю users', 30, 100)
+
+    assert '30%' in text and text.strip().endswith('Выгружаю users')
+
+
+def test_updates_are_not_sent_more_often_than_allowed():
+    """Telegram отвечает ошибкой и на частые правки, и на правку тем же
+    текстом — значит, пропускаем и то, и другое."""
+    from app.content.progress import Ticker
+
+    ticker = Ticker(every=100)
+
+    assert ticker.should(10, force=True) is True
+    assert ticker.should(10) is False        # то же число
+    assert ticker.should(20) is False        # слишком рано
+
+
+async def test_the_copy_reports_its_progress(service, db):
+    steps = []
+
+    async def remember(note, done, total):
+        steps.append((note, done, total))
+
+    await fill(db, users=1200)
+    report = await service.run(on_progress=remember)
+
+    assert report.ok
+    assert len(steps) > 2
+    assert any('Выгружаю' in note for note, _, _ in steps)
+    assert any('Проверяю' in note for note, _, _ in steps)
+    # общее число известно заранее — иначе полоска не полоска
+    assert steps[0][2] > 0
+
+
+async def test_a_broken_progress_does_not_break_the_copy(service, db):
+    """Полоска — украшение. Отвалившийся Telegram не должен стоить копии."""
+    async def broken(note, done, total):
+        raise RuntimeError('чат недоступен')
+
+    await fill(db)
+
+    assert (await service.run(on_progress=broken)).ok
+
+
+async def test_the_automatic_copy_starts_with_a_word(service, db, settings):
+    """«Начинаю» должно появиться раньше, чем первый документ."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.cards and 'Начинаю' in told.cards[0]
+
+
+async def test_everything_lives_in_one_message(service, db, settings):
+    """Отдельные сообщения на каждый шаг превратили бы ночную копию в
+    ночную рассылку."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert len(told.cards) == 1        # одно сообщение в личку
+    assert not told.done               # и никакой отдельной строчки в чат
+
+
+async def test_a_failure_is_written_into_the_same_message(service, db, settings):
+    from app.scheduler import jobs
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError('диск кончился')
+
+    await fill(db)
+    service._dump = broken
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.edits and 'Не получилось' in told.edits[-1]
+    assert told.failed          # и громко, отдельно

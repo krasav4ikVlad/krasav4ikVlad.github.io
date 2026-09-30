@@ -52,11 +52,20 @@ async def thaw_torrents(container) -> None:
 async def backup_database(container, bot) -> None:
     """Снимок базы по расписанию.
 
-    Задача сама решает, пора ли: по возрасту последнего файла, а не по
-    времени запуска. Так снимок не теряется из-за перезапуска бота и не
-    делается дважды подряд после него.
+    Задача сама решает, пора ли: по назначенному часу и по тому, есть ли
+    снимок после него. Так снимок привязан к полуночи, не теряется из-за
+    перезапуска бота и не делается дважды подряд после него.
+
+    Всё, что происходит, видно в одном личном сообщении: оно приходит с
+    «начинаю», потом обрастает полоской, а в конце становится отчётом.
+    Отдельные сообщения на каждый шаг превратили бы ночную копию в
+    ночную рассылку.
     """
     from pathlib import Path
+
+    from app.content import progress
+    from app.content.emoji import e
+    from app.services.backup import human_size
 
     guard = getattr(container, 'backup', None)
     if guard is None or not await container.settings.flag('backup.enabled'):
@@ -64,28 +73,59 @@ async def backup_database(container, bot) -> None:
     if not await guard.due():
         return
 
-    report = await guard.run()
+    notifier = container.notifier
+    personally = bool(notifier) and await container.settings.flag('backup.to_telegram')
+    title = f'{e("document")} Копия базы'
+    cards = []
+    if personally:
+        cards = await notifier.dm_progress(progress.screen(
+            title, 'Начинаю. Считаю, сколько всего документов…'))
+
+    ticker = progress.Ticker()
+
+    async def show(step: str, done: int, total: int) -> None:
+        if not cards or not ticker.should(progress.percent(done, total)):
+            return
+        await notifier.edit_all(cards, progress.screen(title, step, done, total))
+
+    report = await guard.run(on_progress=show)
     await container.health.mark(health.BACKUP, ok=report.ok, docs=report.docs,
                                 size=report.size, error=report.error)
 
-    if not container.notifier:
+    if not notifier:
         return
+
     if not report.ok:
-        # Провал говорим громко: молчащий бекап неотличим от работающего
-        # ровно до того дня, когда он понадобится.
-        await container.notifier.backup_failed(report.error)
+        # Провал говорим громко и во все стороны: молчащий бекап
+        # неотличим от работающего ровно до того дня, когда он понадобится.
+        await notifier.edit_all(cards, progress.screen(
+            title, f'{e("cross")} Не получилось: {report.error}', 0, 1))
+        await notifier.backup_failed(report.error)
         return
 
-    await container.notifier.backup_done(
-        name=Path(report.path).name, size=report.size,
-        docs=report.docs, seconds=report.seconds, removed=report.removed)
+    name = Path(report.path).name
+    done = (f'{e("ok")} <b>Копия базы готова</b>\n'
+            f'<code>{name}</code>\n'
+            f'<b>Размер:</b> {human_size(report.size)}\n'
+            f'<b>Документов:</b> <code>{report.docs}</code>\n'
+            f'<b>Заняло:</b> {report.seconds:.0f} с'
+            + (f'\n<i>Старых удалено: {report.removed}</i>'
+               if report.removed else ''))
 
-    if not await container.settings.flag('backup.to_telegram'):
+    if cards:
+        await notifier.edit_all(cards, done)
+    else:
+        # Личка выключена — тогда хотя бы строчка в админ-чат.
+        await notifier.backup_done(name=name, size=report.size,
+                                   docs=report.docs, seconds=report.seconds,
+                                   removed=report.removed)
+
+    if not personally:
         return
     # В личку админам из .env, а не в общий чат: в снимке вся база, и
     # адресатов у неё должно быть ровно столько, сколько людей имеет право
     # её видеть. Заодно личку не потерять при смене админ-чата.
-    sent = await container.notifier.backup_file(
+    sent = await notifier.backup_file(
         report.path,
         limit_mb=await container.settings.int('backup.max_mb'),
         chat_ids=container.config.admin_ids,

@@ -327,6 +327,34 @@ class Notifier:
             await self.dm(text, markup)
         return await self.send('torrent', text, markup=markup)
 
+    async def dm_progress(self, text: str) -> list:
+        """Отправить личное сообщение, которое потом будут править.
+
+        Возвращает карточки — по одной на админа. Ради этого и отдельный
+        метод: dm() отправляет и забывает, а полоске нужно, куда
+        возвращаться.
+        """
+        cards = []
+        for admin_id in self.admin_ids:
+            try:
+                with plain():
+                    cards.append(await self.bot.send_message(
+                        chat_id=admin_id, text=text))
+            except Exception as exc:      # noqa: BLE001 — один адресат не все
+                log.warning('личное сообщение админу %s не ушло: %s',
+                            admin_id, exc)
+        return cards
+
+    @staticmethod
+    async def edit_all(cards: list, text: str) -> None:
+        """Обновить каждую карточку. Неудача — не беда: это полоска."""
+        for card in cards:
+            try:
+                with plain():
+                    await card.edit_text(text)
+            except Exception as exc:      # noqa: BLE001
+                log.debug('полоска не обновилась: %s', exc)
+
     # ── копии базы ──────────────────────────────────────────────────────────
     async def backup_done(self, name: str, size: int, docs: int,
                           seconds: float = 0, removed: int = 0) -> bool:
