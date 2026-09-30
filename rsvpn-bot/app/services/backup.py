@@ -229,15 +229,42 @@ class BackupService:
         except OSError as exc:
             log.warning('состояние копий не записано: %s', exc)
 
-    async def remember_break(self) -> int:
+    async def note_progress(self, done: int, total: int, note: str,
+                            cards=None) -> None:
+        """Запомнить, где копия сейчас и куда писать о её судьбе.
+
+        Пишется в тот же файл состояния: если процесс убьют, следующий
+        запуск сможет дописать в застывшую полоску, чем всё кончилось.
+        Без этого она остаётся на экране навсегда и выглядит работой.
+        """
         data = await self.state()
-        breaks = int(data.get('breaks') or 0) + 1
-        await self._save_state({'breaks': breaks, 'at': now().isoformat()})
-        return breaks
+        data.update({'done': int(done), 'total': int(total),
+                     'note': str(note)[:200], 'at': now().isoformat()})
+        if cards is not None:
+            data['cards'] = list(cards)
+        await self._save_state(data)
+
+    async def remember_break(self) -> int:
+        """Записать обрыв, сохранив всё, что известно о прерванной копии."""
+        data = await self.state()
+        data['breaks'] = int(data.get('breaks') or 0) + 1
+        data['broken_at'] = now().isoformat()
+        await self._save_state(data)
+        return data['breaks']
 
     async def forget_breaks(self) -> None:
         await self._save_state({'breaks': 0, 'at': now().isoformat(),
                                 'told': False})
+
+    async def pending_cards(self) -> list:
+        """Карточки полоски, оставшиеся от прерванной копии."""
+        data = await self.state()
+        return list(data.get('cards') or []) if data.get('breaks') else []
+
+    async def drop_cards(self) -> None:
+        data = await self.state()
+        data['cards'] = []
+        await self._save_state(data)
 
     async def breaks(self) -> int:
         return int((await self.state()).get('breaks') or 0)
@@ -251,7 +278,10 @@ class BackupService:
         if not breaks:
             return None
         try:
-            at = datetime.fromisoformat(str(data.get('at')))
+            # Именно момент обрыва: `at` сдвигается на каждом шаге полоски
+            # и после обрыва означал бы «когда в последний раз шла работа».
+            at = datetime.fromisoformat(str(data.get('broken_at')
+                                            or data.get('at')))
         except (TypeError, ValueError):
             return None
 

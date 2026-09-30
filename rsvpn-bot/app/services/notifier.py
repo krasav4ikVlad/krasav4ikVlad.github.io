@@ -327,31 +327,34 @@ class Notifier:
             await self.dm(text, markup)
         return await self.send('torrent', text, markup=markup)
 
-    async def dm_progress(self, text: str) -> list:
+    async def dm_progress(self, text: str) -> list[dict]:
         """Отправить личное сообщение, которое потом будут править.
 
-        Возвращает карточки — по одной на админа. Ради этого и отдельный
-        метод: dm() отправляет и забывает, а полоске нужно, куда
-        возвращаться.
+        Возвращает не объекты сообщений, а ссылки на них: чат и номер.
+        Объект живёт вместе с процессом, а застывшую полоску правит уже
+        следующий запуск бота — ему нужно то, что переживает перезапуск.
         """
         cards = []
         for admin_id in self.admin_ids:
             try:
                 with plain():
-                    cards.append(await self.bot.send_message(
-                        chat_id=admin_id, text=text))
+                    sent = await self.bot.send_message(chat_id=admin_id,
+                                                       text=text)
+                cards.append({'chat_id': admin_id,
+                              'message_id': getattr(sent, 'message_id', 0)})
             except Exception as exc:      # noqa: BLE001 — один адресат не все
                 log.warning('личное сообщение админу %s не ушло: %s',
                             admin_id, exc)
         return cards
 
-    @staticmethod
-    async def edit_all(cards: list, text: str) -> None:
+    async def edit_all(self, cards: list, text: str) -> None:
         """Обновить каждую карточку. Неудача — не беда: это полоска."""
-        for card in cards:
+        for card in cards or []:
             try:
                 with plain():
-                    await card.edit_text(text)
+                    await self.bot.edit_message_text(
+                        text=text, chat_id=card['chat_id'],
+                        message_id=card['message_id'])
             except Exception as exc:      # noqa: BLE001
                 log.debug('полоска не обновилась: %s', exc)
 

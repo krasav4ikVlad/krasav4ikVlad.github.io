@@ -32,11 +32,20 @@ def percent(done: int, total: int) -> int:
     return 0 if total <= 0 else max(0, min(100, round(done * 100 / total)))
 
 
-def screen(title: str, note: str, done: int = 0, total: int = 0) -> str:
-    """Заголовок, полоска, а снизу — что происходит прямо сейчас."""
+def screen(title: str, note: str, done: int = 0, total: int = 0,
+           at=None) -> str:
+    """Заголовок, полоска, снизу — что происходит, и когда это было.
+
+    Время последнего обновления важнее, чем кажется: без него застывшее
+    сообщение неотличимо от идущей работы. С ним видно сразу — «обновлено
+    три минуты назад» значит, что обновлять его больше некому.
+    """
+    from app.core.time import fmt, now
+
     return (f'<b>{title}</b>\n\n'
             f'<code>{bar(done, total)}</code>  {percent(done, total)}%\n\n'
-            f'{note}')
+            f'{note}\n'
+            f'<i>обновлено {fmt(at or now(), "%H:%M:%S")}</i>')
 
 
 class Ticker:

@@ -695,7 +695,19 @@ def test_the_screen_has_a_bar_and_a_line_under_it():
 
     text = screen('Копия базы', 'Выгружаю users', 30, 100)
 
-    assert '30%' in text and text.strip().endswith('Выгружаю users')
+    assert '30%' in text and 'Выгружаю users' in text
+
+
+def test_the_screen_says_when_it_was_updated():
+    """Без времени застывшее сообщение неотличимо от идущей работы."""
+    from datetime import timedelta
+
+    from app.content.progress import screen
+
+    text = screen('Копия базы', 'Выгружаю users', 30, 100,
+                  at=now() - timedelta(hours=1))
+
+    assert (now() - timedelta(hours=1)).strftime('%H:%M') in text
 
 
 def test_updates_are_not_sent_more_often_than_allowed():
@@ -1085,3 +1097,83 @@ async def test_the_warning_is_said_once_not_every_five_minutes(service, db,
         await jobs.backup_database(container, bot=None)
 
     assert len(told.dms) == 1
+
+
+# ── застывшая полоска должна сама себя объяснить ────────────────────────────
+#
+# Её оборвали вместе с процессом, сказать об этом она не могла — и осталась
+# на экране навсегда, выглядя работой. Дописать в неё судьбу может только
+# следующий запуск бота, и для этого ему нужны две вещи: ссылка на
+# сообщение и место, на котором всё остановилось.
+
+async def test_the_place_where_it_stopped_is_remembered(service, db):
+    await fill(db)
+    await service.note_progress(1657000, 1900000, 'Выгружаю transactions_flat',
+                                cards=[{'chat_id': 1, 'message_id': 2}])
+    await service.remember_break()
+
+    state = await service.state()
+    assert state['done'] == 1657000 and 'transactions_flat' in state['note']
+    assert await service.pending_cards() == [{'chat_id': 1, 'message_id': 2}]
+
+
+async def test_cards_are_forgotten_after_a_good_copy(service, db):
+    await fill(db)
+    await service.note_progress(1, 2, 'идёт', cards=[{'chat_id': 1,
+                                                      'message_id': 2}])
+    await service.remember_break()
+
+    await service.run(force=True)
+
+    assert await service.pending_cards() == []
+
+
+async def test_the_next_run_finishes_the_frozen_bar(service, db, settings):
+    from app.scheduler import jobs
+
+    await fill(db)
+    await service.note_progress(86, 100, 'Выгружаю transactions_flat',
+                                cards=[{'chat_id': 1, 'message_id': 2}])
+    await service.remember_break()
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.edits and 'прервана' in told.edits[0]
+    assert '86%' in told.edits[0]
+    assert 'Следующая попытка' in told.edits[0]
+
+
+async def test_the_frozen_bar_is_explained_once(service, db, settings):
+    from app.scheduler import jobs
+
+    await fill(db)
+    await service.note_progress(86, 100, 'на середине',
+                                cards=[{'chat_id': 1, 'message_id': 2}])
+    await service.remember_break()
+    told = Told()
+    container = Container(service, settings, told)
+
+    await jobs.backup_database(container, bot=None)
+    first = len(told.edits)
+    await jobs.backup_database(container, bot=None)
+
+    assert len(told.edits) == first
+
+
+async def test_an_unexpected_error_is_shown_not_just_logged(service, db,
+                                                            settings):
+    """Молча упавшая задача копий не делает, а выглядит так же, как
+    работающая."""
+    from app.scheduler import jobs
+
+    async def explodes(*args, **kwargs):
+        raise RuntimeError('нет места на диске')
+
+    await fill(db)
+    service.due = explodes
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.dms and 'нет места на диске' in told.dms[0]

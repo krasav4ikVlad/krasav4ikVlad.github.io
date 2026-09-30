@@ -12,6 +12,7 @@ import functools
 import logging
 
 from app.admin import health
+from app.core.time import fmt, parse_dt
 from app.campaigns.definitions import EXPIRED_STEPS, NEW_TRIAL_STEPS, TRIAL_STEPS
 
 log = logging.getLogger(__name__)
@@ -79,6 +80,34 @@ async def thaw_torrents(container) -> None:
 
 @quiet_on_stop
 async def backup_database(container, bot) -> None:
+    """Снимок базы по расписанию — с разговором о любой неудаче.
+
+    Обёртка нужна ради последней строчки: что бы ни сломалось, человек
+    должен это увидеть. Молча упавшая в лог задача копий не делает, а
+    выглядит точно так же, как работающая.
+    """
+    try:
+        await _backup_once(container)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:      # noqa: BLE001 — причину показываем человеку
+        log.exception('копия базы: непредвиденная ошибка')
+        guard = getattr(container, 'backup', None)
+        notifier = getattr(container, 'notifier', None)
+        if guard is None or notifier is None:
+            return
+        from app.content.emoji import e
+
+        text = (f'{e("cross")} <b>Копия базы: ошибка</b>\n'
+                f'<code>{str(exc)[:500]}</code>\n\n'
+                f'Подробности — в логах: '
+                f'<code>pm2 logs rsvpn-bot --lines 200</code>')
+        await notifier.edit_all(await guard.pending_cards(), text)
+        await guard.drop_cards()
+        await notifier.dm(text)
+
+
+async def _backup_once(container) -> None:
     """Снимок базы по расписанию.
 
     Задача сама решает, пора ли: по назначенному часу и по тому, есть ли
@@ -99,6 +128,12 @@ async def backup_database(container, bot) -> None:
     guard = getattr(container, 'backup', None)
     if guard is None or not await container.settings.flag('backup.enabled'):
         return
+
+    # Первым делом дописываем судьбу прошлой полоски. Её оборвали вместе
+    # с процессом, сама она этого сказать не могла — и осталась на экране
+    # навсегда, выглядя работой.
+    await _finish_frozen(container)
+
     if not await guard.due():
         # Три обрыва подряд — это не невезение, это что-то снаружи убивает
         # процесс. Сказать об этом надо один раз и внятно, иначе человек
@@ -119,12 +154,18 @@ async def backup_database(container, bot) -> None:
         cards = await notifier.dm_progress(progress.screen(
             title, 'Начинаю. Считаю, сколько всего документов…'))
 
+    await guard.note_progress(0, 0, 'Начинаю', cards=cards)
     ticker = progress.Ticker()
 
     async def show(step: str, done: int, total: int) -> None:
-        if not cards or not ticker.should(progress.percent(done, total)):
+        if not ticker.should(progress.percent(done, total)):
             return
-        await notifier.edit_all(cards, progress.screen(title, step, done, total))
+        # Сначала в файл, потом на экран: если процесс убьют прямо сейчас,
+        # следующий запуск должен знать, на чём копия остановилась.
+        await guard.note_progress(done, total, step)
+        if cards:
+            await notifier.edit_all(cards,
+                                    progress.screen(title, step, done, total))
 
     report = await guard.run(on_progress=show)
     if report.busy:
@@ -183,6 +224,34 @@ async def backup_database(container, bot) -> None:
 
 
 @quiet_on_stop
+async def _finish_frozen(container) -> None:
+    """Дописать в застывшую полоску, чем всё кончилось."""
+    from app.content import progress
+    from app.content.emoji import e
+
+    guard = container.backup
+    cards = await guard.pending_cards()
+    if not cards or not container.notifier:
+        return
+
+    state = await guard.state()
+    done = int(state.get('done') or 0)
+    total = int(state.get('total') or 0)
+    wait_until = await guard.retry_after()
+
+    await container.notifier.edit_all(cards, progress.screen(
+        f'{e("attention")} Копия базы прервана',
+        f'{state.get("note") or "Копия не доделана"}\n\n'
+        f'Процесс бота остановился посреди работы. Обрывов подряд: '
+        f'<b>{await guard.breaks()}</b>.\n'
+        f'Следующая попытка: '
+        + (fmt(wait_until, '%d.%m %H:%M') if wait_until else 'на ближайшей '
+                                                            'проверке')
+        + f'\nРаньше — <code>/backup force</code>',
+        done, total, at=parse_dt(state.get('broken_at') or state.get('at'))))
+    await guard.drop_cards()
+
+
 async def _warn_about_breaks(container) -> None:
     from app.services import backup as service
 

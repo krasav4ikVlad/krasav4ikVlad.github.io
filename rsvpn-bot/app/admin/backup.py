@@ -67,6 +67,10 @@ async def backup_now(message: types.Message, command: CommandObject, c,
                                                      'всё равно', 'давай')
     note = await message.answer(progress.screen(
         f'{e("document")} {TITLE}', 'Считаю, сколько всего документов…'))
+    # Ссылку на сообщение кладём в состояние: если процесс убьют посреди
+    # копии, дописать в эту полоску сможет только следующий запуск бота.
+    await c.backup.note_progress(0, 0, 'Начинаю', cards=[
+        {'chat_id': note.chat.id, 'message_id': note.message_id}])
     ticker = progress.Ticker()
 
     async def show(step: str, done: int, total: int) -> None:
@@ -75,6 +79,7 @@ async def backup_now(message: types.Message, command: CommandObject, c,
         # и на правку тем же самым текстом.
         if not ticker.should(progress.percent(done, total)):
             return
+        await c.backup.note_progress(done, total, step)
         await say(note, message, progress.screen(
             f'{e("document")} {TITLE}', step, done, total), quiet=True)
 
@@ -98,6 +103,8 @@ async def backup_now(message: types.Message, command: CommandObject, c,
                   f'<code>{report.error}</code>\n\n'
                   f'Чаще всего это место на диске: <code>df -h</code>.')
         return
+
+    await c.backup.drop_cards()
 
     lines = [f'{e("ok")} <b>Копия базы готова</b>',
              f'<code>{Path(report.path).name}</code>',
