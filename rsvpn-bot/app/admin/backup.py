@@ -151,6 +151,11 @@ async def backups_list(message: types.Message, c, settings) -> None:
         lines.append(f'{e("refresh")} <b>Копия делается прямо сейчас</b>\n'
                      f'   <code>{running.name}</code>, последняя запись '
                      f'{c.backup.idle_minutes(running):.0f} мин назад')
+    breaks = await c.backup.breaks()
+    if breaks:
+        lines.append(f'{e("warning")} Прервано попыток подряд: '
+                     f'<b>{breaks}</b> — процесс бота останавливается '
+                     f'посреди копии')
     broken = await c.backup.broken_leftovers()
     if broken:
         lines.append(f'{e("warning")} Оборванных попыток: '

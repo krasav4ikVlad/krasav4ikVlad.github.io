@@ -39,6 +39,9 @@ log = logging.getLogger(__name__)
 SYSTEM_PREFIX = 'system.'
 SUFFIX = '.jsonl.gz'
 BATCH = 500
+# Сколько документов драйвер держит в памяти за раз. Меньше пачка —
+# ровнее память процесса: снимок не должен упираться в лимит pm2.
+CURSOR_BATCH = 200
 
 # Куда класть, если не указано иначе. Нарочно вне каталога бота: `git pull`
 # в обновлении не должен даже теоретически соседствовать со снимками.
@@ -53,6 +56,16 @@ PART = '.part'
 # копии — и следующий час бот отказывался делать снимок, потому что «копия
 # уже делается». Её в этот момент уже никто не делал.
 ALIVE_MIN = 5
+BROKEN = '.broken'
+STATE = 'attempts.json'
+
+# После обрыва не бросаемся повторять сразу: если бота перезапускает
+# что-то внешнее (кончилась память, падает контейнер), мгновенный повтор
+# превращается в бесконечный круг из недоделанных копий.
+RETRY_MIN = 30
+# Три обрыва подряд — дело не в случайности. Ждём следующего срока по
+# расписанию и говорим об этом вслух: чинить надо причину, а не копию.
+GIVE_UP_AFTER = 3
 DEFAULT_KEEP = 14
 DEFAULT_HOUR = 0        # полночь
 
@@ -186,8 +199,67 @@ class BackupService:
 
     async def broken_leftovers(self) -> list[Path]:
         """Недописанные файлы, которые уже некому дописать."""
-        return [item for item in (await self.directory()).glob(f'*{PART}')
-                if not self.alive(item)]
+        folder = await self.directory()
+        return ([item for item in folder.glob(f'*{PART}')
+                 if not self.alive(item)]
+                + list(folder.glob(f'*{BROKEN}')))
+
+    # ── память о прерванных попытках ────────────────────────────────────────
+    #
+    # Файлом, а не отметкой в базе: он переживает перезапуск процесса и не
+    # зависит от того, доступна ли база — а копию как раз и делают на
+    # случай, когда с базой что-то не так.
+
+    async def state(self) -> dict:
+        import json
+
+        try:
+            path = (await self.directory()) / STATE
+            return json.loads(path.read_text(encoding='utf-8'))
+        except Exception:      # noqa: BLE001 — нет файла или он испорчен
+            return {}
+
+    async def _save_state(self, data: dict) -> None:
+        import json
+
+        try:
+            path = (await self.directory()) / STATE
+            path.write_text(json.dumps(data, ensure_ascii=False),
+                            encoding='utf-8')
+        except OSError as exc:
+            log.warning('состояние копий не записано: %s', exc)
+
+    async def remember_break(self) -> int:
+        data = await self.state()
+        breaks = int(data.get('breaks') or 0) + 1
+        await self._save_state({'breaks': breaks, 'at': now().isoformat()})
+        return breaks
+
+    async def forget_breaks(self) -> None:
+        await self._save_state({'breaks': 0, 'at': now().isoformat(),
+                                'told': False})
+
+    async def breaks(self) -> int:
+        return int((await self.state()).get('breaks') or 0)
+
+    async def retry_after(self):
+        """Когда можно пробовать снова после обрыва. None — можно сейчас."""
+        from datetime import datetime, timedelta
+
+        data = await self.state()
+        breaks = int(data.get('breaks') or 0)
+        if not breaks:
+            return None
+        try:
+            at = datetime.fromisoformat(str(data.get('at')))
+        except (TypeError, ValueError):
+            return None
+
+        if breaks >= GIVE_UP_AFTER:
+            # Ждём следующего срока по расписанию: круг из недоделанных
+            # копий не чинится повторами, он чинится причиной.
+            return self.scheduled_before(await self.hour()) + timedelta(days=1)
+        return at + timedelta(minutes=RETRY_MIN)
 
     # ── снимок ──────────────────────────────────────────────────────────────
     async def run(self, on_progress=None, force: bool = False) -> BackupReport:
@@ -250,11 +322,16 @@ class BackupService:
                                    f'читается {report.checked}')
             temp.rename(target)
         except asyncio.CancelledError:
-            # Бота останавливают (обновление, перезапуск) — работа
-            # обрывается на полуслове. Метку убираем за собой: иначе она
-            # час выглядит как «копия уже делается», и следующий снимок
-            # после планового обновления не состоится.
-            temp.unlink(missing_ok=True)
+            # Процесс останавливают посреди копии. Файл НЕ удаляем, а
+            # переименовываем в обрывок и считаем попытку прерванной.
+            #
+            # Удаление отсюда однажды уже устроило беду: перезапущенный бот
+            # не видел никаких следов, через две минуты начинал копию
+            # заново, снова умирал — и так по кругу, каждые семь минут, ни
+            # одной доведённой копии. Следы нужны именно затем, чтобы
+            # следующий запуск знал: предыдущий не дошёл.
+            temp.replace(temp.with_suffix(BROKEN))
+            await self.remember_break()
             log.warning('копия базы прервана остановкой бота')
             raise
         except Exception as exc:      # noqa: BLE001 — причина уходит наверх
@@ -264,6 +341,7 @@ class BackupService:
             log.error('бекап не сделан: %s', report.error)
             return report
 
+        await self.forget_breaks()
         report.ok = True
         report.path = str(target)
         report.size = target.stat().st_size
@@ -290,11 +368,13 @@ class BackupService:
 
         total = 0
         counts: dict[str, int] = {}
-        with gzip.open(target, 'wt', encoding='utf-8') as handle:
+        # Уровень сжатия 6, а не 9: разница в размере единицы процентов,
+        # а памяти и процессора уровень 9 просит заметно больше.
+        with gzip.open(target, 'wt', encoding='utf-8', compresslevel=6) as handle:
             for name in sorted(names):
                 written = 0
                 batch: list[str] = []
-                async for doc in self.db[name].find({}):
+                async for doc in self.db[name].find({}, batch_size=CURSOR_BATCH):
                     batch.append(dumps({'c': name, 'd': doc}) + '\n')
                     written += 1
                     if len(batch) >= BATCH:
@@ -365,6 +445,10 @@ class BackupService:
         """
         if await self.in_progress() is not None:
             return False        # копия уже делается — второй незачем
+
+        wait_until = await self.retry_after()
+        if wait_until is not None and now() < wait_until:
+            return False        # прошлая оборвалась, даём паузу
 
         last = await self.last()
         if last is None:

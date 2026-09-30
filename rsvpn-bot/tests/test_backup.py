@@ -303,8 +303,16 @@ class Told:
         self.done: list[dict] = []
         self.failed: list[str] = []
         self.files: list[str] = []
+        self.dms: list[str] = []        # отдельные личные сообщения
         self.cards: list[str] = []      # что отправили в личку
         self.edits: list[str] = []      # как правили
+
+    async def dm(self, text, markup=None):
+        self.dms.append(text)
+        return 1
+
+    async def send(self, topic, text, markup=None):
+        return True
 
     async def dm_progress(self, text):
         self.cards.append(text)
@@ -885,10 +893,15 @@ async def test_a_stopped_copy_cleans_up_after_itself(service, db, folder):
     assert not list(folder.glob('*.jsonl.gz'))
 
 
-async def test_the_next_copy_is_not_blocked_by_a_stopped_one(service, db,
-                                                             folder):
-    """Ради чего уборка и нужна: после перезапуска снимок должен
-    состояться сразу, а не через час."""
+async def test_a_stopped_copy_is_not_retried_at_once(service, db, folder):
+    """Обратное тому, что стояло здесь раньше, и это исправление ошибки.
+
+    «Повторить сразу» выглядит разумно ровно до тех пор, пока бота не
+    начинает убивать что-то внешнее. Тогда мгновенный повтор превращается
+    в круг: копия — смерть — копия, каждые семь минут, и ни одной
+    доведённой до конца. Пауза разрывает круг; человеку остаётся
+    /backup force.
+    """
     import asyncio
 
     await fill(db)
@@ -906,8 +919,9 @@ async def test_the_next_copy_is_not_blocked_by_a_stopped_one(service, db,
         await task
 
     service._dump = original
-    assert await service.due() is True
-    assert (await service.run()).ok
+    assert await service.breaks() == 1
+    assert await service.due() is False          # не лезем сразу
+    assert (await service.run(force=True)).ok    # но человеку не мешаем
 
 
 async def test_a_stop_is_one_line_in_the_log_not_a_traceback(service, db,
@@ -985,3 +999,89 @@ async def test_a_manual_copy_can_be_forced(service, db, folder):
 
     assert refused.busy and not refused.ok
     assert forced.ok
+
+
+# ── круг из недоделанных копий ──────────────────────────────────────────────
+#
+# Настоящий случай: процесс бота умирал посреди копии, через две минуты
+# после перезапуска задача начинала её заново, и так каждые семь минут — ни
+# одной доведённой копии за сутки. Лечится не повтором, а паузой и внятным
+# сообщением о том, что чинить надо причину.
+
+async def stopped_copy(service, db) -> None:
+    """Копия, которую убили на середине."""
+    import asyncio
+
+    original = service._dump
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(5)
+        return await original(*args, **kwargs)
+
+    service._dump = slow
+    task = asyncio.create_task(service.run())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    service._dump = original
+
+
+async def test_a_stopped_copy_leaves_a_trace(service, db, folder):
+    """След нужен затем, чтобы следующий запуск знал: прошлый не дошёл.
+    Удаление следа и устроило тот самый круг."""
+    await fill(db)
+
+    await stopped_copy(service, db)
+
+    assert list(folder.glob('*.broken'))
+    assert await service.breaks() == 1
+
+
+async def test_three_breaks_stop_the_retries(service, db, settings):
+    await fill(db)
+    for _ in range(3):
+        await stopped_copy(service, db)
+
+    assert await service.breaks() == 3
+    assert await service.due() is False
+
+
+async def test_a_finished_copy_forgets_the_breaks(service, db):
+    await fill(db)
+    await stopped_copy(service, db)
+
+    assert (await service.run(force=True)).ok
+    assert await service.breaks() == 0
+
+
+async def test_the_circle_is_explained_out_loud(service, db, settings):
+    """Человек должен узнать, что чинить, а не смотреть неделю на
+    недоделанные полоски."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    for _ in range(3):
+        await stopped_copy(service, db)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.dms and 'не доходит до конца' in told.dms[0]
+    assert 'max_memory_restart' in told.dms[0]
+
+
+async def test_the_warning_is_said_once_not_every_five_minutes(service, db,
+                                                               settings):
+    from app.scheduler import jobs
+
+    await fill(db)
+    for _ in range(3):
+        await stopped_copy(service, db)
+    told = Told()
+    container = Container(service, settings, told)
+
+    for _ in range(4):
+        await jobs.backup_database(container, bot=None)
+
+    assert len(told.dms) == 1

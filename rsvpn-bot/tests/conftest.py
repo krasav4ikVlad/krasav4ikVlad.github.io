@@ -168,7 +168,7 @@ class FakeCollection:
                         return i
         return None
 
-    def find(self, query=None, projection=None):
+    def find(self, query=None, projection=None, batch_size=None):
         return FakeCursor([d for d in self.docs if self._match(d, query or {})])
 
     async def find_one(self, query, projection=None):

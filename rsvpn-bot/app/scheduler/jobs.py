@@ -100,6 +100,10 @@ async def backup_database(container, bot) -> None:
     if guard is None or not await container.settings.flag('backup.enabled'):
         return
     if not await guard.due():
+        # Три обрыва подряд — это не невезение, это что-то снаружи убивает
+        # процесс. Сказать об этом надо один раз и внятно, иначе человек
+        # будет неделю смотреть на недоделанные полоски.
+        await _warn_about_breaks(container)
         return
     if guard.running():
         # Ещё одна дверь на тот же замок: due() смотрит на файл, этот —
@@ -176,6 +180,43 @@ async def backup_database(container, bot) -> None:
         backup=guard)
     if not sent:
         log.warning('копия базы никому не ушла: %s', report.path)
+
+
+@quiet_on_stop
+async def _warn_about_breaks(container) -> None:
+    from app.services import backup as service
+
+    guard = container.backup
+    breaks = await guard.breaks()
+    if breaks < service.GIVE_UP_AFTER:
+        return
+
+    state = await guard.state()
+    if state.get('told'):
+        return
+    state['told'] = True
+    await guard._save_state(state)
+
+    from app.content.emoji import e
+
+    text = (f'{e("attention")} <b>Копия базы не доходит до конца</b>\n\n'
+            f'Подряд прервано попыток: <b>{breaks}</b>. Каждый раз процесс '
+            f'бота останавливается посреди копии — сама копия так не '
+            f'падает.\n\n'
+            f'Что посмотреть на сервере:\n'
+            f'<code>pm2 describe rsvpn-bot</code> — счётчик restarts и '
+            f'память\n'
+            f'<code>pm2 logs rsvpn-bot --lines 200</code> — что было перед '
+            f'стартом\n'
+            f'<code>df -h</code> — место на диске\n\n'
+            f'Частая причина — лимит памяти в ecosystem.config.js '
+            f'(<code>max_memory_restart</code>): снимок большой базы в него '
+            f'не помещается, и pm2 перезапускает бота.\n\n'
+            f'Следующая попытка — по расписанию. Раньше — '
+            f'<code>/backup force</code>.')
+    if container.notifier:
+        await container.notifier.dm(text)
+        await container.notifier.send('backup', text)
 
 
 @quiet_on_stop
