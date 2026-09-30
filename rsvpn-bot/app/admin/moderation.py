@@ -15,6 +15,7 @@ from aiogram import F, Router, types
 from aiogram.filters import Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from app.admin import health
 from app.bot.callbacks import Admin as Adm
 from app.bot.callbacks import Torrent
 from app.core.time import fmt
@@ -113,7 +114,12 @@ async def torrents_command(message: types.Message, c, settings) -> None:
               if (doc.get('moderation') or {}).get('vpn_locked_until')]
     forever = [doc for doc in locked if doc not in frozen]
 
+    reports = await c.health.last(health.TORRENT_REPORTS)
     lines = [f'<b>{e("attention")} Торренты</b>', '',
+             f'Отчётов от панели: '
+             + (f'<b>{reports.get("runs", 0)}</b>, последний '
+                f'{fmt(reports.get("at"))}' if reports.get('at')
+                else f'<b>ни одного</b> {e("attention")}'),
              f'Отключено навсегда: <b>{len(forever)}</b>, '
              f'заморожено сейчас: <b>{len(frozen)}</b>',
              f'Лестница: предупреждение → заморозка на {minutes} мин. '
@@ -140,12 +146,83 @@ async def torrents_command(message: types.Message, c, settings) -> None:
     if not locked:
         lines.append('Никому не отключали.')
     lines.append('')
-    lines.append(f'<blockquote>Вернуть доступ: <code>/torrentok id</code> — '
+    if not reports.get('at'):
+        lines.append(
+            f'<blockquote>{e("attention")} Панель не прислала ни одного '
+            f'отчёта. Отчёты в самой панели при этом могут быть: их шлёт '
+            f'вебхук, и если он не настроен, бот о них не узнает.\n\n'
+            f'Проверьте в .env панели: <code>WEBHOOK_ENABLED=true</code>, '
+            f'<code>WEBHOOK_URL</code> на адрес бота, '
+            f'<code>WEBHOOK_SECRET_HEADER</code> — тот же, что '
+            f'<code>REMNAWAVE_WEBHOOK_SECRET</code> у бота. Нужна панель '
+            f'2.7.0 и выше.\n\nПока не настроено — отключайте руками: '
+            f'<code>/torrentban id причина</code>.</blockquote>')
+        lines.append('')
+    lines.append(f'<blockquote>Отключить руками: '
+                 f'<code>/torrentban id причина</code>\n'
+                 f'Вернуть доступ: <code>/torrentok id</code> — '
                  f'подписка включается в панели, счётчик нарушений '
                  f'обнуляется.\n\nБот у отключённых остаётся открытым: '
                  f'человек должен видеть, за что, и уметь написать '
                  f'в поддержку. Жалоба «я не качаю торренты» приходит сюда '
                  f'карточкой с кнопками.</blockquote>')
+    await message.answer('\n'.join(lines))
+
+
+TORRENTBAN_USAGE = (
+    'Кого отключить за торренты?\n'
+    '<code>/torrentban 123456789 120 ГБ за две недели</code>\n\n'
+    '<blockquote>Отключает подписку навсегда, как третье нарушение: '
+    'включить заново нельзя даже новой покупкой. Человеку уходит '
+    'сообщение с причиной и кнопкой «я не качаю торренты».\n\n'
+    'Вернуть — <code>/torrentok id</code>.</blockquote>'
+)
+
+
+async def torrentban_command(message: types.Message, command: CommandObject,
+                             c) -> None:
+    """Бан за торренты руками.
+
+    Плагин видит не всё: раздачу с другого устройства в той же сети,
+    торрент через нестандартные порты, да и просто «сто двадцать гигабайт
+    за две недели» — это видно в панели, а не в отчётах. Решение тут за
+    человеком, и ему нужна та же дверь, что у автоматики.
+    """
+    args = (command.args or '').split(maxsplit=1)
+    if not args:
+        await message.answer(TORRENTBAN_USAGE)
+        return
+
+    target = await c.moderation.find_user(args[0])
+    if not target:
+        await message.answer(f'Пользователь <code>{args[0]}</code> не найден.')
+        return
+
+    user_id = (target.get('user_data') or {}).get('user_id')
+    if user_id in set(c.config.admin_ids):
+        await message.answer('Администратора отключать не будем.')
+        return
+
+    reason = args[1].strip() if len(args) > 1 else ''
+    result = await c.torrents.block_by_hand(target, message.from_user.id,
+                                            reason)
+    if not result.get('ok'):
+        await message.answer(f'{e("cross")} Не получилось: '
+                             f'<code>{result.get("note")}</code>')
+        return
+
+    lines = [f'{e("ban")} <b>Подписка отключена за торренты</b>',
+             _who(target),
+             f'Нарушение по счёту: <b>{result["count"]}</b>']
+    if reason:
+        lines.append(f'Причина: {reason}')
+    lines.append('Человеку ' + ('отправлено сообщение с причиной'
+                                if result['delivered']
+                                else f'{e("warning")} сообщение НЕ дошло '
+                                     f'(заблокировал бота?)'))
+    lines.append('')
+    lines.append(f'<blockquote>Вернуть доступ: '
+                 f'<code>/torrentok {user_id}</code></blockquote>')
     await message.answer('\n'.join(lines))
 
 
@@ -237,6 +314,7 @@ def register(router: Router) -> None:
     router.message.register(hardban_command, Command('hardban'))
     router.message.register(unban_command, Command('unban'))
     router.message.register(torrents_command, Command('torrents'))
+    router.message.register(torrentban_command, Command('torrentban'))
     router.message.register(torrentok_command, Command('torrentok'))
     router.callback_query.register(torrent_decision,
                                    Torrent.filter(F.action.in_({'trust', 'reject'})))

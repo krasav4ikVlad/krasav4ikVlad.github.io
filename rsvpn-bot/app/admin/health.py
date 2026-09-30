@@ -30,6 +30,7 @@ CAMPAIGNS = 'campaigns'
 BYPASS_SYNC = 'bypass_sync'
 PANEL_IDS = 'panel_ids'
 BACKUP = 'backup'
+TORRENT_REPORTS = 'torrent_reports'
 
 TITLES = {
     RENEWAL: 'Автопродление',
@@ -41,6 +42,7 @@ TITLES = {
     BYPASS_SYNC: 'Сверка дат ByPass',
     PANEL_IDS: 'Переезд на id панели 3.x',
     BACKUP: 'Копия базы',
+    TORRENT_REPORTS: 'Отчёты о торрентах',
 }
 
 
@@ -60,6 +62,17 @@ class HealthLog:
             )
         except Exception as exc:
             log.debug('отметка %s не записана: %s', key, exc)
+
+    async def last(self, key: str) -> dict:
+        """Одна отметка. Пустой словарь — такого ещё не случалось, и это
+        тоже ответ: «панель ни разу не позвала» выглядит именно так."""
+        if self.col is None:
+            return {}
+        try:
+            return await self.col.find_one({'_id': key}) or {}
+        except Exception as exc:
+            log.warning('отметка %s не прочитана: %s', key, exc)
+            return {}
 
     async def read(self) -> dict[str, dict]:
         if self.col is None:

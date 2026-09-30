@@ -43,6 +43,7 @@ from app.domain import torrents as domain
 log = logging.getLogger(__name__)
 
 EVENT = 'torrent_blocker.report'
+HEALTH_KEY = 'torrent_reports'
 REASON = 'торренты'
 
 # По умолчанию — полчаса: достаточно, чтобы человек заметил и выключил
@@ -61,15 +62,24 @@ DEFAULT_COOLDOWN_MIN = 30
 
 
 class TorrentGuard:
-    def __init__(self, users, settings, sender, bot, moderation, notifier=None):
+    def __init__(self, users, settings, sender, bot, moderation, notifier=None,
+                 health=None):
         self.users = users
         self.settings = settings
         self.sender = sender
         self.bot = bot
         self.moderation = moderation
         self.notifier = notifier
+        # Счётчик входящих отчётов: без него «панель не присылает» и «бот
+        # не разбирает» выглядят одинаково — пустотой.
+        self.health = health
 
     async def handle(self, data: dict) -> dict:
+        # Отметку ставим ДО всех проверок: вопрос «панель присылает отчёты
+        # или бот их не видит» должен иметь ответ, даже когда реакция
+        # выключена или человек не нашёлся.
+        await self.seen()
+
         if not await self.settings.flag('torrents.enabled'):
             return {'ok': True, 'note': 'disabled'}
 
@@ -198,6 +208,67 @@ class TorrentGuard:
             texts.render('torrent.appeal_ok' if trust else 'torrent.appeal_no',
                          support_url=await self.settings.get('link.support')))
         return True
+
+    async def seen(self) -> None:
+        """Запомнить, что отчёт от панели дошёл. Не ломает обработку."""
+        if self.health is None:
+            return
+        try:
+            await self.health.mark(HEALTH_KEY)
+        except Exception as exc:      # noqa: BLE001 — отметка не важнее дела
+            log.debug('отметка о торрент-отчёте не записана: %s', exc)
+
+    # ── бан руками ──────────────────────────────────────────────────────────
+    async def block_by_hand(self, user: dict, admin_id: int,
+                            reason: str = '') -> dict:
+        """Отключить навсегда по решению админа, а не по лестнице.
+
+        Нужно потому, что плагин видит не всё: торрент через прокси-порты,
+        раздачу с другого устройства в той же сети, просто «сто двадцать
+        гигабайт за две недели» — всё это решает человек, глядя на панель,
+        а бот об этом не знает.
+
+        Нарушение засчитываем в ту же карточку: иначе после ручного бана
+        в жалобе будет написано «нарушений 0», и разбирать её будет не по
+        чему.
+        """
+        user_id = int(self.users.pick(user, 'user_data.user_id') or 0)
+        if not user_id:
+            return {'ok': False, 'note': 'no_user_id'}
+
+        await self.users.col.update_one(
+            {'user_data.user_id': user_id},
+            {'$inc': {'moderation.torrent.count': 1},
+             '$set': {'moderation.torrent.last_at': now(),
+                      'moderation.torrent.by_hand_at': now(),
+                      'moderation.torrent.by_hand_by': int(admin_id or 0),
+                      'moderation.torrent.by_hand_reason': reason},
+             '$push': {'moderation.torrent.strikes': {
+                 '$each': [now()], '$slice': -domain.KEEP_STRIKES}}})
+
+        await self.moderation.lock_vpn(
+            user_id, f'{REASON}: вручную' + (f' ({reason})' if reason else ''),
+            admin_id=admin_id)
+
+        fresh = await self.users.get(user_id, {'moderation.torrent': 1})
+        count = domain.recent(
+            self.users.pick(fresh or {}, 'moderation.torrent.strikes'),
+            days=await self.window_days())
+
+        # Человеку говорим всегда: он должен знать, почему пропал доступ,
+        # даже если автоматические предупреждения выключены.
+        delivered = await self.sender.send(
+            self.bot, user_id,
+            texts.render('torrent.block', count=count,
+                         window=await self.window_text(),
+                         name=self.users.pick(user, 'user_data.first_name'),
+                         support_url=await self.settings.get('link.support')),
+            await self._appeal_button())
+
+        log.warning('торрент: %s отключён вручную админом %s (%s)',
+                    user_id, admin_id, reason or 'без причины')
+        return {'ok': True, 'user_id': user_id, 'count': count,
+                'delivered': delivered}
 
     # ── счёт нарушений ──────────────────────────────────────────────────────
     async def _strike(self, user_id: int, action: dict, node: str) -> int | None:

@@ -451,7 +451,8 @@ class Container:
 
         self.torrents = TorrentGuard(self.users, self.settings,
                                      Sender(on_blocked=self.users.mark_blocked), bot,
-                                     self.moderation, notifier=self.notifier)
+                                     self.moderation, notifier=self.notifier,
+                                     health=self.health)
         self.renewal = RenewalService(self.users, self.plans, self.settings, self.vpn,
                                       self.topup, self.lifeline, self.expiry,
                                       notifier=self.notifier, discounts=self.discounts)

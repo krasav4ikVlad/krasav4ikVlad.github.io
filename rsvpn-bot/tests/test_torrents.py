@@ -868,3 +868,118 @@ async def test_a_decision_without_an_appeal_does_nothing(guard, users, db):
     await guard.handle(report())
 
     assert await guard.decide(USER, trust=True, admin_id=1) is False
+
+
+# ── бан руками ──────────────────────────────────────────────────────────────
+#
+# Плагин видит не всё: раздачу с соседнего устройства в той же сети, торрент
+# через нестандартные порты, да и просто «сто двадцать гигабайт за две
+# недели» — это видно в панели, а не в отчётах. Решение тут за человеком, и
+# ему нужна та же дверь, что у автоматики.
+
+async def test_an_admin_can_block_without_any_reports(guard, users, vpn,
+                                                      sender, db):
+    await client(users)
+
+    result = await guard.block_by_hand(await users.get(USER), admin_id=1,
+                                       reason='120 ГБ за две недели')
+
+    assert result['ok'] and result['count'] == 1
+    assert ModerationService.locked_forever(await users.get(USER))
+    assert ('uuid-802421217', 'DISABLED') in vpn.statuses
+
+
+async def test_the_person_learns_why_the_access_died(guard, users, sender, db):
+    await client(users)
+
+    await guard.block_by_hand(await users.get(USER), admin_id=1)
+
+    assert 'торрент' in sender.sent[-1][1].lower()
+    assert 'не возвращаются' in sender.sent[-1][1]
+
+
+async def test_the_person_is_told_even_with_warnings_off(guard, users, settings,
+                                                         sender, db):
+    """Автоматические предупреждения можно выключить, но человек, которому
+    отключили подписку, обязан узнать причину."""
+    await client(users)
+    await settings.set('torrents.warn_user', False)
+
+    await guard.block_by_hand(await users.get(USER), admin_id=1)
+
+    assert sender.sent
+
+
+async def test_a_manual_block_counts_as_a_violation(guard, users, db):
+    """Иначе в жалобе будет «нарушений 0», и разбирать её нечем."""
+    await client(users)
+
+    await guard.block_by_hand(await users.get(USER), admin_id=1, reason='трафик')
+
+    card = await users.get(USER)
+    assert users.pick(card, 'moderation.torrent.count') == 1
+    assert users.pick(card, 'moderation.torrent.by_hand_reason') == 'трафик'
+
+
+async def test_a_manual_block_can_be_appealed(guard, users, notifier, db):
+    await client(users)
+    await guard.block_by_hand(await users.get(USER), admin_id=1)
+
+    assert await guard.appeal(USER) is True
+    assert notifier.appeals[-1]['locked'] is True
+
+
+async def test_it_can_be_undone_like_any_other(guard, users, vpn, settings, db):
+    await client(users)
+    await guard.block_by_hand(await users.get(USER), admin_id=1)
+
+    await ModerationService(users, settings, vpn=vpn).unlock_vpn(USER, admin_id=1)
+
+    assert not ModerationService.vpn_locked(await users.get(USER))
+
+
+# ── «а почему его не видно» ─────────────────────────────────────────────────
+#
+# Отчёты есть в панели, а в боте пусто — так выглядит ненастроенный вебхук.
+# Без счётчика входящих «панель не присылает» и «бот не разбирает» выглядят
+# одинаково: пустотой.
+
+class Marks:
+    def __init__(self):
+        self.seen: list[str] = []
+
+    async def mark(self, key, **info):
+        self.seen.append(key)
+
+
+async def test_an_incoming_report_is_counted(guard, users, db):
+    from app.services.torrents import HEALTH_KEY
+
+    marks = Marks()
+    guard.health = marks
+    await client(users)
+
+    await guard.handle(report())
+
+    assert marks.seen == [HEALTH_KEY]
+
+
+async def test_it_is_counted_even_when_the_person_is_a_stranger(guard, users, db):
+    """Иначе «панель молчит» и «бот не узнал человека» неотличимы."""
+    marks = Marks()
+    guard.health = marks
+
+    await guard.handle(report(username='999999', uuid='x', short='y'))
+
+    assert marks.seen
+
+
+async def test_it_is_counted_even_when_the_whole_thing_is_off(guard, users,
+                                                              settings, db):
+    marks = Marks()
+    guard.health = marks
+    await settings.set('torrents.enabled', False)
+
+    await guard.handle(report())
+
+    assert marks.seen
