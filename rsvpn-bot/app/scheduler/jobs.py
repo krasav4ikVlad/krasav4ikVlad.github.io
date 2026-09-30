@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 
 from app.admin import health
@@ -15,6 +17,30 @@ from app.campaigns.definitions import EXPIRED_STEPS, NEW_TRIAL_STEPS, TRIAL_STEP
 log = logging.getLogger(__name__)
 
 
+def quiet_on_stop(job):
+    """Остановка бота — не авария задачи.
+
+    При `pm2 restart` планировщик отменяет всё, что выполняется, и каждая
+    такая задача печатает в лог CancelledError со стектрейсом. В логе это
+    выглядит как падение — и в первый раз отнимает полчаса на поиск
+    несуществующей ошибки. Здесь отмена превращается в одну понятную
+    строку.
+
+    Дальше отмену не пропускаем сознательно: задача — лист, после неё
+    ничего не ждёт, а свою уборку сервисы делают сами.
+    """
+    @functools.wraps(job)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await job(*args, **kwargs)
+        except asyncio.CancelledError:
+            log.warning('задача %s прервана остановкой бота', job.__name__)
+            return None
+
+    return wrapper
+
+
+@quiet_on_stop
 async def run_campaigns(container, bot, engine) -> None:
     report = await engine.run(NEW_TRIAL_STEPS + EXPIRED_STEPS + TRIAL_STEPS)
     await container.health.mark(health.CAMPAIGNS, sent=report.sent,
@@ -23,6 +49,7 @@ async def run_campaigns(container, bot, engine) -> None:
         await container.notifier.campaign_report(report)
 
 
+@quiet_on_stop
 async def watch_database(container, bot) -> None:
     """Достаёт ли бот до базы. Пишет админам лично, если нет.
 
@@ -36,6 +63,7 @@ async def watch_database(container, bot) -> None:
     await watchdog.check()
 
 
+@quiet_on_stop
 async def thaw_torrents(container) -> None:
     """Вернуть доступ тем, у кого заморозка за торренты кончилась.
 
@@ -49,6 +77,7 @@ async def thaw_torrents(container) -> None:
     await guard.thaw()
 
 
+@quiet_on_stop
 async def backup_database(container, bot) -> None:
     """Снимок базы по расписанию.
 
@@ -149,6 +178,7 @@ async def backup_database(container, bot) -> None:
         log.warning('копия базы никому не ушла: %s', report.path)
 
 
+@quiet_on_stop
 async def watch_broadcasts(container, bot) -> None:
     """Поднять рассылки, которые оборвались и сами не продолжатся."""
     from app.admin.broadcast import resume_stalled
@@ -158,6 +188,7 @@ async def watch_broadcasts(container, bot) -> None:
         log.warning('сторож поднял рассылок: %s', revived)
 
 
+@quiet_on_stop
 async def charge_subscriptions(container) -> None:
     """Автопродление и плата за доп. устройства.
 
@@ -191,6 +222,7 @@ async def charge_subscriptions(container) -> None:
         log.warning('плата за устройства пропущена: сервис не собран')
 
 
+@quiet_on_stop
 async def charge_private_servers(container) -> None:
     """Ежемесячная плата за личные серверы владельцам."""
     if not container.private:
@@ -203,6 +235,7 @@ async def charge_private_servers(container) -> None:
         await container.health.mark(health.PRIVATE_SERVERS, **report)
 
 
+@quiet_on_stop
 async def reconcile_lifeline(container) -> None:
     """Вернуть тех, кто продлился, но остался на запасном сервере."""
     if not container.lifeline:
@@ -213,6 +246,7 @@ async def reconcile_lifeline(container) -> None:
         log.info('lifeline: возвращено %s подписок', restored)
 
 
+@quiet_on_stop
 async def sync_bypass(container) -> None:
     """Свести даты ByPass с основными подписками.
 
@@ -236,6 +270,7 @@ async def sync_bypass(container) -> None:
         key: report[key] for key in ('checked', 'fixed', 'failed')})
 
 
+@quiet_on_stop
 async def migrate_panel_ids(container) -> None:
     """Перевести подписки на числовые id, когда панель обновят до 3.x.
 
@@ -268,6 +303,7 @@ async def migrate_panel_ids(container) -> None:
         key: report[key] for key in ('stale', 'moved', 'failed')})
 
 
+@quiet_on_stop
 async def update_segments(container) -> None:
     """Пересчёт growth.segment — без него кампании никого не найдут."""
     from app.services.segments import SegmentService

@@ -237,6 +237,14 @@ class BackupService:
                 raise RuntimeError(f'записано {report.docs}, '
                                    f'читается {report.checked}')
             temp.rename(target)
+        except asyncio.CancelledError:
+            # Бота останавливают (обновление, перезапуск) — работа
+            # обрывается на полуслове. Метку убираем за собой: иначе она
+            # час выглядит как «копия уже делается», и следующий снимок
+            # после планового обновления не состоится.
+            temp.unlink(missing_ok=True)
+            log.warning('копия базы прервана остановкой бота')
+            raise
         except Exception as exc:      # noqa: BLE001 — причина уходит наверх
             temp.unlink(missing_ok=True)
             report.error = str(exc)[:300]

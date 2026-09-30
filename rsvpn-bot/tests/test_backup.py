@@ -854,3 +854,79 @@ async def test_a_broken_previous_copy_is_explained(service, db, settings,
     await jobs.backup_database(Container(service, settings, told), bot=None)
 
     assert 'оборвалась' in told.edits[-1]
+
+
+# ── бота останавливают посреди копии ────────────────────────────────────────
+#
+# Обычное обновление (`update.sh` → pm2 restart) обрывает копию на полуслове.
+# Само по себе это не беда — снимок сделается заново. Бедой это становится,
+# если после себя он оставляет метку: час она выглядит как «копия уже
+# делается», и снимок после планового обновления не состоится.
+
+async def test_a_stopped_copy_cleans_up_after_itself(service, db, folder):
+    import asyncio
+
+    await fill(db, users=50)
+    original = service._dump
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(5)
+        return await original(*args, **kwargs)
+
+    service._dump = slow
+    task = asyncio.create_task(service.run())
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not list(folder.glob('*.part'))
+    assert not list(folder.glob('*.jsonl.gz'))
+
+
+async def test_the_next_copy_is_not_blocked_by_a_stopped_one(service, db,
+                                                             folder):
+    """Ради чего уборка и нужна: после перезапуска снимок должен
+    состояться сразу, а не через час."""
+    import asyncio
+
+    await fill(db)
+    original = service._dump
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(5)
+        return await original(*args, **kwargs)
+
+    service._dump = slow
+    task = asyncio.create_task(service.run())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    service._dump = original
+    assert await service.due() is True
+    assert (await service.run()).ok
+
+
+async def test_a_stop_is_one_line_in_the_log_not_a_traceback(service, db,
+                                                             settings, caplog):
+    """CancelledError со стектрейсом в логе выглядит как падение и в первый
+    раз отнимает полчаса на поиск несуществующей ошибки."""
+    import asyncio
+
+    from app.scheduler import jobs
+
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    await fill(db)
+    service.run = cancelled
+    told = Told()
+
+    # задача не должна пропустить отмену наверх
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert any('прервана остановкой' in record.message
+               for record in caplog.records)
