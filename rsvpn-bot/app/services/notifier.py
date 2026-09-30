@@ -290,6 +290,66 @@ class Notifier:
                                '\n'.join(line for line in lines if line != ''),
                                markup=kb.as_markup())
 
+    # ── копии базы ──────────────────────────────────────────────────────────
+    async def backup_done(self, name: str, size: int, docs: int,
+                          seconds: float = 0, removed: int = 0) -> bool:
+        from app.services.backup import human_size
+
+        return await self.send(
+            'backup',
+            f'{e("document")} <b>Копия базы готова</b>\n'
+            f'<code>{name}</code>\n'
+            f'<b>Размер:</b> {human_size(size)}\n'
+            f'<b>Документов:</b> <code>{docs}</code>\n'
+            f'<b>Заняло:</b> {seconds:.0f} с'
+            + (f'\n<i>Старых удалено: {removed}</i>' if removed else ''))
+
+    async def backup_failed(self, error: str) -> bool:
+        """Провал — громко. Молчащий бекап неотличим от работающего ровно
+        до того дня, когда он понадобится."""
+        return await self.send(
+            'backup',
+            f'{e("attention")} <b>Копия базы НЕ сделана</b>\n'
+            f'<code>{(error or "причина неизвестна")[:300]}</code>\n\n'
+            f'Проверьте место на диске: <code>df -h</code>. '
+            f'Сделать вручную — <code>/backup</code>.')
+
+    async def backup_file(self, path: str, limit_mb: int = 45) -> bool:
+        """Сам файл в чат — если он туда влезет и если это разрешено.
+
+        В снимке вся база: адреса почты, платежи, переписка с поддержкой.
+        Поэтому по умолчанию выключено, и лимит проверяем до отправки —
+        Telegram откажет на 50 МБ, и отказ прилетит стектрейсом в лог.
+        """
+        from pathlib import Path
+
+        from aiogram.types import FSInputFile
+
+        item = Path(path)
+        if not item.exists():
+            return False
+        if item.stat().st_size > max(1, int(limit_mb or 45)) * 1024 * 1024:
+            await self.send('backup',
+                            f'{e("warning")} Файл больше {limit_mb} МБ — '
+                            f'в Telegram не отправить. Он на сервере: '
+                            f'<code>{path}</code>')
+            return False
+
+        chat_id = await self.settings.int('notify.chat_id')
+        if not chat_id or not await self.settings.flag('notify.enabled'):
+            return False
+        try:
+            with plain():
+                await self.bot.send_document(
+                    chat_id=chat_id,
+                    message_thread_id=await self.settings.int('notify.topic_backup') or None,
+                    document=FSInputFile(path),
+                    caption=f'{e("document")} Копия базы')
+            return True
+        except Exception as exc:
+            log.warning('копия базы не отправлена: %s', exc)
+            return False
+
     async def email_changed(self, user_id: int, email: str) -> bool:
         return await self.send('email',
                                f'{e("email")} <b>Почта привязана</b>\n{await self._who(user_id)}\n'

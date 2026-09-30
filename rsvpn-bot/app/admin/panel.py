@@ -13,6 +13,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from app.admin import backup as admin_backup
 from app.admin import broadcast
 from app.admin import channel as admin_channel
 from app.admin import commands as admin_commands
@@ -456,6 +457,7 @@ def create_router(admin_ids) -> Router:
 
     # разделы в своих файлах: панель не должна расти на каждую новую функцию
     broadcast.register(router)
+    admin_backup.register(router)
     admin_channel.register(router)
     admin_payouts.register(router)
     admin_moderation.register(router)

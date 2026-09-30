@@ -478,6 +478,7 @@ SCHEMA: tuple[Group, ...] = (
         Setting('notify.topic_payout', 'Тема: заявки на вывод', 'int', 279680),
         Setting('notify.topic_servers', 'Тема: личные серверы', 'int', 1561465),
         Setting('notify.topic_torrent', 'Тема: торренты', 'int', 0),
+        Setting('notify.topic_backup', 'Тема: копии базы', 'int', 0),
         Setting('notify.enabled', 'Слать уведомления админам', 'bool', True),
     )),
 
@@ -496,6 +497,22 @@ SCHEMA: tuple[Group, ...] = (
                 'https://telegra.ph/Polzovatelskoe-soglashenie-Publichnaya-oferta-RS-VPN-07-02'),
         Setting('link.privacy', 'Политика конфиденциальности', 'str',
                 'https://telegra.ph/Politika-konfidencialnosti-RS-VPN-07-02'),
+    )),
+
+    Group('backup', f'{e("document")} Резервные копии базы', (
+        Setting('backup.enabled', 'Делать копии базы', 'bool', True,
+                hint='Снимок всей базы в файл на сервере бота'),
+        Setting('backup.every_hours', 'Как часто', 'int', 24, unit=' ч', min=1),
+        Setting('backup.keep', 'Сколько хранить', 'int', 14, unit=' шт', min=1,
+                hint='Старые удаляются сами'),
+        Setting('backup.dir', 'Каталог для копий', 'str', '',
+                hint='Пусто — ~/rsvpn-backups. Вне каталога бота, чтобы '
+                     'обновление их не касалось'),
+        Setting('backup.to_telegram', 'Присылать файл в админ-чат', 'bool', False,
+                hint='В снимке вся база, включая переписку и платежи. '
+                     'Включайте, только если чат закрытый'),
+        Setting('backup.max_mb', 'Не слать файлы больше', 'int', 45, unit=' МБ',
+                min=1, hint='Telegram не принимает документы больше 50 МБ'),
     )),
 
     Group('maintenance', f'{e("wrench")} Технические работы', (

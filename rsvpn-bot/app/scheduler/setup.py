@@ -36,6 +36,11 @@ def create_scheduler(container, bot) -> AsyncIOScheduler:
     scheduler.add_job(jobs.update_segments, 'interval', minutes=60,
                       args=[container], id='update_segments',
                       next_run_time=now() + timedelta(minutes=5))
+    # Раз в полчаса: сама задача решает, пора ли делать снимок, — по
+    # возрасту последнего файла. Так он не теряется из-за перезапуска.
+    scheduler.add_job(jobs.backup_database, 'interval', minutes=30,
+                      args=[container, bot], id='backup_database',
+                      next_run_time=now() + timedelta(minutes=2))
     # Раз в минуту: заморозка за торренты должна кончаться вовремя —
     # «на полчаса» не должно превращаться в «полчаса и сколько-то сверху».
     scheduler.add_job(jobs.thaw_torrents, 'interval', minutes=1,

@@ -213,6 +213,31 @@ class FakeCollection:
                 return FakeResult(matched=1, modified=1, deleted=1)
         return FakeResult()
 
+    async def drop(self):
+        self.docs.clear()
+
+    async def replace_one(self, query, doc, upsert=False):
+        """Замена документа целиком — не $set: поля, которых в новом
+        документе нет, должны исчезнуть. На этом держится восстановление
+        из копии «ровно как было»."""
+        for index, existing in enumerate(self.docs):
+            if self._match(existing, query):
+                self.docs[index] = copy.deepcopy(doc)
+                return FakeResult(matched=1, modified=1)
+        if upsert:
+            await self.insert_one(copy.deepcopy(doc))
+            return FakeResult(matched=0, modified=0, upserted_id=doc.get('_id'))
+        return FakeResult()
+
+    async def bulk_write(self, operations, ordered=True):
+        """Столько же, сколько нужно восстановлению: пачка ReplaceOne."""
+        done = 0
+        for operation in operations:
+            await self.replace_one(operation._filter, operation._doc,
+                                   upsert=True)
+            done += 1
+        return FakeResult(matched=done, modified=done)
+
     async def update_one(self, query, update, upsert=False):
         doc = await self.find_one(query)
         upserted = None
@@ -355,10 +380,21 @@ class FakeCollection:
 
 
 class FakeDB(dict):
+    name = 'fake_db'
+
     def __getitem__(self, name):
         if name not in self:
             super().__setitem__(name, FakeCollection(name))
         return super().__getitem__(name)
+
+    async def list_collection_names(self):
+        """Как у Motor: только те коллекции, в которых что-то есть.
+
+        Пустые Mongo и не создаёт, а снимок базы ходит именно по этому
+        списку — без правдивого ответа он бы либо пропускал данные, либо
+        писал пустые коллекции.
+        """
+        return [name for name, col in self.items() if col.docs]
 
 
 class FakeBot:

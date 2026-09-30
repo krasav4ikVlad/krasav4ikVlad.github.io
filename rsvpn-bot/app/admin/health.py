@@ -29,6 +29,7 @@ PRIVATE_SERVERS = 'private_servers'
 CAMPAIGNS = 'campaigns'
 BYPASS_SYNC = 'bypass_sync'
 PANEL_IDS = 'panel_ids'
+BACKUP = 'backup'
 
 TITLES = {
     RENEWAL: 'Автопродление',
@@ -39,6 +40,7 @@ TITLES = {
     CAMPAIGNS: 'Кампании',
     BYPASS_SYNC: 'Сверка дат ByPass',
     PANEL_IDS: 'Переезд на id панели 3.x',
+    BACKUP: 'Копия базы',
 }
 
 

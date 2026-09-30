@@ -44,6 +44,7 @@ class Container:
     analytics: Any = None
     expiry: Any = None
     torrents: Any = None
+    backup: Any = None
     private: Any = None
     partner_bots: Any = None
     squads: Any = None
@@ -99,6 +100,12 @@ class Container:
 
         from app.services.moderation import ModerationService
         self.moderation = ModerationService(self.users, self.settings, vpn=None)
+
+        # Снимки базы: сервису нужен только доступ к базе, поэтому собирается
+        # здесь, а не в attach_bot — команда /backup работает и в процессе
+        # API, и в планировщике.
+        from app.services.backup import BackupService
+        self.backup = BackupService(self.db, self.settings, self.config.mongo_db)
 
         from app.services.discounts import DiscountService
         self.discounts = DiscountService(self.settings)

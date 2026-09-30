@@ -49,6 +49,41 @@ async def thaw_torrents(container) -> None:
     await guard.thaw()
 
 
+async def backup_database(container, bot) -> None:
+    """Снимок базы по расписанию.
+
+    Задача сама решает, пора ли: по возрасту последнего файла, а не по
+    времени запуска. Так снимок не теряется из-за перезапуска бота и не
+    делается дважды подряд после него.
+    """
+    from pathlib import Path
+
+    guard = getattr(container, 'backup', None)
+    if guard is None or not await container.settings.flag('backup.enabled'):
+        return
+    if not await guard.due():
+        return
+
+    report = await guard.run()
+    await container.health.mark(health.BACKUP, ok=report.ok, docs=report.docs,
+                                size=report.size, error=report.error)
+
+    if not container.notifier:
+        return
+    if not report.ok:
+        # Провал говорим громко: молчащий бекап неотличим от работающего
+        # ровно до того дня, когда он понадобится.
+        await container.notifier.backup_failed(report.error)
+        return
+
+    await container.notifier.backup_done(
+        name=Path(report.path).name, size=report.size,
+        docs=report.docs, seconds=report.seconds, removed=report.removed)
+    if await container.settings.flag('backup.to_telegram'):
+        await container.notifier.backup_file(
+            report.path, limit_mb=await container.settings.int('backup.max_mb'))
+
+
 async def watch_broadcasts(container, bot) -> None:
     """Поднять рассылки, которые оборвались и сами не продолжатся."""
     from app.admin.broadcast import resume_stalled
