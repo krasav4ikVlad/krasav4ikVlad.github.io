@@ -167,7 +167,7 @@ async def _backup_once(container) -> None:
             await notifier.edit_all(cards,
                                     progress.screen(title, step, done, total))
 
-    report = await guard.run(on_progress=show)
+    report = await guard.make(on_progress=show)
     if report.busy:
         # Успели начать вдвоём — убираем своё «начинаю», чтобы не осталось
         # висеть недоделанной полоски.

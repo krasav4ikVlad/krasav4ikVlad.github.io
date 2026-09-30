@@ -10,6 +10,7 @@ from tests.test_admin_panel import ADMIN, admin_env, message  # noqa: F401
 async def ready(admin_env, tmp_path):
     dp, bot, session, c = admin_env
     await c.settings.set('backup.dir', str(tmp_path / 'b'))
+    await c.settings.set('backup.separate_process', False)
     c.backup = BackupService(c.db, c.settings, name='RS_TEST')
     await c.users.create({'user_data': {'user_id': 7}, 'info': {'balance': 1}})
     return dp, bot, session, c

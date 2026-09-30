@@ -83,7 +83,7 @@ async def backup_now(message: types.Message, command: CommandObject, c,
         await say(note, message, progress.screen(
             f'{e("document")} {TITLE}', step, done, total), quiet=True)
 
-    report = await c.backup.run(on_progress=show, force=force)
+    report = await c.backup.make(on_progress=show, force=force)
 
     if report.busy:
         running = await c.backup.in_progress()

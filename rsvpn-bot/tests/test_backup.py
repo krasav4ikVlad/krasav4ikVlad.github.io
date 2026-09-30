@@ -6,6 +6,7 @@
 такими же, включая даты и вложенные документы».
 """
 
+import asyncio
 import gzip
 import json
 import time
@@ -31,6 +32,10 @@ def folder(tmp_path):
 @pytest.fixture
 async def service(db, settings, folder):
     await settings.set('backup.dir', str(folder))
+    # В тестах снимок делаем в себе: отдельный процесс — это настоящий
+    # python и настоящая база, ему здесь неоткуда взяться. Сам запуск
+    # отдельного процесса проверяется ниже, с подставным процессом.
+    await settings.set('backup.separate_process', False)
     return BackupService(db, settings, name='RS_TEST')
 
 
@@ -1177,3 +1182,135 @@ async def test_an_unexpected_error_is_shown_not_just_logged(service, db,
     await jobs.backup_database(Container(service, settings, told), bot=None)
 
     assert told.dms and 'нет места на диске' in told.dms[0]
+
+
+# ── снимок отдельным процессом ──────────────────────────────────────────────
+#
+# Настоящая причина всех бед: снимок большой базы ест память, у бота она
+# ограничена (pm2 max_memory_restart), и процесс убивали на 86% — четыреста
+# восемнадцать раз подряд, ни одной доведённой копии. Отдельный процесс
+# снимает это целиком: бот остаётся лёгким, а его перезапуск копию больше
+# не обрывает.
+
+class FakeChild:
+    """Процесс снимка: что-то делает, потом заканчивается."""
+
+    def __init__(self, service=None, code: int = 0, errors: bytes = b'',
+                 steps=(), report=None):
+        self.pid = 4242
+        self.returncode = None
+        self._service = service
+        self._code = code
+        self._errors = errors
+        self._steps = list(steps)
+        self._report = report
+
+    async def communicate(self):
+        for done, total, note in self._steps:
+            await self._service.note_progress(done, total, note)
+            await asyncio.sleep(0.01)
+        if self._report is not None:
+            await self._service.save_result(self._report)
+        self.returncode = self._code
+        return b'', self._errors
+
+
+def spawns(child):
+    async def fake(*args, **kwargs):
+        return child
+    return fake
+
+
+async def test_the_copy_is_made_by_another_process(service, db, settings,
+                                                   monkeypatch):
+    import asyncio as aio
+
+    from app.services.backup import BackupReport
+
+    await settings.set('backup.separate_process', True)
+    done = BackupReport(ok=True, path='/tmp/x.jsonl.gz', size=10, docs=7)
+    child = FakeChild(service, report=done)
+    monkeypatch.setattr(aio, 'create_subprocess_exec', spawns(child))
+
+    report = await service.make()
+
+    assert report.ok and report.docs == 7
+
+
+async def test_the_bot_watches_the_progress_of_the_other_process(service, db,
+                                                                 settings,
+                                                                 monkeypatch):
+    """Полоска должна двигаться, хотя работу делает не бот."""
+    import asyncio as aio
+
+    from app.services.backup import BackupReport
+
+    await settings.set('backup.separate_process', True)
+    child = FakeChild(service, steps=[(10, 100, 'Выгружаю users'),
+                                      (90, 100, 'Выгружаю transactions_flat')],
+                      report=BackupReport(ok=True, docs=1))
+    monkeypatch.setattr(aio, 'create_subprocess_exec', spawns(child))
+    seen = []
+
+    async def watch(note, done, total):
+        seen.append((note, done, total))
+
+    await service.make(on_progress=watch)
+
+    assert any('transactions_flat' in note for note, _, _ in seen)
+
+
+async def test_a_killed_process_is_reported_not_swallowed(service, db,
+                                                          settings,
+                                                          monkeypatch):
+    """Процесс умер молча — это самое важное сообщение из всех, и раньше
+    оно пропадало."""
+    import asyncio as aio
+
+    await settings.set('backup.separate_process', True)
+    child = FakeChild(service, code=-9, errors=b'Killed')
+    monkeypatch.setattr(aio, 'create_subprocess_exec', spawns(child))
+
+    report = await service.make()
+
+    assert not report.ok
+    assert 'оборвался' in report.error and 'Killed' in report.error
+    assert await service.breaks() == 1
+
+
+async def test_stopping_the_bot_does_not_stop_the_copy(service, db, settings,
+                                                       monkeypatch):
+    """Главное следствие: обновление бота посреди ночной копии больше не
+    отправляет её в мусор."""
+    import asyncio as aio
+
+    await settings.set('backup.separate_process', True)
+    child = FakeChild(service, steps=[(1, 100, 'иду')] * 50)
+    monkeypatch.setattr(aio, 'create_subprocess_exec', spawns(child))
+
+    task = asyncio.create_task(service.make())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # ребёнка не трогали: он сам доживёт и допишет файл
+    assert child.returncode is None
+
+
+async def test_when_the_process_cannot_start_we_do_it_ourselves(service, db,
+                                                                settings,
+                                                                monkeypatch):
+    """Отдельный процесс — способ, а не самоцель: не вышло запустить —
+    копия всё равно должна появиться."""
+    import asyncio as aio
+
+    await settings.set('backup.separate_process', True)
+    await fill(db)
+
+    async def broken(*args, **kwargs):
+        raise FileNotFoundError('нет python')
+
+    monkeypatch.setattr(aio, 'create_subprocess_exec', broken)
+
+    assert (await service.make()).ok

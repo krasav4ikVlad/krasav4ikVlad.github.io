@@ -66,6 +66,11 @@ RETRY_MIN = 30
 # Три обрыва подряд — дело не в случайности. Ждём следующего срока по
 # расписанию и говорим об этом вслух: чинить надо причину, а не копию.
 GIVE_UP_AFTER = 3
+# Как часто заглядывать в файл состояния, следя за чужим процессом.
+WATCH_SEC = 2
+# Корень проекта: отдельный процесс должен запускаться там, где лежит .env,
+# а рабочий каталог у pm2 может быть каким угодно.
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_KEEP = 14
 DEFAULT_HOUR = 0        # полночь
 
@@ -256,6 +261,95 @@ class BackupService:
         await self._save_state({'breaks': 0, 'at': now().isoformat(),
                                 'told': False})
 
+    async def save_result(self, report: BackupReport) -> None:
+        """Чем кончилось — в файл состояния. Снимок может делать другой
+        процесс, и это единственный способ узнать его судьбу."""
+        data = await self.state()
+        data['result'] = {'ok': report.ok, 'path': report.path,
+                          'size': report.size, 'docs': report.docs,
+                          'checked': report.checked, 'removed': report.removed,
+                          'seconds': round(report.seconds, 1),
+                          'after_break': report.after_break,
+                          'error': report.error, 'at': now().isoformat()}
+        await self._save_state(data)
+
+    async def take_result(self) -> BackupReport | None:
+        """Забрать результат чужого снимка и убрать его из состояния."""
+        data = await self.state()
+        raw = data.pop('result', None)
+        if not raw:
+            return None
+        await self._save_state(data)
+        return BackupReport(
+            ok=bool(raw.get('ok')), path=str(raw.get('path') or ''),
+            size=int(raw.get('size') or 0), docs=int(raw.get('docs') or 0),
+            checked=int(raw.get('checked') or 0),
+            removed=int(raw.get('removed') or 0),
+            seconds=float(raw.get('seconds') or 0),
+            after_break=bool(raw.get('after_break')),
+            error=str(raw.get('error') or ''))
+
+    # ── снимок отдельным процессом ──────────────────────────────────────────
+    #
+    # Ради этого всё и затевалось. Снимок большой базы съедает память, а у
+    # бота она ограничена (pm2 max_memory_restart): процесс убивали на 86%,
+    # он поднимался, начинал заново — и так 418 раз. Отдельный процесс
+    # решает это целиком: бот остаётся лёгким, а его перезапуск больше не
+    # обрывает копию — она доживает сама и доделывает файл.
+
+    async def run_external(self, on_progress=None,
+                           force: bool = False) -> BackupReport:
+        import sys
+
+        data = await self.state()
+        data.pop('result', None)
+        await self._save_state(data)
+
+        command = [sys.executable, '-m', 'scripts.dbbackup']
+        if force:
+            command.append('--force')
+        try:
+            child = await asyncio.create_subprocess_exec(
+                *command, cwd=str(ROOT),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+        except Exception as exc:      # noqa: BLE001 — не вышло, делаем сами
+            log.warning('отдельный процесс не запустился (%s) — '
+                        'делаю снимок в себе', exc)
+            return await self.run(on_progress, force=force)
+
+        log.warning('снимок базы делает отдельный процесс, pid %s', child.pid)
+        waiting = asyncio.create_task(child.communicate())
+        last = ''
+        try:
+            while not waiting.done():
+                await asyncio.sleep(WATCH_SEC)
+                state = await self.state()
+                note = str(state.get('note') or '')
+                if on_progress and note and note != last:
+                    last = note
+                    await on_progress(note, int(state.get('done') or 0),
+                                      int(state.get('total') or 0))
+            _, errors = await waiting
+        except asyncio.CancelledError:
+            # Нас останавливают, а снимок — нет: он в своём процессе и
+            # доживёт до конца сам. Именно это и чинит круг из
+            # недоделанных копий при каждом обновлении бота.
+            log.warning('перестаю следить за снимком: его делает pid %s',
+                        child.pid)
+            raise
+
+        result = await self.take_result()
+        if result is not None:
+            return result
+
+        # Процесс умер, ничего о себе не сказав — самое важное сообщение
+        # из всех, и раньше оно пропадало молча.
+        tail = (errors or b'').decode('utf-8', 'replace').strip()[-400:]
+        await self.remember_break()
+        return BackupReport(error=f'процесс снимка оборвался '
+                                  f'(код {child.returncode}). {tail}')
+
     async def pending_cards(self) -> list:
         """Карточки полоски, оставшиеся от прерванной копии."""
         data = await self.state()
@@ -292,6 +386,13 @@ class BackupService:
         return at + timedelta(minutes=RETRY_MIN)
 
     # ── снимок ──────────────────────────────────────────────────────────────
+    async def make(self, on_progress=None, force: bool = False) -> BackupReport:
+        """Снять копию — так, как настроено: своими силами или отдельным
+        процессом. Всё, что снаружи, зовёт именно это."""
+        if await self.settings.flag('backup.separate_process'):
+            return await self.run_external(on_progress, force=force)
+        return await self.run(on_progress, force=force)
+
     async def run(self, on_progress=None, force: bool = False) -> BackupReport:
         if self._lock.locked():
             log.info('копия уже делается — второй запуск пропущен')
@@ -332,6 +433,9 @@ class BackupService:
         temp.touch()
 
         async def tell(note: str, done: int = 0, total: int = 0) -> None:
+            # Сначала в файл состояния: по нему за ходом дела следит тот,
+            # кто запустил снимок, — возможно, другой процесс.
+            await self.note_progress(done, total, note)
             if on_progress is None:
                 return
             try:
@@ -369,6 +473,7 @@ class BackupService:
             report.error = str(exc)[:300]
             report.seconds = time.monotonic() - started
             log.error('бекап не сделан: %s', report.error)
+            await self.save_result(report)
             return report
 
         await self.forget_breaks()
@@ -380,6 +485,7 @@ class BackupService:
         log.warning('бекап готов: %s, %s, документов %s, за %.1f с',
                     target.name, human_size(report.size), report.docs,
                     report.seconds)
+        await self.save_result(report)
         return report
 
     async def _dump(self, target: Path, tell=None,
