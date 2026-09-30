@@ -314,41 +314,70 @@ class Notifier:
             f'Проверьте место на диске: <code>df -h</code>. '
             f'Сделать вручную — <code>/backup</code>.')
 
-    async def backup_file(self, path: str, limit_mb: int = 45) -> bool:
-        """Сам файл в чат — если он туда влезет и если это разрешено.
+    async def backup_file(self, path: str, limit_mb: int = 45,
+                          chat_ids=None, backup=None) -> int:
+        """Сам файл — в личку админам (или в чат, если адресаты не заданы).
+
+        Возвращает, скольким дошло. Большой файл режется на части: Telegram
+        не принимает документы больше 50 МБ, а «слишком большой» означало бы,
+        что копии в телефоне нет именно тогда, когда нет и сервера.
 
         В снимке вся база: адреса почты, платежи, переписка с поддержкой.
-        Поэтому по умолчанию выключено, и лимит проверяем до отправки —
-        Telegram откажет на 50 МБ, и отказ прилетит стектрейсом в лог.
+        Поэтому адресаты — только админы из .env, и никогда не «кому-то ещё».
         """
         from pathlib import Path
 
-        from aiogram.types import FSInputFile
-
         item = Path(path)
         if not item.exists():
-            return False
-        if item.stat().st_size > max(1, int(limit_mb or 45)) * 1024 * 1024:
-            await self.send('backup',
-                            f'{e("warning")} Файл больше {limit_mb} МБ — '
-                            f'в Telegram не отправить. Он на сервере: '
-                            f'<code>{path}</code>')
-            return False
+            return 0
 
-        chat_id = await self.settings.int('notify.chat_id')
-        if not chat_id or not await self.settings.flag('notify.enabled'):
-            return False
+        targets = [int(one) for one in (chat_ids or []) if one]
+        if not targets:
+            chat_id = await self.settings.int('notify.chat_id')
+            if not chat_id or not await self.settings.flag('notify.enabled'):
+                return 0
+            targets = [chat_id]
+
+        limit = max(1, int(limit_mb or 45)) * 1024 * 1024
+        parts: list = []
+        if item.stat().st_size > limit and backup is not None:
+            parts = await backup.split(item, limit)
+
         try:
-            with plain():
-                await self.bot.send_document(
-                    chat_id=chat_id,
-                    message_thread_id=await self.settings.int('notify.topic_backup') or None,
-                    document=FSInputFile(path),
-                    caption=f'{e("document")} Копия базы')
-            return True
-        except Exception as exc:
-            log.warning('копия базы не отправлена: %s', exc)
-            return False
+            files = parts or [item]
+            total = len(files)
+            sent = 0
+            for target in targets:
+                if await self._send_files(target, files, total, item.name):
+                    sent += 1
+            return sent
+        finally:
+            if parts and backup is not None:
+                backup.drop_parts(parts)
+
+    async def _send_files(self, chat_id: int, files: list, total: int,
+                          name: str) -> bool:
+        from aiogram.types import FSInputFile
+
+        for number, item in enumerate(files, 1):
+            caption = (f'{e("document")} Копия базы\n<code>{name}</code>'
+                       if total == 1 else
+                       f'{e("document")} Копия базы, часть {number} из {total}\n'
+                       f'<code>{item.name}</code>')
+            if number == total and total > 1:
+                # Инструкция идёт с последней частью: пока части ещё идут,
+                # она только мешает, а после — это первое, что нужно.
+                caption += (f'\n\nСобрать обратно:\n'
+                            f'<code>cat {name}.* > {name}</code>')
+            try:
+                with plain():
+                    await self.bot.send_document(
+                        chat_id=chat_id, document=FSInputFile(str(item)),
+                        caption=caption)
+            except Exception as exc:
+                log.warning('копия базы не отправлена в %s: %s', chat_id, exc)
+                return False
+        return True
 
     async def email_changed(self, user_id: int, email: str) -> bool:
         return await self.send('email',

@@ -100,22 +100,22 @@ async def backup_now(message: types.Message, c, settings) -> None:
 async def backups_list(message: types.Message, c, settings) -> None:
     files = await c.backup.files()
     folder = await c.backup.directory()
-    hours = await c.backup.every_hours()
+    hour = await c.backup.hour()
     keep = await c.backup.keep()
     age = await c.backup.age_hours()
 
     lines = [f'<b>{e("document")} Копии базы</b>', '',
              f'<b>Каталог:</b> <code>{folder}</code>',
-             f'<b>Расписание:</b> раз в {hours} ч, храним {keep} шт.']
+             f'<b>Расписание:</b> каждый день в {hour:02d}:00, '
+             f'храним {keep} шт.']
 
     if age is None:
         lines.append(f'{e("attention")} <b>Копий нет вообще.</b> '
                      f'Сделать сейчас — <code>/backup</code>.')
     else:
-        stale = age > hours * 2
         lines.append(f'<b>Последняя:</b> {age:.1f} ч назад'
-                     + (f' {e("attention")} — это дольше, чем должно быть'
-                        if stale else ''))
+                     + (f' {e("attention")} — это дольше суток'
+                        if age > 26 else ''))
     lines.append('')
 
     for item in files[:15]:

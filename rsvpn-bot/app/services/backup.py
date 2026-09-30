@@ -23,11 +23,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import logging
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 
 from app.core.time import now
@@ -42,7 +44,7 @@ BATCH = 500
 # в обновлении не должен даже теоретически соседствовать со снимками.
 DEFAULT_DIR = '~/rsvpn-backups'
 DEFAULT_KEEP = 14
-DEFAULT_EVERY_HOURS = 24
+DEFAULT_HOUR = 0        # полночь
 
 
 @dataclass
@@ -83,9 +85,22 @@ class BackupService:
         value = await self.settings.int('backup.keep')
         return int(DEFAULT_KEEP if value is None else value)
 
-    async def every_hours(self) -> int:
-        value = await self.settings.int('backup.every_hours')
-        return int(DEFAULT_EVERY_HOURS if value is None else value)
+    async def hour(self) -> int:
+        value = await self.settings.int('backup.hour')
+        return int(DEFAULT_HOUR if value is None else value) % 24
+
+    @staticmethod
+    def scheduled_before(hour: int, moment=None):
+        """Последний наступивший срок снимка: сегодня в HH:00 или вчера.
+
+        Считаем от «когда должен был быть», а не «сколько прошло часов»:
+        так снимок привязан к полуночи, а не к моменту последнего запуска
+        бота. Иначе расписание уползало бы: перезапустили днём — и снимок
+        навсегда переехал на середину дня.
+        """
+        moment = moment or now()
+        today = moment.replace(hour=hour % 24, minute=0, second=0, microsecond=0)
+        return today if moment >= today else today - timedelta(days=1)
 
     async def files(self) -> list[Path]:
         """Снимки от свежего к старому."""
@@ -116,7 +131,7 @@ class BackupService:
 
         try:
             report.docs, report.collections = await self._dump(temp)
-            report.checked = self._verify(temp)
+            report.checked = await self._verify(temp)
             if report.checked != report.docs:
                 raise RuntimeError(f'записано {report.docs}, '
                                    f'читается {report.checked}')
@@ -139,6 +154,13 @@ class BackupService:
         return report
 
     async def _dump(self, target: Path) -> tuple[int, dict]:
+        """Записать всю базу в файл, не останавливая бота.
+
+        Сжатие — работа процессора, и на большой базе её достаточно, чтобы
+        бот заметно «задумался»: пока цикл событий занят gzip, он не
+        отвечает никому. Поэтому строки копятся пачкой, а пишутся и
+        сжимаются в отдельном потоке — цикл в это время свободен.
+        """
         from bson.json_util import dumps
 
         names = [name for name in await self.db.list_collection_names()
@@ -149,23 +171,36 @@ class BackupService:
         with gzip.open(target, 'wt', encoding='utf-8') as handle:
             for name in sorted(names):
                 written = 0
+                batch: list[str] = []
                 async for doc in self.db[name].find({}):
-                    handle.write(dumps({'c': name, 'd': doc}) + '\n')
+                    batch.append(dumps({'c': name, 'd': doc}) + '\n')
                     written += 1
+                    if len(batch) >= BATCH:
+                        await asyncio.to_thread(handle.write, ''.join(batch))
+                        batch = []
+                if batch:
+                    await asyncio.to_thread(handle.write, ''.join(batch))
                 counts[name] = written
                 total += written
         return total, counts
 
     @staticmethod
-    def _verify(target: Path) -> int:
+    async def _verify(target: Path) -> int:
         """Прочитать снимок обратно. Архив, который не открывается, — это
-        не архив, а ложное спокойствие."""
-        read = 0
-        with gzip.open(target, 'rt', encoding='utf-8') as handle:
-            for line in handle:
-                if line.strip():
-                    read += 1
-        return read
+        не архив, а ложное спокойствие.
+
+        Тоже в потоке: на сотнях мегабайт это секунды сплошного чтения и
+        распаковки, и держать на них бота незачем.
+        """
+        def read_all() -> int:
+            read = 0
+            with gzip.open(target, 'rt', encoding='utf-8') as handle:
+                for line in handle:
+                    if line.strip():
+                        read += 1
+            return read
+
+        return await asyncio.to_thread(read_all)
 
     async def rotate(self) -> int:
         """Убрать лишние снимки. Возвращает, сколько удалили."""
@@ -191,20 +226,61 @@ class BackupService:
 
     # ── пора ли ─────────────────────────────────────────────────────────────
     async def due(self) -> bool:
-        """Прошло ли достаточно времени с последнего снимка.
+        """Наступил ли очередной срок и не сделан ли снимок уже после него.
 
         По файлам, а не по отметке в базе: снимок — это файл на диске, и
         именно его наличие отвечает на вопрос «есть ли у нас копия».
         Заодно переживает перезапуск бота и потерю базы.
+
+        Пропущенный срок не теряется: если бот в полночь лежал, снимок
+        сделается при первом же запуске — иначе день остался бы без копии
+        и никто бы об этом не узнал.
         """
-        hours = await self.every_hours()
-        if hours <= 0:
-            return False
         last = await self.last()
         if last is None:
             return True
-        age = time.time() - last.stat().st_mtime
-        return age >= hours * 3600
+        from datetime import datetime
+
+        made = datetime.fromtimestamp(last.stat().st_mtime,
+                                      tz=now().tzinfo)
+        return made < self.scheduled_before(await self.hour())
+
+    # ── дорога в Telegram ───────────────────────────────────────────────────
+    #
+    # Бот не принимает документы больше 50 МБ. База, ради которой всё это
+    # затевалось, однажды станет больше — и «файл слишком большой» означало
+    # бы, что копии в телефоне нет именно тогда, когда сервера уже нет.
+    # Поэтому режем на части; собираются они обратно одной командой cat.
+
+    @staticmethod
+    async def split(path: Path, limit: int) -> list[Path]:
+        """Разрезать файл на куски не больше `limit` байт.
+
+        Куски лежат рядом с исходником и называются <имя>.001, .002 —
+        ровно то, что соберёт `cat файл.* > файл`. Читаем и пишем в потоке:
+        это сотни мегабайт, и бот в это время должен отвечать людям.
+        """
+        def cut() -> list[Path]:
+            parts: list[Path] = []
+            with open(path, 'rb') as source:
+                while True:
+                    chunk = source.read(limit)
+                    if not chunk:
+                        break
+                    part = path.with_name(f'{path.name}.{len(parts) + 1:03d}')
+                    part.write_bytes(chunk)
+                    parts.append(part)
+            return parts
+
+        return await asyncio.to_thread(cut)
+
+    @staticmethod
+    def drop_parts(parts: list[Path]) -> None:
+        for part in parts:
+            try:
+                part.unlink()
+            except OSError:
+                pass
 
     async def age_hours(self) -> float | None:
         last = await self.last()

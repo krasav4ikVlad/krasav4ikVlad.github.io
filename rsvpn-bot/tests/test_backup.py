@@ -102,7 +102,10 @@ async def test_leftovers_from_a_killed_process_are_swept(service, db, folder):
 async def test_a_mismatch_is_a_failure(service, db, folder):
     """Записали одно, прочиталось другое — это не «почти получилось»."""
     await fill(db)
-    service._verify = staticmethod(lambda path: 1)
+    async def wrong(path):
+        return 1
+
+    service._verify = wrong
 
     report = await service.run()
 
@@ -170,10 +173,11 @@ async def test_a_day_later_it_is_time_again(service, db, settings, folder):
     assert (await service.age_hours()) > 24
 
 
-async def test_it_can_be_switched_off_by_the_period(service, db, settings):
-    await settings.set('backup.every_hours', 0)
+async def test_the_hour_is_a_setting(service, db, settings):
+    """Час по времени бота: ночь — когда никто не пользуется."""
+    await settings.set('backup.hour', 3)
 
-    assert await service.due() is False
+    assert await service.hour() == 3
 
 
 # ── обратная дорога ─────────────────────────────────────────────────────────
@@ -268,6 +272,7 @@ class Container:
         self.backup = backup
         self.settings = settings
         self.notifier = notifier
+        self.config = type('C', (), {'admin_ids': (777,)})()
 
         class Health:
             def __init__(self):
@@ -293,9 +298,9 @@ class Told:
         self.failed.append(error)
         return True
 
-    async def backup_file(self, path, limit_mb=45):
-        self.files.append(path)
-        return True
+    async def backup_file(self, path, limit_mb=45, chat_ids=None, backup=None):
+        self.files.append({'path': path, 'to': list(chat_ids or [])})
+        return len(chat_ids or [1])
 
 
 async def test_the_job_makes_a_copy_when_it_is_time(service, db, settings, folder):
@@ -349,30 +354,29 @@ async def test_a_failure_is_shouted_about(service, db, settings):
     assert told.failed and not told.done
 
 
-async def test_the_file_is_not_sent_to_the_chat_by_default(service, db,
-                                                           settings):
-    """В снимке вся база: почты, платежи, переписка. В чат — только если
-    это включили нарочно."""
+async def test_the_file_goes_to_the_admins_personally(service, db, settings):
+    """В снимке вся база: почты, платежи, переписка. Адресаты — только
+    админы из .env, и никогда не «кому-то ещё»."""
     from app.scheduler import jobs
 
     await fill(db)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.files and told.files[0]['to'] == [777]
+
+
+async def test_sending_the_file_can_be_switched_off(service, db, settings):
+    from app.scheduler import jobs
+
+    await fill(db)
+    await settings.set('backup.to_telegram', False)
     told = Told()
 
     await jobs.backup_database(Container(service, settings, told), bot=None)
 
     assert told.done and not told.files
-
-
-async def test_the_file_is_sent_when_asked(service, db, settings):
-    from app.scheduler import jobs
-
-    await fill(db)
-    await settings.set('backup.to_telegram', True)
-    told = Told()
-
-    await jobs.backup_database(Container(service, settings, told), bot=None)
-
-    assert told.files
 
 
 # ── полный круг: снять и залить обратно ─────────────────────────────────────
@@ -478,3 +482,153 @@ async def test_a_changed_document_is_replaced_not_merged(service, db, folder):
 
     doc = next(d for d in db['users'].docs if d['user_data']['user_id'] == 1)
     assert doc['info']['balance'] == 100 and 'мусор' not in doc['info']
+
+
+# ── каждый день в полночь ───────────────────────────────────────────────────
+#
+# Не «раз в 24 часа от прошлого раза»: так расписание уползает. Перезапустили
+# бота днём — и снимок навсегда переехал на середину дня, на самое людное
+# время.
+
+def at(hour: int, minute: int = 0, day_shift: int = 0):
+    return (now() + timedelta(days=day_shift)).replace(
+        hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def test_the_deadline_is_the_last_midnight(service):
+    from app.services.backup import BackupService as B
+
+    assert B.scheduled_before(0, at(10, 30)) == at(0)
+    assert B.scheduled_before(0, at(0, 1)) == at(0)
+    # до полуночи ещё не дожили — считается вчерашняя
+    assert B.scheduled_before(3, at(1, 0)) == at(3, day_shift=-1)
+
+
+async def test_a_copy_made_today_is_enough(service, db, settings):
+    await fill(db)
+    await service.run()
+
+    assert await service.due() is False
+
+
+async def test_after_midnight_a_new_one_is_due(service, db, settings, folder):
+    import os
+
+    await fill(db)
+    await service.run()
+    stale = (await service.files())[0]
+    # снимок вчерашний — полночь с тех пор наступала
+    yesterday = (datetime.now() - timedelta(days=1)).timestamp()
+    os.utime(stale, (yesterday, yesterday))
+
+    assert await service.due() is True
+
+
+async def test_an_evening_copy_does_not_cancel_the_midnight_one(service, db,
+                                                                settings,
+                                                                folder):
+    """Сняли руками вечером — в полночь всё равно нужен снимок за новый
+    день. «Раз в 24 часа» ответил бы «ещё рано» и пропустил бы сутки."""
+    import os
+
+    await fill(db)
+    await service.run()
+    made = (await service.files())[0]
+    # вчера в 23:00 ПО ВРЕМЕНИ БОТА: меньше суток назад, но до полуночи.
+    # Время берём из now(), а не из системного: часовой пояс бота может
+    # не совпадать с часовым поясом машины, и тогда проверка мерила бы
+    # не то, что думает.
+    evening = (now().replace(hour=23, minute=0, second=0, microsecond=0)
+               - timedelta(days=1)).timestamp()
+    os.utime(made, (evening, evening))
+
+    assert await service.due() is True
+
+
+async def test_a_missed_midnight_is_not_lost(service, db, settings, folder):
+    """Бот в полночь лежал — снимок делается при первом же запуске, а не
+    через сутки. Иначе день остался бы без копии, и никто бы не узнал."""
+    import os
+
+    await fill(db)
+    await settings.set('backup.hour', 0)
+    await service.run()
+    stale = (await service.files())[0]
+    long_ago = (datetime.now() - timedelta(days=3)).timestamp()
+    os.utime(stale, (long_ago, long_ago))
+
+    assert await service.due() is True
+
+
+# ── файл, который не влезает в Telegram ─────────────────────────────────────
+#
+# Бот не принимает документы больше 50 МБ. «Файл слишком большой» означало бы,
+# что копии в телефоне нет именно тогда, когда нет и сервера.
+
+async def test_a_big_file_is_cut_into_parts(service, db, folder):
+    await fill(db)
+    report = await service.run()
+    archive = folder / report.path.split('/')[-1]
+
+    parts = await service.split(archive, limit=100)
+
+    assert len(parts) > 1
+    assert all(part.stat().st_size <= 100 for part in parts)
+    assert [part.name for part in parts][:2] == [f'{archive.name}.001',
+                                                 f'{archive.name}.002']
+
+
+async def test_the_parts_glue_back_into_the_same_file(service, db, folder):
+    """Смысл всей нарезки: cat файл.* > файл должен дать ровно исходник."""
+    await fill(db)
+    report = await service.run()
+    archive = folder / report.path.split('/')[-1]
+    original = archive.read_bytes()
+
+    parts = await service.split(archive, limit=100)
+    glued = b''.join(part.read_bytes() for part in parts)
+
+    assert glued == original
+
+
+async def test_the_parts_are_cleaned_up(service, db, folder):
+    await fill(db)
+    report = await service.run()
+    archive = folder / report.path.split('/')[-1]
+    parts = await service.split(archive, limit=100)
+
+    service.drop_parts(parts)
+
+    assert not any(part.exists() for part in parts)
+    assert archive.exists()
+
+
+# ── бот продолжает работать ─────────────────────────────────────────────────
+#
+# Снимок большой базы — это секунды сплошного сжатия. Если делать их в
+# цикле событий, бот на это время перестаёт отвечать кому бы то ни было:
+# человек нажимает кнопку и не получает ничего.
+
+async def test_the_loop_stays_free_while_the_copy_is_made(service, db):
+    import asyncio
+
+    await fill(db, users=200)
+
+    ticks = 0
+    alive = True
+
+    async def heartbeat():
+        nonlocal ticks
+        while alive:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    beat = asyncio.create_task(heartbeat())
+    report = await service.run()
+    alive = False
+    await beat
+
+    assert report.ok
+    # если бы запись и проверка шли в цикле событий, соседняя задача не
+    # получила бы управление ни разу
+    assert ticks > 10, f'цикл событий был занят: тиков {ticks}'

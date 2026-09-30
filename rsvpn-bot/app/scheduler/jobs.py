@@ -79,9 +79,19 @@ async def backup_database(container, bot) -> None:
     await container.notifier.backup_done(
         name=Path(report.path).name, size=report.size,
         docs=report.docs, seconds=report.seconds, removed=report.removed)
-    if await container.settings.flag('backup.to_telegram'):
-        await container.notifier.backup_file(
-            report.path, limit_mb=await container.settings.int('backup.max_mb'))
+
+    if not await container.settings.flag('backup.to_telegram'):
+        return
+    # В личку админам из .env, а не в общий чат: в снимке вся база, и
+    # адресатов у неё должно быть ровно столько, сколько людей имеет право
+    # её видеть. Заодно личку не потерять при смене админ-чата.
+    sent = await container.notifier.backup_file(
+        report.path,
+        limit_mb=await container.settings.int('backup.max_mb'),
+        chat_ids=container.config.admin_ids,
+        backup=guard)
+    if not sent:
+        log.warning('копия базы никому не ушла: %s', report.path)
 
 
 async def watch_broadcasts(container, bot) -> None:
