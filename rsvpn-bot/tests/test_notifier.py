@@ -137,3 +137,76 @@ async def test_server_notifications_go_to_their_own_topic(bot, notifier, contain
     await notifier.send('servers', 'тест')
 
     assert bot.sent[-1]['thread'] == 1561465
+
+
+# ── лично админам ───────────────────────────────────────────────────────────
+#
+# Адреса берутся из .env, а не из настроек: то, что должно дойти лично, не
+# должно зависеть от номера чата в базе — его могут поменять, чат удалить,
+# права на тему потерять.
+
+@pytest.fixture
+def personal(bot, container):
+    return Notifier(bot, container.settings, container.users,
+                    admin_ids=(111, 222))
+
+
+async def test_a_permanent_block_reaches_each_admin(personal, bot, container):
+    await container.settings.set('notify.chat_id', -100500)
+
+    await personal.torrent(5, count=3, node='NL-1', step='block', dm=True)
+
+    personally = [row for row in bot.sent if row['chat_id'] in (111, 222)]
+    assert len(personally) == 2
+    assert 'отключена' in personally[0]['text']
+    # и в общий чат тоже: лента остаётся полной
+    assert [row for row in bot.sent if row['chat_id'] == -100500]
+
+
+async def test_a_warning_does_not_go_personally(personal, bot, container):
+    await container.settings.set('notify.chat_id', -100500)
+
+    await personal.torrent(5, count=1, step='warn', dm=True)
+
+    assert not [row for row in bot.sent if row['chat_id'] in (111, 222)]
+
+
+async def test_the_personal_block_notice_says_how_to_undo_it(personal, bot,
+                                                             container):
+    await personal.torrent(5, count=3, step='block', dm=True)
+
+    assert '/torrentok 5' in bot.sent[0]['text']
+
+
+async def test_an_appeal_comes_personally_with_the_buttons(personal, bot,
+                                                           container):
+    await container.settings.set('notify.chat_id', -100500)
+
+    await personal.torrent_appeal(5, stats={'count': 2, 'reports': 3},
+                                  hint='подсказка', dm=True)
+
+    personally = [row for row in bot.sent if row['chat_id'] in (111, 222)]
+    assert len(personally) == 2
+    # решать удобнее там, где прочитал
+    assert personally[0]['markup'] is not None
+
+
+async def test_one_unreachable_admin_does_not_stop_the_rest(bot, container):
+    """Один заблокировал бота — остальные всё равно должны узнать."""
+    class Picky(RecordingBot):
+        async def send_message(self, chat_id, text, reply_markup=None, **kwargs):
+            if chat_id == 111:
+                raise RuntimeError('bot was blocked')
+            return await RecordingBot.send_message(self, chat_id, text,
+                                                   reply_markup, **kwargs)
+
+    picky = Picky()
+    notifier = Notifier(picky, container.settings, container.users,
+                        admin_ids=(111, 222))
+
+    assert await notifier.dm('важное') == 1
+    assert picky.sent[0]['chat_id'] == 222
+
+
+async def test_without_admin_ids_nothing_is_sent_personally(notifier, bot):
+    assert await notifier.dm('важное') == 0

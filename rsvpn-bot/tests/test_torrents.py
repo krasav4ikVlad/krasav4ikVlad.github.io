@@ -80,15 +80,17 @@ class FakeNotifier:
         self.said: list[dict] = []
         self.appeals: list[dict] = []
 
-    async def torrent(self, user_id, count, node='', ip='', step='warn'):
+    async def torrent(self, user_id, count, node='', ip='', step='warn',
+                      dm=False):
         self.said.append({'user_id': user_id, 'count': count, 'node': node,
-                          'ip': ip, 'step': step})
+                          'ip': ip, 'step': step, 'dm': dm})
         return True
 
     async def torrent_appeal(self, user_id, stats, hint, code='', locked=False,
-                             ladder=0):
+                             ladder=0, dm=False):
         self.appeals.append({'user_id': user_id, 'stats': stats, 'hint': hint,
-                             'code': code, 'locked': locked, 'ladder': ladder})
+                             'code': code, 'locked': locked, 'ladder': ladder,
+                             'dm': dm})
         return True
 
 
@@ -568,9 +570,9 @@ async def test_believing_returns_the_access(guard, users, vpn, sender, db):
     await client(users)
     await guard.handle(report())
     await again(guard, users, times=2)
+    await guard.appeal(USER)
 
-    await guard.decide(USER, trust=True, admin_id=1)
-
+    assert await guard.decide(USER, trust=True, admin_id=1) is True
     assert not ModerationService.vpn_locked(await users.get(USER))
     assert ('uuid-802421217', 'ACTIVE') in vpn.statuses
     assert 'ложное срабатывание' in sender.sent[-1][1]
@@ -582,6 +584,7 @@ async def test_approval_starts_the_ladder_over(guard, users, vpn, sender, db):
     await client(users)
     await guard.handle(report())
     await again(guard, users)          # заморозка
+    await guard.appeal(USER)
     await guard.decide(USER, trust=True, admin_id=1)
     vpn.statuses.clear()
 
@@ -594,6 +597,7 @@ async def test_approval_is_remembered(guard, users, db):
     """Второй заход с той же жалобой выглядит иначе, чем первый."""
     await client(users)
     await guard.handle(report())
+    await guard.appeal(USER)
     await guard.decide(USER, trust=True, admin_id=1)
 
     assert users.pick(await users.get(USER),
@@ -604,6 +608,7 @@ async def test_refusing_keeps_everything_as_it_was(guard, users, sender, db):
     await client(users)
     await guard.handle(report())
     await again(guard, users, times=2)
+    await guard.appeal(USER)
 
     await guard.decide(USER, trust=False, admin_id=1)
 
@@ -791,3 +796,75 @@ def test_a_card_from_an_older_build_is_read_as_empty():
     from app.domain.torrents import recent
 
     assert recent(None, days=7) == 0
+
+
+# ── лично админам ───────────────────────────────────────────────────────────
+#
+# Два события из всей лестницы нельзя оставлять в общей ленте: вечное
+# отключение (человек сам его не переживёт) и жалоба «я не качал». Оба
+# требуют решения, и оба должны дойти лично.
+
+async def test_the_permanent_block_is_reported_personally(guard, users,
+                                                          notifier, db):
+    await client(users)
+    await guard.handle(report())
+
+    await again(guard, users, times=2)
+
+    assert notifier.said[-1]['step'] == 'block'
+    assert notifier.said[-1]['dm'] is True
+
+
+async def test_warnings_do_not_wake_anyone_up(guard, users, notifier, db):
+    """Предупреждений и заморозок бывает десяток в день — им место в ленте."""
+    await client(users)
+
+    await guard.handle(report())
+
+    assert notifier.said[-1]['dm'] is False or notifier.said[-1]['step'] == 'warn'
+
+
+async def test_the_appeal_is_sent_personally(guard, users, notifier, db):
+    await client(users)
+    await guard.handle(report())
+
+    await guard.appeal(USER)
+
+    assert notifier.appeals[-1]['dm'] is True
+
+
+async def test_the_personal_notice_can_be_switched_off(guard, users, settings,
+                                                       notifier, db):
+    await client(users)
+    await settings.set('torrents.dm_admins', False)
+    await guard.handle(report())
+
+    await again(guard, users, times=2)
+    await guard.appeal(USER)
+
+    assert notifier.said[-1]['dm'] is False
+    assert notifier.appeals[-1]['dm'] is False
+
+
+async def test_a_second_button_press_changes_nothing(guard, users, sender, db):
+    """Кнопок теперь четыре: две в чате и две в личке."""
+    await client(users)
+    await guard.handle(report())
+    await guard.appeal(USER)
+
+    first = await guard.decide(USER, trust=True, admin_id=1)
+    sender.sent.clear()
+    second = await guard.decide(USER, trust=False, admin_id=1)
+
+    assert first is True and second is False
+    assert not sender.sent          # человеку не пришло второе решение
+    assert users.pick(await users.get(USER),
+                      'moderation.torrent.forgiven') == 1
+
+
+async def test_a_decision_without_an_appeal_does_nothing(guard, users, db):
+    """Кнопку нажали в старой карточке — жаловаться уже не на что."""
+    await client(users)
+    await guard.handle(report())
+
+    assert await guard.decide(USER, trust=True, admin_id=1) is False

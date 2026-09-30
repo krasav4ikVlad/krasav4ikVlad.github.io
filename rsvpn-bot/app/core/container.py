@@ -417,7 +417,8 @@ class Container:
         # Notifier раздаётся сервисам явно: без него все админ-уведомления
         # (регистрации, пополнения, заявки на вывод) молча никуда не уходят
         self.notifier = Notifier(bot, self.settings, self.users,
-                                 ref_tags=self.ref_tags)
+                                 ref_tags=self.ref_tags,
+                                 admin_ids=self.config.admin_ids)
 
         # Сторож базы. Адресаты — из .env, а не из настроек: номер
         # админ-чата лежит в базе, то есть недоступен ровно тогда, когда

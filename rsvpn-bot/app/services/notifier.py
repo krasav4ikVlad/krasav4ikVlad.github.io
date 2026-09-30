@@ -46,10 +46,13 @@ def partner_topic(partner: dict, paid: bool) -> int:
 
 
 class Notifier:
-    def __init__(self, bot, settings, users=None, ref_tags=None):
+    def __init__(self, bot, settings, users=None, ref_tags=None, admin_ids=()):
         self.bot = bot
         self.settings = settings
         self.users = users
+        # Адреса для личных сообщений — из .env, а не из настроек: то, что
+        # должно дойти лично, не должно зависеть от номера чата в базе.
+        self.admin_ids = tuple(int(one) for one in (admin_ids or ()) if one)
         # Метки партнёров: у каждой может быть свой чат (и тема), куда идёт
         # копия событий по её людям. Партнёров несколько, и смешивать их в
         # одной ленте — значит не видеть ни одного.
@@ -86,6 +89,26 @@ class Notifier:
         except Exception as exc:
             log.warning('уведомление «%s» не отправлено: %s', topic, exc)
             return None
+
+    async def dm(self, text: str, markup=None) -> int:
+        """Лично каждому админу. Возвращает, скольким дошло.
+
+        Отдельно от send(): у общего чата своя судьба — его могут удалить,
+        переименовать, потерять права на тему. Событие, ради которого
+        человека будят ночью, должно приходить туда, откуда оно никуда
+        не денется.
+        """
+        sent = 0
+        for admin_id in self.admin_ids:
+            try:
+                with plain():
+                    await self.bot.send_message(chat_id=admin_id, text=text,
+                                                reply_markup=markup)
+                sent += 1
+            except Exception as exc:      # noqa: BLE001 — один адресат не все
+                log.warning('личное сообщение админу %s не ушло: %s',
+                            admin_id, exc)
+        return sent
 
     # ── события по людям партнёра ───────────────────────────────────────────
     #
@@ -236,20 +259,29 @@ class Notifier:
     }
 
     async def torrent(self, user_id: int, count: int, node: str = '',
-                      ip: str = '', step: str = 'warn') -> bool:
+                      ip: str = '', step: str = 'warn', dm: bool = False) -> bool:
         """Торрент у клиента. В общий чат — потому что из-за этого банят
-        сервер, и знать об этом надо раньше, чем придёт письмо от хостера."""
+        сервер, и знать об этом надо раньше, чем придёт письмо от хостера.
+
+        Вечное отключение вдобавок уходит лично: это единственная ступень,
+        которую человек не переживёт сам, и решение по ней иногда надо
+        принять быстрее, чем дойдут руки до админ-чата.
+        """
         mark = e('ban') if step == 'block' else e('attention')
         head = self.TORRENT_HEADS.get(step, self.TORRENT_HEADS['warn'])
-        return await self.send('torrent',
-                               f'{mark} <b>{head}</b>\n{await self._who(user_id)}\n'
-                               f'<b>Нарушение:</b> <code>{count}</code>\n'
-                               + (f'<b>Нода:</b> <code>{node}</code>\n' if node else '')
-                               + (f'<b>IP:</b> <code>{ip}</code>' if ip else ''))
+        text = (f'{mark} <b>{head}</b>\n{await self._who(user_id)}\n'
+                f'<b>Нарушение:</b> <code>{count}</code>\n'
+                + (f'<b>Нода:</b> <code>{node}</code>\n' if node else '')
+                + (f'<b>IP:</b> <code>{ip}</code>' if ip else ''))
+
+        if dm and step == 'block':
+            await self.dm(text + f'\n\n<i>Вернуть доступ: '
+                                 f'<code>/torrentok {user_id}</code></i>')
+        return await self.send('torrent', text)
 
     async def torrent_appeal(self, user_id: int, stats: dict, hint: str,
                              code: str = '', locked: bool = False,
-                             ladder: int = 0) -> bool:
+                             ladder: int = 0, dm: bool = False) -> bool:
         """«Я не качаю торренты». Проверить это нечем — решает человек.
 
         Поэтому в карточке не вердикт, а то, по чему решают: сколько
@@ -286,9 +318,14 @@ class Notifier:
         kb.row(types.InlineKeyboardButton(
             text=f'{e("cross")} Отказать',
             callback_data=Torrent(action='reject', user_id=user_id).pack()))
-        return await self.send('torrent',
-                               '\n'.join(line for line in lines if line != ''),
-                               markup=kb.as_markup())
+        text = '\n'.join(line for line in lines if line != '')
+        markup = kb.as_markup()
+        # Лично — с теми же кнопками: решать удобнее там, где прочитал.
+        # Нажатие в любой из копий закрывает жалобу целиком, вторая
+        # ответит «уже решено».
+        if dm:
+            await self.dm(text, markup)
+        return await self.send('torrent', text, markup=markup)
 
     # ── копии базы ──────────────────────────────────────────────────────────
     async def backup_done(self, name: str, size: int, docs: int,

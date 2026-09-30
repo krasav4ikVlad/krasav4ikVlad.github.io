@@ -162,6 +162,7 @@ class TorrentGuard:
         code, hint = domain.verdict(stats)
         return await self.notifier.torrent_appeal(
             user_id, stats=stats, hint=hint, code=code,
+            dm=await self.settings.flag('torrents.dm_admins'),
             ladder=domain.recent(stats.get('strikes'), days=await self.window_days()),
             locked=self.moderation.locked_forever(user))
 
@@ -172,19 +173,31 @@ class TorrentGuard:
         и возвращает доступ. Следующее срабатывание у него снова первое,
         с предупреждения. Так ошибка исправляется, а лазейка «пожаловался
         один раз — качай сколько хочешь» не появляется.
+
+        False — жалобу уже закрыли. Карточка приходит и в чат, и в личку,
+        кнопок под ней четыре, и нажать вторую ничего не должно стоить:
+        ни лишнего сообщения человеку, ни второй отметки о прощении.
         """
+        claimed = await self.users.col.update_one(
+            {'user_data.user_id': user_id,
+             'moderation.torrent.appealed_at': {'$exists': True}},
+            {'$unset': {'moderation.torrent.appealed_at': ''}})
+        if getattr(claimed, 'modified_count', 0) != 1:
+            return False
+
         if trust:
             await self.moderation.unlock_vpn(user_id, admin_id=admin_id)
             await self.users.col.update_one(
                 {'user_data.user_id': user_id},
                 {'$set': {'moderation.torrent.forgiven_at': now(),
                           'moderation.torrent.forgiven_by': int(admin_id or 0)},
-                 '$inc': {'moderation.torrent.forgiven': 1},
-                 '$unset': {'moderation.torrent.appealed_at': ''}})
-        return await self.sender.send(
+                 '$inc': {'moderation.torrent.forgiven': 1}})
+
+        await self.sender.send(
             self.bot, user_id,
             texts.render('torrent.appeal_ok' if trust else 'torrent.appeal_no',
                          support_url=await self.settings.get('link.support')))
+        return True
 
     # ── счёт нарушений ──────────────────────────────────────────────────────
     async def _strike(self, user_id: int, action: dict, node: str) -> int | None:
@@ -287,7 +300,9 @@ class TorrentGuard:
         try:
             await self.notifier.torrent(user_id, count=count, node=node,
                                         ip=str(action.get('ip') or ''),
-                                        step=step)
+                                        step=step,
+                                        dm=await self.settings.flag(
+                                            'torrents.dm_admins'))
         except Exception as exc:      # noqa: BLE001 — уведомление не главное
             log.warning('торрент: админ-уведомление не ушло: %s', exc)
 

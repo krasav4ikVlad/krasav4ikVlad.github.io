@@ -27,6 +27,7 @@ async def test_the_admin_decision_reaches_the_person(admin_env):
     await c.users.create({'user_data': {'user_id': 42}, 'info': {'balance': 0},
                           'moderation': {'vpn_locked': True,
                                          'torrent': {'count': 3,
+                                                     'appealed_at': now(),
                                                      'strikes': [now()]}}})
 
     await dp.feed_update(bot, callback(

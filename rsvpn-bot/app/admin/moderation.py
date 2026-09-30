@@ -176,8 +176,13 @@ async def torrent_decision(call: types.CallbackQuery, callback_data: Torrent,
     сколько хочешь». Сколько раз ему уже списывали, видно в карточке.
     """
     trust = callback_data.action == 'trust'
-    await c.torrents.decide(callback_data.user_id, trust=trust,
-                            admin_id=call.from_user.id)
+    done = await c.torrents.decide(callback_data.user_id, trust=trust,
+                                   admin_id=call.from_user.id)
+    if not done:
+        # Карточка приходит и в чат, и в личку: вторая кнопка не должна
+        # стоить человеку второго сообщения, а нам — второй отметки.
+        await call.answer('Эту жалобу уже закрыли', show_alert=True)
+        return
 
     verdict = (f'{e("ok")} Предупреждения списаны, доступ возвращён' if trust
                else f'{e("cross")} Отказано')
