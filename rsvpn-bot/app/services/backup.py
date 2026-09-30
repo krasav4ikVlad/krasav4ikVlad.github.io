@@ -43,6 +43,10 @@ BATCH = 500
 # Куда класть, если не указано иначе. Нарочно вне каталога бота: `git pull`
 # в обновлении не должен даже теоретически соседствовать со снимками.
 DEFAULT_DIR = '~/rsvpn-backups'
+PART = '.part'
+# Недописанный файл старше этого — след убитого процесса, а не работа.
+# Час: снимок в норме идёт минуты, и запас тут дешевле ошибки.
+STALE_MIN = 60
 DEFAULT_KEEP = 14
 DEFAULT_HOUR = 0        # полночь
 
@@ -50,6 +54,8 @@ DEFAULT_HOUR = 0        # полночь
 @dataclass
 class BackupReport:
     ok: bool = False
+    busy: bool = False          # копия уже делается, этот запуск лишний
+    after_break: bool = False   # нашли обрывок от прошлой, оборванной
     path: str = ''
     size: int = 0
     docs: int = 0
@@ -73,6 +79,10 @@ class BackupService:
         self.db = db
         self.settings = settings
         self.name = name or getattr(db, 'name', 'db')
+        # Второй запуск в этом же процессе дальше замка не пройдёт. Замок
+        # в памяти дополняет метку на диске, а не заменяет её: пережить
+        # перезапуск он не может, зато не зависит от файловой системы.
+        self._lock = asyncio.Lock()
 
     # ── куда и сколько хранить ──────────────────────────────────────────────
     async def directory(self) -> Path:
@@ -133,8 +143,49 @@ class BackupService:
                 log.debug('не посчитал %s: %s', name, exc)
         return total, sorted(names)
 
+    # ── идёт ли копия прямо сейчас ──────────────────────────────────────────
+    #
+    # Снимок большой базы идёт минутами, а задача просыпается каждые пять.
+    # Без этой проверки второй запуск начинался поверх первого: два снимка
+    # разом, два сообщения, и первое навсегда застывало на шести процентах.
+
+    def running(self) -> bool:
+        return self._lock.locked()
+
+    async def in_progress(self) -> Path | None:
+        """Свежий недописанный файл — значит копия уже делается.
+
+        По файлу, а не по флагу в памяти: процесс могли перезапустить,
+        и новый о начатой копии ничего не знает.
+        """
+        for item in (await self.directory()).glob(f'*{PART}'):
+            try:
+                if time.time() - item.stat().st_mtime < STALE_MIN * 60:
+                    return item
+            except OSError:
+                continue
+        return None
+
+    async def broken_leftovers(self) -> list[Path]:
+        """Недописанные файлы, которые уже некому дописать."""
+        found = []
+        for item in (await self.directory()).glob(f'*{PART}'):
+            try:
+                if time.time() - item.stat().st_mtime >= STALE_MIN * 60:
+                    found.append(item)
+            except OSError:
+                continue
+        return found
+
     # ── снимок ──────────────────────────────────────────────────────────────
     async def run(self, on_progress=None) -> BackupReport:
+        if self._lock.locked():
+            log.info('копия уже делается — второй запуск пропущен')
+            return BackupReport(busy=True, error='копия уже делается')
+        async with self._lock:
+            return await self._run(on_progress)
+
+    async def _run(self, on_progress=None) -> BackupReport:
         started = time.monotonic()
         report = BackupReport()
         try:
@@ -144,11 +195,27 @@ class BackupService:
             log.error('бекап: %s', report.error)
             return report
 
+        busy = await self.in_progress()
+        if busy is not None:
+            log.info('копия уже делается (%s) — второй запуск пропущен',
+                     busy.name)
+            return BackupReport(busy=True, error='копия уже делается')
+
+        # Обрывки от убитого процесса: их сообщение о ходе дела так и
+        # висит недоделанным, и сказать об этом можно только здесь.
+        stale = await self.broken_leftovers()
+        for junk in stale:
+            junk.unlink(missing_ok=True)
+        report.after_break = bool(stale)
+
         stamp = now().strftime('%Y-%m-%d-%H%M')
         target = folder / f'{self.name}-{stamp}{SUFFIX}'
         # Пишем во временный файл и переименовываем в конце: прерванный на
         # середине снимок не должен выглядеть как готовый.
-        temp = target.with_suffix('.part')
+        temp = target.with_suffix(PART)
+        # Метку ставим сразу, до подсчёта документов: пока её нет, соседний
+        # запуск считает, что копию никто не делает.
+        temp.touch()
 
         async def tell(note: str, done: int = 0, total: int = 0) -> None:
             if on_progress is None:
@@ -249,7 +316,9 @@ class BackupService:
         removed = 0
         # Недописанные куски от убитого процесса: unlink в run() до них не
         # дошёл, а сами они не исчезнут и будут занимать место молча.
-        for junk in (await self.directory()).glob('*.part'):
+        # Только старые: свежий — это копия, которую кто-то делает прямо
+        # сейчас, и удалять её посреди работы нельзя.
+        for junk in await self.broken_leftovers():
             try:
                 junk.unlink()
             except OSError:
@@ -274,6 +343,9 @@ class BackupService:
         сделается при первом же запуске — иначе день остался бы без копии
         и никто бы об этом не узнал.
         """
+        if await self.in_progress() is not None:
+            return False        # копия уже делается — второй незачем
+
         last = await self.last()
         if last is None:
             return True

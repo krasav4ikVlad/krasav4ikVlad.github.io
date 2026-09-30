@@ -77,6 +77,12 @@ async def backup_now(message: types.Message, c, settings) -> None:
 
     report = await c.backup.run(on_progress=show)
 
+    if report.busy:
+        await say(note, message,
+                  f'{e("clock")} Копия уже делается — дождитесь её. '
+                  f'Что есть на сервере, покажет <code>/backups</code>.')
+        return
+
     if not report.ok:
         await say(note, message,
                   f'{e("cross")} <b>Не получилось</b>\n'
@@ -128,6 +134,15 @@ async def backups_list(message: types.Message, c, settings) -> None:
              f'<b>Каталог:</b> <code>{folder}</code>',
              f'<b>Расписание:</b> каждый день в {hour:02d}:00, '
              f'храним {keep} шт.']
+
+    running = await c.backup.in_progress()
+    if running is not None:
+        lines.append(f'{e("refresh")} <b>Копия делается прямо сейчас</b> '
+                     f'(<code>{running.name}</code>)')
+    broken = await c.backup.broken_leftovers()
+    if broken:
+        lines.append(f'{e("warning")} Оборванных попыток: '
+                     f'<b>{len(broken)}</b> — их уберёт следующий снимок')
 
     if age is None:
         lines.append(f'{e("attention")} <b>Копий нет вообще.</b> '

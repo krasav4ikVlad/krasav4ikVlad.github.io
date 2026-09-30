@@ -8,6 +8,7 @@
 
 import gzip
 import json
+import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -87,16 +88,27 @@ async def test_a_half_written_snapshot_does_not_look_ready(service, db, folder):
     assert not list(folder.glob('*.part'))
 
 
+async def stale_part(folder, name='RS_TEST-2020-01-01-0000.jsonl.part'):
+    """Обрывок от убитого процесса: недописанный файл и давняя дата."""
+    import os
+
+    folder.mkdir(parents=True, exist_ok=True)
+    junk = folder / name
+    junk.write_bytes(b'x')
+    long_ago = time.time() - 3 * 3600
+    os.utime(junk, (long_ago, long_ago))
+    return junk
+
+
 async def test_leftovers_from_a_killed_process_are_swept(service, db, folder):
     """Процесс могли убить посреди записи — тогда unlink не отработал."""
     await fill(db)
-    folder.mkdir(parents=True, exist_ok=True)
-    junk = folder / 'RS_TEST-2020-01-01-0000.jsonl.part'
-    junk.write_bytes(b'x')
+    junk = await stale_part(folder)
 
-    await service.run()
+    report = await service.run()
 
     assert not junk.exists()
+    assert report.ok and report.after_break
 
 
 async def test_a_mismatch_is_a_failure(service, db, folder):
@@ -757,3 +769,88 @@ async def test_a_failure_is_written_into_the_same_message(service, db, settings)
 
     assert told.edits and 'Не получилось' in told.edits[-1]
     assert told.failed          # и громко, отдельно
+
+
+# ── две копии разом ─────────────────────────────────────────────────────────
+#
+# Снимок большой базы идёт минутами, а задача просыпается каждые пять. Без
+# защиты второй запуск начинался поверх первого: две копии, два сообщения,
+# и первое навсегда застывало на шести процентах. Так и случилось в бою.
+
+async def test_a_second_run_does_not_start_on_top_of_the_first(service, db):
+    import asyncio
+
+    await fill(db, users=50)
+    original = service._dump
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return await original(*args, **kwargs)
+
+    service._dump = slow
+
+    first, second = await asyncio.gather(service.run(), service.run())
+
+    assert {first.ok, second.ok} == {True, False}
+    assert (first.busy or second.busy) is True
+
+
+async def test_the_schedule_waits_for_the_copy_in_progress(service, db, folder):
+    """Пять минут прошло, а копия ещё идёт — новый запуск не нужен."""
+    await fill(db)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / 'RS_TEST-2026-01-01-0000.jsonl.part').write_bytes(b'x')
+
+    assert await service.due() is False
+
+
+async def test_a_dead_copy_does_not_block_the_next_one(service, db, folder):
+    """Процесс убили — обрывок остался. Через час он уже не «идёт», а мусор,
+    и новый снимок должен состояться."""
+    await fill(db)
+    await stale_part(folder)
+
+    assert await service.due() is True
+
+
+async def test_a_live_copy_is_not_swept_by_rotation(service, db, folder,
+                                                    settings):
+    """Уборка не должна удалять файл, который прямо сейчас пишут."""
+    await fill(db)
+    folder.mkdir(parents=True, exist_ok=True)
+    live = folder / 'RS_TEST-2026-01-01-0000.jsonl.part'
+    live.write_bytes(b'x')
+
+    await service.rotate()
+
+    assert live.exists()
+
+
+async def test_the_job_says_nothing_when_a_copy_is_running(service, db,
+                                                           settings, folder):
+    """Главное: второе «начинаю» не должно прийти вовсе."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / 'RS_TEST-2026-01-01-0000.jsonl.part').write_bytes(b'x')
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert not told.cards and not told.edits
+
+
+async def test_a_broken_previous_copy_is_explained(service, db, settings,
+                                                   folder):
+    """Сообщение, застывшее на шести процентах, должно получить объяснение
+    в следующем — больше его объяснить негде."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    await stale_part(folder)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert 'оборвалась' in told.edits[-1]

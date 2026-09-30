@@ -72,6 +72,11 @@ async def backup_database(container, bot) -> None:
         return
     if not await guard.due():
         return
+    if guard.running():
+        # Ещё одна дверь на тот же замок: due() смотрит на файл, этот —
+        # на сам процесс. Сообщение «начинаю» не должно уйти вообще.
+        log.info('копия уже делается — задача пропущена')
+        return
 
     notifier = container.notifier
     personally = bool(notifier) and await container.settings.flag('backup.to_telegram')
@@ -89,6 +94,13 @@ async def backup_database(container, bot) -> None:
         await notifier.edit_all(cards, progress.screen(title, step, done, total))
 
     report = await guard.run(on_progress=show)
+    if report.busy:
+        # Успели начать вдвоём — убираем своё «начинаю», чтобы не осталось
+        # висеть недоделанной полоски.
+        await notifier.edit_all(cards, progress.screen(
+            title, 'Копия уже делается другим запуском — отменил свой.', 1, 1))
+        return
+
     await container.health.mark(health.BACKUP, ok=report.ok, docs=report.docs,
                                 size=report.size, error=report.error)
 
@@ -104,7 +116,10 @@ async def backup_database(container, bot) -> None:
         return
 
     name = Path(report.path).name
-    done = (f'{e("ok")} <b>Копия базы готова</b>\n'
+    done = ((f'{e("warning")} <i>Прошлая копия оборвалась — нашёл '
+             f'недописанный файл и убрал его.</i>\n\n'
+             if report.after_break else '')
+            + f'{e("ok")} <b>Копия базы готова</b>\n'
             f'<code>{name}</code>\n'
             f'<b>Размер:</b> {human_size(report.size)}\n'
             f'<b>Документов:</b> <code>{report.docs}</code>\n'
