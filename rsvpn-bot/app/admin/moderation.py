@@ -214,6 +214,9 @@ async def torrentban_command(message: types.Message, command: CommandObject,
     lines = [f'{e("ban")} <b>Подписка отключена за торренты</b>',
              _who(target),
              f'Нарушение по счёту: <b>{result["count"]}</b>']
+    if result.get('card'):
+        lines.append('')
+        lines.append(result['card'])
     if reason:
         lines.append(f'Причина: {reason}')
     lines.append('Человеку ' + ('отправлено сообщение с причиной'

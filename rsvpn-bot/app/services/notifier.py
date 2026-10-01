@@ -259,7 +259,8 @@ class Notifier:
     }
 
     async def torrent(self, user_id: int, count: int, node: str = '',
-                      ip: str = '', step: str = 'warn', dm: bool = False) -> bool:
+                      ip: str = '', step: str = 'warn', dm: bool = False,
+                      about: str = '') -> bool:
         """Торрент у клиента. В общий чат — потому что из-за этого банят
         сервер, и знать об этом надо раньше, чем придёт письмо от хостера.
 
@@ -272,7 +273,8 @@ class Notifier:
         text = (f'{mark} <b>{head}</b>\n{await self._who(user_id)}\n'
                 f'<b>Нарушение:</b> <code>{count}</code>\n'
                 + (f'<b>Нода:</b> <code>{node}</code>\n' if node else '')
-                + (f'<b>IP:</b> <code>{ip}</code>' if ip else ''))
+                + (f'<b>IP:</b> <code>{ip}</code>' if ip else '')
+                + (f'\n\n{about}' if about else ''))
 
         if dm and step == 'block':
             await self.dm(text + f'\n\n<i>Вернуть доступ: '
@@ -281,7 +283,8 @@ class Notifier:
 
     async def torrent_appeal(self, user_id: int, stats: dict, hint: str,
                              code: str = '', locked: bool = False,
-                             ladder: int = 0, dm: bool = False) -> bool:
+                             ladder: int = 0, dm: bool = False,
+                             about: str = '') -> bool:
         """«Я не качаю торренты». Проверить это нечем — решает человек.
 
         Поэтому в карточке не вердикт, а то, по чему решают: сколько
@@ -303,7 +306,8 @@ class Notifier:
                  (f'<b>Ноды:</b> {", ".join(nodes[:5])}' if len(nodes) > 1 else ''),
                  f'<b>Статус:</b> ' + ('подписка отключена' if locked
                                        else 'доступ работает'),
-                 '', f'<blockquote>{hint}</blockquote>']
+                 '', about, '',
+                 f'<blockquote>{hint}</blockquote>']
 
         if stats.get('forgiven'):
             # Прощали раньше — это важнее любой подсказки: второй заход

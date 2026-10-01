@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 
@@ -50,6 +51,9 @@ REASON = 'торренты'
 # клиент, и недостаточно, чтобы день был испорчен.
 DEFAULT_FREEZE_MIN = 30
 
+# Панель может отвечать медленно, а бан ждать не должен.
+PANEL_TIMEOUT_SEC = 10
+
 
 # Лестница помнит неделю: три срабатывания за год — это три разных вечера,
 # а не злостный нарушитель.
@@ -63,7 +67,7 @@ DEFAULT_COOLDOWN_MIN = 30
 
 class TorrentGuard:
     def __init__(self, users, settings, sender, bot, moderation, notifier=None,
-                 health=None):
+                 health=None, vpn=None):
         self.users = users
         self.settings = settings
         self.sender = sender
@@ -73,6 +77,9 @@ class TorrentGuard:
         # Счётчик входящих отчётов: без него «панель не присылает» и «бот
         # не разбирает» выглядят одинаково — пустотой.
         self.health = health
+        # Панель — ради расхода трафика: решение «бан или ошибка» принимают
+        # не по числу отчётов, а по тому, что за человек на той стороне.
+        self.vpn = vpn
 
     async def handle(self, data: dict) -> dict:
         # Отметку ставим ДО всех проверок: вопрос «панель присылает отчёты
@@ -119,7 +126,10 @@ class TorrentGuard:
                                            f'{REASON}: нарушение №{count}')
 
         delivered = await self._tell(user, user_id, count, action, step, minutes)
-        await self._tell_admins(user_id, count, action, node, step)
+        # Справку собираем только для отключения: предупреждений бывает
+        # десяток в день, и дёргать ради каждого панель незачем.
+        about = await self.card(user) if step == domain.BLOCK else ''
+        await self._tell_admins(user_id, count, action, node, step, about)
 
         log.warning('торрент у %s: нарушение %s, нода %s, %s',
                     user_id, count, node or '?', step)
@@ -172,6 +182,7 @@ class TorrentGuard:
         code, hint = domain.verdict(stats)
         return await self.notifier.torrent_appeal(
             user_id, stats=stats, hint=hint, code=code,
+            about=await self.card(user),
             dm=await self.settings.flag('torrents.dm_admins'),
             ladder=domain.recent(stats.get('strikes'), days=await self.window_days()),
             locked=self.moderation.locked_forever(user))
@@ -268,7 +279,7 @@ class TorrentGuard:
         log.warning('торрент: %s отключён вручную админом %s (%s)',
                     user_id, admin_id, reason or 'без причины')
         return {'ok': True, 'user_id': user_id, 'count': count,
-                'delivered': delivered}
+                'card': await self.card(user), 'delivered': delivered}
 
     # ── счёт нарушений ──────────────────────────────────────────────────────
     async def _strike(self, user_id: int, action: dict, node: str) -> int | None:
@@ -365,17 +376,76 @@ class TorrentGuard:
         return kb.as_markup()
 
     async def _tell_admins(self, user_id: int, count: int, action: dict,
-                           node: str, step: str) -> None:
+                           node: str, step: str, about: str = '') -> None:
         if self.notifier is None:
             return
         try:
             await self.notifier.torrent(user_id, count=count, node=node,
                                         ip=str(action.get('ip') or ''),
-                                        step=step,
+                                        step=step, about=about,
                                         dm=await self.settings.flag(
                                             'torrents.dm_admins'))
         except Exception as exc:      # noqa: BLE001 — уведомление не главное
             log.warning('торрент: админ-уведомление не ушло: %s', exc)
+
+    # ── справка о человеке ──────────────────────────────────────────────────
+    #
+    # «Отключить навсегда» и «поверить» решают не по числу отчётов, а по
+    # тому, что за человек на той стороне: зарегистрировался вчера и уже
+    # сто гигабайт — одна картина; два года с нами и полтора гигабайта за
+    # месяц — совсем другая. Собрать это руками значит открыть панель,
+    # найти юзера, посчитать дни. В сообщении оно должно быть сразу.
+
+    async def card(self, user: dict) -> str:
+        """Регистрация, подписка и расход трафика — несколькими строками."""
+        from app.domain.private_servers import traffic
+
+        joined = parse_dt(self.users.pick(user, 'user_data.date_joined'))
+        lines = []
+        if joined:
+            lines.append(f'{e("calendar")} <b>Регистрация:</b> '
+                         f'{fmt(joined, "%d.%m.%Y")} '
+                         f'({max(0, (now() - joined).days)} дн. назад)')
+
+        created = parse_dt(self.users.pick(user, 'vpn.createdAt'))
+        expires = parse_dt(self.users.pick(user, 'vpn.expireAt'))
+        if created or expires:
+            lines.append(
+                f'{e("shield")} <b>Подписка:</b> '
+                + (f'с {fmt(created, "%d.%m.%Y")}' if created else 'есть')
+                + (f', до {fmt(expires, "%d.%m.%Y")}' if expires else ''))
+        else:
+            lines.append(f'{e("shield")} <b>Подписки нет</b>')
+
+        used = await self._traffic(user)
+        if used is None:
+            lines.append(f'{e("traffic")} <b>Трафик:</b> панель не ответила')
+        else:
+            total, period = used
+            lines.append(f'{e("traffic")} <b>Скачано:</b> {traffic(total)}'
+                         + (f' (за текущий период {traffic(period)})'
+                            if period and period != total else ''))
+        return '\n'.join(lines)
+
+    async def _traffic(self, user: dict):
+        """(всего, за период) из панели. None — панель не ответила.
+
+        Молчание панели не должно ни ронять бан, ни притворяться нулём:
+        «0 ГБ» в карточке прочитают как «ничего не качал».
+        """
+        uuid = self.users.pick(user, 'vpn.uuid')
+        if not uuid or self.vpn is None:
+            return None
+        try:
+            card = await asyncio.wait_for(self.vpn.get_subscription(uuid),
+                                          timeout=PANEL_TIMEOUT_SEC)
+        except Exception as exc:      # noqa: BLE001 — панель не главная
+            log.warning('трафик %s из панели не получен: %s', uuid, exc)
+            return None
+
+        total = (card.get('lifetimeUsedTrafficBytes')
+                 or card.get('usedTrafficBytes') or 0)
+        return int(total or 0), int(card.get('usedTrafficBytes') or 0)
 
     # ── поиск человека ──────────────────────────────────────────────────────
     async def _find_user(self, panel_user: dict) -> dict | None:

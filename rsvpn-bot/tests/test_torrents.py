@@ -81,16 +81,16 @@ class FakeNotifier:
         self.appeals: list[dict] = []
 
     async def torrent(self, user_id, count, node='', ip='', step='warn',
-                      dm=False):
+                      dm=False, about=''):
         self.said.append({'user_id': user_id, 'count': count, 'node': node,
-                          'ip': ip, 'step': step, 'dm': dm})
+                          'ip': ip, 'step': step, 'dm': dm, 'about': about})
         return True
 
     async def torrent_appeal(self, user_id, stats, hint, code='', locked=False,
-                             ladder=0, dm=False):
+                             ladder=0, dm=False, about=''):
         self.appeals.append({'user_id': user_id, 'stats': stats, 'hint': hint,
                              'code': code, 'locked': locked, 'ladder': ladder,
-                             'dm': dm})
+                             'dm': dm, 'about': about})
         return True
 
 
@@ -983,3 +983,125 @@ async def test_it_is_counted_even_when_the_whole_thing_is_off(guard, users,
     await guard.handle(report())
 
     assert marks.seen
+
+
+# ── справка о человеке ──────────────────────────────────────────────────────
+#
+# «Отключить навсегда» и «поверить» решают не по числу отчётов, а по тому,
+# что за человек на той стороне: зарегистрировался вчера и уже сто
+# гигабайт — одна картина; два года с нами и полтора гигабайта за месяц —
+# совсем другая. Собирать это руками значит открыть панель, найти юзера и
+# посчитать дни.
+
+class FakePanel:
+    def __init__(self, card=None, broken: bool = False):
+        self.card = card or {}
+        self.broken = broken
+        self.asked: list[str] = []
+
+    async def get_subscription(self, ref):
+        self.asked.append(str(ref))
+        if self.broken:
+            raise RuntimeError('панель не отвечает')
+        return self.card
+
+
+async def aged(users, days: int = 15, created: int = 14) -> dict:
+    await users.col.update_one(
+        {'user_data.user_id': USER},
+        {'$set': {'user_data.date_joined': now() - timedelta(days=days),
+                  'vpn.createdAt': now() - timedelta(days=created),
+                  'vpn.expireAt': now() + timedelta(days=16)}})
+    return await users.get(USER)
+
+
+async def test_the_card_tells_when_the_person_came(guard, users, db):
+    await client(users)
+    guard.vpn = FakePanel({'lifetimeUsedTrafficBytes': 129 * 1024 ** 3})
+
+    card = await guard.card(await aged(users, days=15))
+
+    assert 'Регистрация' in card and '15 дн. назад' in card
+
+
+async def test_the_card_tells_about_the_subscription(guard, users, db):
+    await client(users)
+    guard.vpn = FakePanel({})
+
+    card = await guard.card(await aged(users))
+
+    assert 'Подписка' in card and 'до ' in card
+
+
+async def test_the_card_says_when_there_is_no_subscription(guard, users, db):
+    await users.create({'user_data': {'user_id': USER}, 'info': {}})
+    guard.vpn = FakePanel({})
+
+    assert 'Подписки нет' in await guard.card(await users.get(USER))
+
+
+async def test_the_traffic_comes_from_the_panel(guard, users, db):
+    """Главное число: сто двадцать гигабайт за две недели говорят сами за
+    себя, а в базе бота их нет — только в панели."""
+    await client(users)
+    panel = FakePanel({'lifetimeUsedTrafficBytes': 120 * 1024 ** 3,
+                       'usedTrafficBytes': 30 * 1024 ** 3})
+    guard.vpn = panel
+
+    card = await guard.card(await users.get(USER))
+
+    assert '120 ГБ' in card and '30 ГБ' in card
+    assert panel.asked == ['uuid-802421217']
+
+
+async def test_a_silent_panel_is_not_zero_gigabytes(guard, users, db):
+    """«0 ГБ» в карточке прочитают как «ничего не качал» — и поверят зря."""
+    await client(users)
+    guard.vpn = FakePanel(broken=True)
+
+    card = await guard.card(await users.get(USER))
+
+    assert 'панель не ответила' in card and '0' not in card.split('Трафик')[1]
+
+
+async def test_a_silent_panel_does_not_stop_the_ban(guard, users, vpn, db):
+    await client(users)
+    guard.vpn = FakePanel(broken=True)
+    await guard.handle(report())
+
+    result = await again(guard, users, times=2)
+
+    assert result['note'] == 'block_3'
+    assert ModerationService.locked_forever(await users.get(USER))
+
+
+async def test_the_block_notice_carries_the_card(guard, users, notifier, db):
+    await client(users)
+    guard.vpn = FakePanel({'lifetimeUsedTrafficBytes': 120 * 1024 ** 3})
+    await guard.handle(report())
+
+    await again(guard, users, times=2)
+
+    assert '120 ГБ' in notifier.said[-1]['about']
+
+
+async def test_warnings_do_not_bother_the_panel(guard, users, notifier, db):
+    """Предупреждений бывает десяток в день — дёргать панель ради каждого
+    незачем."""
+    await client(users)
+    panel = FakePanel({})
+    guard.vpn = panel
+
+    await guard.handle(report())
+
+    assert not panel.asked and not notifier.said[-1]['about']
+
+
+async def test_the_appeal_carries_the_card_too(guard, users, notifier, db):
+    await client(users)
+    guard.vpn = FakePanel({'lifetimeUsedTrafficBytes': 7 * 1024 ** 3})
+    await guard.handle(report())
+
+    await guard.appeal(USER)
+
+    assert '7 ГБ' in notifier.appeals[-1]['about']
