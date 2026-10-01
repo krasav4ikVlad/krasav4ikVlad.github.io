@@ -129,8 +129,14 @@ async def _backup_once(container) -> None:
     if guard is None or not await container.settings.flag('backup.enabled'):
         return
 
-    # Первым делом дописываем судьбу прошлой полоски. Её оборвали вместе
-    # с процессом, сама она этого сказать не могла — и осталась на экране
+    # Сначала смотрим, не идёт ли снимок прямо сейчас — в своём процессе,
+    # пережившем бота. Если идёт, двигаем полоску дальше и больше ничего
+    # не делаем.
+    if await _follow_running(container):
+        return
+
+    # Иначе дописываем судьбу прошлой полоски. Её оборвали вместе с
+    # процессом, сама она этого сказать не могла — и осталась на экране
     # навсегда, выглядя работой.
     await _finish_frozen(container)
 
@@ -224,6 +230,35 @@ async def _backup_once(container) -> None:
 
 
 @quiet_on_stop
+async def _follow_running(container) -> bool:
+    """Снимок пережил бота — показать, что он идёт, а не хоронить его.
+
+    Снимок делает отдельный процесс, и перезапуск бота ему не помеха. А
+    вот полоска осталась от прошлого бота и замерла. Пока файл снимка
+    растёт, её надо двигать дальше, а не писать «прервана»: копия жива,
+    это бот умирал.
+    """
+    from app.content import progress
+    from app.content.emoji import e
+
+    guard = container.backup
+    if await guard.in_progress() is None or not container.notifier:
+        return False
+
+    state = await guard.state()
+    cards = list(state.get('cards') or [])
+    if not cards:
+        return True
+
+    await container.notifier.edit_all(cards, progress.screen(
+        f'{e("document")} Копия базы',
+        f'{state.get("note") or "Идёт"}\n'
+        f'<i>её делает отдельный процесс — перезапуск бота ей не мешает</i>',
+        int(state.get('done') or 0), int(state.get('total') or 0),
+        at=parse_dt(state.get('at'))))
+    return True
+
+
 async def _finish_frozen(container) -> None:
     """Дописать в застывшую полоску, чем всё кончилось."""
     from app.content import progress
@@ -304,11 +339,9 @@ async def watch_memory(container, bot) -> None:
     if memory < pulse.WARN_MB or not container.notifier:
         return
 
-    told = getattr(container, '_memory_told', None)
-    from app.core.time import now
-    if told and (now() - told).total_seconds() < pulse.REMIND_MIN * 60:
+    if pulse.told_recently():
         return
-    container._memory_told = now()
+    pulse.told_now()
 
     from app.content.emoji import e
 

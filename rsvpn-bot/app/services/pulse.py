@@ -59,10 +59,10 @@ def write(**fields) -> None:
 
     try:
         FILE.parent.mkdir(parents=True, exist_ok=True)
-        FILE.write_text(json.dumps({
-            'at': now().isoformat(), 'rss': rss_mb(), 'pid': os.getpid(),
-            'build': VERSION, **fields}, ensure_ascii=False),
-            encoding='utf-8')
+        mark = read()
+        mark.update({'at': now().isoformat(), 'rss': rss_mb(),
+                     'pid': os.getpid(), 'build': VERSION, **fields})
+        FILE.write_text(json.dumps(mark, ensure_ascii=False), encoding='utf-8')
     except OSError as exc:
         log.debug('пульс не записан: %s', exc)
 
@@ -77,6 +77,30 @@ def beat() -> float:
 def stopped() -> None:
     """Отметка «меня остановили по-человечески»."""
     write(stopped=True)
+
+
+def told_recently(minutes: int = REMIND_MIN) -> bool:
+    """Говорили ли про память недавно.
+
+    Память запоминаем в файле, а не в процессе: когда бота убивают каждые
+    четверть часа, отметка в памяти процесса не живёт — и человек получает
+    одно и то же сообщение снова и снова, по разу на перезапуск.
+    """
+    from datetime import timedelta
+
+    from app.core.time import parse_dt
+
+    at = parse_dt(read().get('memory_told_at'))
+    return bool(at and now() - at < timedelta(minutes=minutes))
+
+
+def told_now() -> None:
+    mark = read()
+    mark['memory_told_at'] = now().isoformat()
+    try:
+        FILE.write_text(json.dumps(mark, ensure_ascii=False), encoding='utf-8')
+    except OSError as exc:
+        log.debug('отметка о памяти не записана: %s', exc)
 
 
 def last_death() -> dict:

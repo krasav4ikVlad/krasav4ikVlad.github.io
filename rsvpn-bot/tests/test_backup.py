@@ -1314,3 +1314,56 @@ async def test_when_the_process_cannot_start_we_do_it_ourselves(service, db,
     monkeypatch.setattr(aio, 'create_subprocess_exec', broken)
 
     assert (await service.make()).ok
+
+
+# ── снимок пережил бота ─────────────────────────────────────────────────────
+#
+# Из жизни: снимок шёл час с лишним в своём процессе, а бота за это время
+# убивали каждые четверть часа. Полоска замирала, и бот объявлял копию
+# прерванной — хотя она спокойно продолжалась.
+
+async def test_a_running_copy_is_followed_not_buried(service, db, settings,
+                                                     folder):
+    from app.scheduler import jobs
+
+    await fill(db)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / 'RS_TEST-2026-01-01-0000.jsonl.part').write_bytes(b'x')
+    await service.note_progress(87, 100, 'Выгружаю users: 30500',
+                                cards=[{'chat_id': 1, 'message_id': 2}])
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.edits and 'прервана' not in told.edits[-1]
+    assert '87%' in told.edits[-1] and 'отдельный процесс' in told.edits[-1]
+
+
+async def test_a_running_copy_blocks_a_second_one(service, db, settings,
+                                                  folder):
+    from app.scheduler import jobs
+
+    await fill(db)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / 'RS_TEST-2026-01-01-0000.jsonl.part').write_bytes(b'x')
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert not told.cards          # никакого второго «начинаю»
+
+
+async def test_a_stale_copy_is_still_buried(service, db, settings, folder):
+    """Обратная сторона: если в файл давно не писали, это всё-таки обрыв."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    await stale_part(folder)
+    await service.note_progress(87, 100, 'Выгружаю users',
+                                cards=[{'chat_id': 1, 'message_id': 2}])
+    await service.remember_break()
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.edits and 'прервана' in told.edits[0]
