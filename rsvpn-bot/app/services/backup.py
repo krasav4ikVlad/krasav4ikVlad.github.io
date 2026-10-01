@@ -312,7 +312,11 @@ class BackupService:
             child = await asyncio.create_subprocess_exec(
                 *command, cwd=str(ROOT),
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE)
+                stderr=asyncio.subprocess.PIPE,
+                # Своя сессия: когда pm2 прибивает бота, он бьёт по всей
+                # группе процессов — и снимок умирал вместе с ним, хотя
+                # ради того и выносился, чтобы выживать.
+                start_new_session=True)
         except Exception as exc:      # noqa: BLE001 — не вышло, делаем сами
             log.warning('отдельный процесс не запустился (%s) — '
                         'делаю снимок в себе', exc)

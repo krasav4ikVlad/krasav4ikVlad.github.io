@@ -86,6 +86,27 @@ async def main() -> None:
                if config.scheduler_enabled else
                'Планировщик выключен — продолжить можно кнопкой под её сообщением.'))
 
+    # Прошлый процесс не попрощался — значит его убили. Единственное
+    # место, где это можно заметить и сказать вслух.
+    from app.services import pulse
+
+    death = pulse.last_death()
+    if death:
+        log.warning('прошлый запуск оборвался: отметка %s, память %s МБ, '
+                    'сборка %s', death.get('at'), death.get('rss'),
+                    death.get('build'))
+        if container.notifier:
+            from app.content.emoji import e
+
+            await container.notifier.dm(
+                f'{e("attention")} <b>Бот был перезапущен не по-людски</b>\n'
+                f'Последняя отметка: {death.get("at", "?")[11:19]}\n'
+                f'Память на тот момент: <b>{death.get("rss", "?")} МБ</b>\n'
+                f'Сборка: <code>{death.get("build", "?")}</code>\n\n'
+                f'Если память близка к <code>max_memory_restart</code> из '
+                f'ecosystem.config.js — это pm2, а не падение кода.')
+    pulse.beat()
+
     await bot.set_my_commands(COMMANDS)
     await bot.delete_webhook(drop_pending_updates=False)
     log.info('бот запущен')
@@ -94,6 +115,11 @@ async def main() -> None:
     finally:
         if scheduler:
             scheduler.shutdown(wait=False)
+        # Попрощались по-человечески — чтобы следующий запуск не считал
+        # эту остановку смертью.
+        from app.services import pulse
+
+        pulse.stopped()
         await bot.session.close()
 
 

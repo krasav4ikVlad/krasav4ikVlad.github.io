@@ -289,6 +289,38 @@ async def _warn_about_breaks(container) -> None:
 
 
 @quiet_on_stop
+async def watch_memory(container, bot) -> None:
+    """Отметка «жив» и предупреждение, если память подходит к лимиту.
+
+    pm2 убивает процесс по max_memory_restart молча: в логе остаётся
+    только новый старт. Эта отметка — единственный способ потом узнать, на
+    какой памяти это случилось.
+    """
+    from app.services import pulse
+
+    memory = pulse.beat()
+    if memory:
+        log.info('память бота: %s МБ', memory)
+    if memory < pulse.WARN_MB or not container.notifier:
+        return
+
+    told = getattr(container, '_memory_told', None)
+    from app.core.time import now
+    if told and (now() - told).total_seconds() < pulse.REMIND_MIN * 60:
+        return
+    container._memory_told = now()
+
+    from app.content.emoji import e
+
+    await container.notifier.dm(
+        f'{e("attention")} <b>Память бота: {memory} МБ</b>\n\n'
+        f'В ecosystem.config.js стоит <code>max_memory_restart</code> — '
+        f'при его достижении pm2 перезапустит бота посреди любой работы, '
+        f'в том числе посреди копии базы.\n\n'
+        f'Посмотреть лимит: <code>pm2 describe rsvpn-bot</code>')
+
+
+@quiet_on_stop
 async def watch_broadcasts(container, bot) -> None:
     """Поднять рассылки, которые оборвались и сами не продолжатся."""
     from app.admin.broadcast import resume_stalled

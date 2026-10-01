@@ -66,6 +66,11 @@ def create_scheduler(container, bot) -> AsyncIOScheduler:
     scheduler.add_job(jobs.migrate_panel_ids, 'interval', minutes=60,
                       args=[container], id='migrate_panel_ids',
                       next_run_time=now() + timedelta(minutes=7))
+    # Раз в минуту: отметка «жив» и память. По ней потом видно, на чём
+    # процесс умер, — pm2 этого не говорит.
+    scheduler.add_job(jobs.watch_memory, 'interval', minutes=1,
+                      args=[container, bot], id='watch_memory',
+                      next_run_time=now() + timedelta(seconds=20))
     # Сторож базы — чаще всех и первым: пока он молчит, про аварию не
     # узнает никто, кроме людей, которые упрутся в неё сами.
     scheduler.add_job(jobs.watch_database, 'interval', minutes=1,
