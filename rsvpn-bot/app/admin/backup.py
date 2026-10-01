@@ -128,6 +128,14 @@ async def backup_now(message: types.Message, command: CommandObject, c,
     # уходит частями тем же путём, что и ночная копия: «слишком большой»
     # означало бы, что копии в телефоне нет именно тогда, когда она нужна.
     limit = int(await settings.int('backup.max_mb') or 45)
+    if report.stored:
+        await message.answer(
+            f'{e("ok")} Копия уехала в хранилище: '
+            f'<code>{report.stored}</code>\n\n'
+            f'<i>Файл сюда не присылаю — он уже снаружи. Нужен в руки: '
+            f'<code>scp root@сервер:{report.path} .</code></i>')
+        return
+
     sent = 0
     if c.notifier is not None:
         sent = await c.notifier.backup_file(
@@ -200,6 +208,47 @@ async def backups_list(message: types.Message, c, settings) -> None:
     await message.answer('\n'.join(lines))
 
 
+async def storage_check(message: types.Message, c, settings) -> None:
+    """Проверить хранилище прямо сейчас, а не через сутки на ночном снимке."""
+    storage = getattr(c.backup, 'storage', None)
+    if storage is None or not storage.ready:
+        await message.answer(
+            f'{e("cross")} <b>Хранилище не настроено</b>\n\n'
+            f'В <code>.env</code> бота нужны четыре строки:\n'
+            f'<code>BACKUP_S3_ENDPOINT=…</code>\n'
+            f'<code>BACKUP_S3_BUCKET=…</code>\n'
+            f'<code>BACKUP_S3_KEY=…</code>\n'
+            f'<code>BACKUP_S3_SECRET=…</code>\n\n'
+            f'<blockquote>Для Cloudflare R2 адрес — '
+            f'<code>https://&lt;account_id&gt;.r2.cloudflarestorage.com</code>, '
+            f'ключи берутся в R2 → Manage API tokens.</blockquote>')
+        return
+
+    note = await message.answer(f'{e("refresh")} Проверяю хранилище…')
+    import asyncio
+
+    try:
+        key = await asyncio.to_thread(storage.check)
+    except Exception as exc:      # noqa: BLE001 — показываем причину как есть
+        await say(note, message,
+                  f'{e("cross")} <b>Хранилище не отвечает</b>\n'
+                  f'<code>{str(exc)[:500]}</code>\n\n'
+                  f'<blockquote>Частые причины: ключ без права записи '
+                  f'(нужен Object Read &amp; Write), опечатка в имени '
+                  f'бакета, адрес не того аккаунта.</blockquote>')
+        return
+
+    on = await settings.flag('backup.to_storage')
+    await say(note, message,
+              f'{e("ok")} <b>Хранилище работает</b>\n'
+              f'Записал и удалил пробный файл: <code>{key}</code>\n\n'
+              + (f'Копии будут уезжать туда автоматически.'
+                 if on else
+                 f'{e("warning")} Но в настройках выключено «Увозить копию '
+                 f'в хранилище» — включите.'))
+
+
 def register(router: Router) -> None:
     router.message.register(backup_now, Command('backup'))
     router.message.register(backups_list, Command('backups'))
+    router.message.register(storage_check, Command('backupcheck'))

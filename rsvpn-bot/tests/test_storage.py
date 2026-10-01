@@ -31,6 +31,26 @@ class FakeS3:
 
 
 @pytest.fixture
+def settings_for(db, tmp_path):
+    """Готовый сервис копий с подставным хранилищем."""
+    from app.services.backup import BackupService
+    from app.settings.service import SettingsService
+
+    async def make(fake):
+        settings = SettingsService(db['bot_settings'])
+        await settings.set('backup.dir', str(tmp_path))
+        await settings.set('backup.separate_process', False)
+        service = BackupService(
+            db, settings, 'RS_TEST',
+            storage=S3Storage(StorageConfig(endpoint='https://s3.example',
+                                            bucket='rs', key='k', secret='s'),
+                              fake))
+        return settings, service
+
+    return make
+
+
+@pytest.fixture
 def config():
     return StorageConfig(endpoint='https://s3.example', bucket='rs',
                          key='k', secret='s', prefix='rsvpn')
@@ -135,3 +155,70 @@ async def test_it_can_be_switched_off(db, tmp_path):
 
     assert (await service.run()).ok
     assert not fake.uploaded
+
+
+# ── вместо телеграма ────────────────────────────────────────────────────────
+#
+# Четыреста мегабайт в Telegram — это девять кусков по сорок пять, каждую
+# ночь. Если копия уже уехала в хранилище целиком, слать их незачем.
+
+async def test_the_file_is_not_sent_when_it_went_to_the_storage(db, tmp_path,
+                                                                settings_for):
+    from app.scheduler import jobs
+    from tests.test_backup import Container, Told, fill
+
+    settings, service = await settings_for(FakeS3())
+    await fill(db)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.edits and 'готова' in told.edits[-1]
+    assert not told.files          # в Telegram ничего не поехало
+
+
+async def test_the_file_is_still_sent_when_the_storage_failed(db, tmp_path,
+                                                              settings_for):
+    """Хранилище отказало — Telegram остаётся последней дорогой наружу."""
+    from app.scheduler import jobs
+    from tests.test_backup import Container, Told, fill
+
+    settings, service = await settings_for(FakeS3(broken=True))
+    await fill(db)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.files
+
+
+def test_the_check_writes_reads_and_cleans_up(config):
+    """Проверка должна проверять всё, что нужно снимку: и запись, и чтение,
+    и удаление — иначе ключ «только на запись» выглядел бы рабочим."""
+    import io
+
+    class Probe(FakeS3):
+        def __init__(self):
+            super().__init__()
+            self.stored = {}
+
+        def put_object(self, Bucket, Key, Body):   # noqa: N803
+            self.stored[Key] = Body
+
+        def get_object(self, Bucket, Key):          # noqa: N803
+            return {'Body': io.BytesIO(self.stored[Key])}
+
+    probe = Probe()
+    key = S3Storage(config, probe).check()
+
+    assert key == 'rsvpn/.probe'
+    assert probe.deleted == [key]
+
+
+def test_a_broken_check_is_not_hidden(config):
+    class Deaf(FakeS3):
+        def put_object(self, Bucket, Key, Body):   # noqa: N803
+            raise RuntimeError('Access Denied')
+
+    with pytest.raises(RuntimeError, match='Access Denied'):
+        S3Storage(config, Deaf()).check()

@@ -34,6 +34,28 @@ class S3Storage:
     def ready(self) -> bool:
         return bool(self.config and self.config.ready)
 
+    @staticmethod
+    def _options():
+        """Настройки клиента, с которыми работают не только Amazon.
+
+        Контрольные суммы: boto3 с версии 1.36 по умолчанию добавляет к
+        каждому запросу заголовок с CRC32, и часть S3-совместимых хранилищ
+        отвечает на него «Not Implemented». Просим считать их только там,
+        где они обязательны. На старых botocore такого параметра нет —
+        тогда обходимся без него.
+        """
+        from botocore.config import Config as BotoConfig
+
+        common = {'signature_version': 's3v4',
+                  's3': {'addressing_style': 'path'},
+                  'retries': {'max_attempts': 3, 'mode': 'standard'}}
+        try:
+            return BotoConfig(request_checksum_calculation='when_required',
+                              response_checksum_validation='when_required',
+                              **common)
+        except TypeError:
+            return BotoConfig(**common)
+
     def client(self):
         if self._client is not None:
             return self._client
@@ -44,8 +66,26 @@ class S3Storage:
             endpoint_url=self.config.endpoint,
             aws_access_key_id=self.config.key,
             aws_secret_access_key=self.config.secret,
-            region_name=self.config.region or 'auto')
+            # R2 и большинство совместимых хранилищ требуют именно 'auto'
+            region_name=self.config.region or 'auto',
+            config=self._options())
         return self._client
+
+    def check(self) -> str:
+        """Проверка на месте: положить крошечный файл, прочитать, убрать.
+
+        Нужна при настройке. Иначе первое, что скажет про неверные ключи,
+        будет ночной снимок — через сутки и после получаса работы.
+        """
+        key = self.key_for('.probe')
+        body = b'rsvpn'
+        self.client().put_object(Bucket=self.config.bucket, Key=key, Body=body)
+        answer = self.client().get_object(Bucket=self.config.bucket, Key=key)
+        read = answer['Body'].read()
+        self.client().delete_object(Bucket=self.config.bucket, Key=key)
+        if read != body:
+            raise RuntimeError('файл записался, но прочитался другим')
+        return key
 
     def key_for(self, name: str) -> str:
         prefix = (self.config.prefix or '').strip('/')

@@ -220,6 +220,11 @@ async def _backup_once(container) -> None:
                                    docs=report.docs, seconds=report.seconds,
                                    removed=report.removed)
 
+    if report.stored:
+        # Копия уже снаружи — слать те же четыреста мегабайт ещё и в
+        # Telegram незачем: хранилище надёжнее и не делится на части.
+        log.info('файл не отправляю: копия уехала в хранилище')
+        return
     if not personally:
         return
     # В личку админам из .env, а не в общий чат: в снимке вся база, и
