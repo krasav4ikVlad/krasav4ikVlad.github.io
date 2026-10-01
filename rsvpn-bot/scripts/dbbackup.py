@@ -32,6 +32,7 @@ async def make() -> int:
     from app.core import db as names
     from app.core.config import Config
     from app.core.db import client_options
+    from app.integrations.storage import S3Storage
     from app.services.backup import BackupService
     from app.settings.service import SettingsService
 
@@ -44,7 +45,8 @@ async def make() -> int:
     client = AsyncIOMotorClient(config.mongo_uri, **client_options())
     database = client[config.mongo_db]
     settings = SettingsService(database[names.BOT_SETTINGS])
-    service = BackupService(database, settings, config.mongo_db)
+    service = BackupService(database, settings, config.mongo_db,
+                            storage=S3Storage(config.storage))
 
     report = await service.run(force=args.force)
     if report.busy:

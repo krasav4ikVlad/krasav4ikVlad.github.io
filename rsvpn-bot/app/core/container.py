@@ -104,8 +104,11 @@ class Container:
         # Снимки базы: сервису нужен только доступ к базе, поэтому собирается
         # здесь, а не в attach_bot — команда /backup работает и в процессе
         # API, и в планировщике.
+        from app.integrations.storage import S3Storage
         from app.services.backup import BackupService
-        self.backup = BackupService(self.db, self.settings, self.config.mongo_db)
+
+        self.backup = BackupService(self.db, self.settings, self.config.mongo_db,
+                                    storage=S3Storage(self.config.storage))
 
         from app.services.discounts import DiscountService
         self.discounts = DiscountService(self.settings)

@@ -28,11 +28,16 @@ log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[2]
 FILE = ROOT / 'logs' / 'heartbeat.json'
 
-# Выше этого — предупреждаем: у pm2 в ecosystem.config.js стоит
-# max_memory_restart, и подходить к нему вплотную значит однажды умереть
-# посреди работы.
-WARN_MB = 400
+# Предупреждаем не от фонаря, а на подходе к настоящему лимиту pm2:
+# четыре пятых от него. Жёсткое число здесь однажды уже подвело — лимит
+# подняли до полутора гигабайт, а бот продолжал пугать на четырёхстах
+# мегабайтах, то есть сообщал о беде, которой больше нет.
+WARN_SHARE = 0.8
 REMIND_MIN = 60
+
+
+def warn_mb(limit_mb: int) -> float:
+    return max(1.0, round(int(limit_mb or 0) * WARN_SHARE, 1))
 
 
 def rss_mb() -> float:

@@ -80,6 +80,9 @@ class BackupReport:
     ok: bool = False
     busy: bool = False          # копия уже делается, этот запуск лишний
     after_break: bool = False   # нашли обрывок от прошлой, оборванной
+    stored: str = ''            # ключ в хранилище, если копия уехала наружу
+    stored_removed: int = 0     # сколько старых копий там убрали
+    store_error: str = ''       # почему не уехала
     path: str = ''
     size: int = 0
     docs: int = 0
@@ -99,10 +102,13 @@ def human_size(size: int) -> str:
 
 
 class BackupService:
-    def __init__(self, db, settings, name: str = ''):
+    def __init__(self, db, settings, name: str = '', storage=None):
         self.db = db
         self.settings = settings
         self.name = name or getattr(db, 'name', 'db')
+        # Куда везти копию наружу. Без него снимок остаётся только на том
+        # сервере, вместе с которым может исчезнуть.
+        self.storage = storage
         # Второй запуск в этом же процессе дальше замка не пройдёт. Замок
         # в памяти дополняет метку на диске, а не заменяет её: пережить
         # перезапуск он не может, зато не зависит от файловой системы.
@@ -266,6 +272,8 @@ class BackupService:
         процесс, и это единственный способ узнать его судьбу."""
         data = await self.state()
         data['result'] = {'ok': report.ok, 'path': report.path,
+                          'stored': report.stored,
+                          'store_error': report.store_error,
                           'size': report.size, 'docs': report.docs,
                           'checked': report.checked, 'removed': report.removed,
                           'seconds': round(report.seconds, 1),
@@ -287,6 +295,8 @@ class BackupService:
             removed=int(raw.get('removed') or 0),
             seconds=float(raw.get('seconds') or 0),
             after_break=bool(raw.get('after_break')),
+            stored=str(raw.get('stored') or ''),
+            store_error=str(raw.get('store_error') or ''),
             error=str(raw.get('error') or ''))
 
     # ── снимок отдельным процессом ──────────────────────────────────────────
@@ -486,11 +496,33 @@ class BackupService:
         report.size = target.stat().st_size
         report.seconds = time.monotonic() - started
         report.removed = await self.rotate()
+        await self._send_away(target, tell, report)
         log.warning('бекап готов: %s, %s, документов %s, за %.1f с',
                     target.name, human_size(report.size), report.docs,
                     report.seconds)
         await self.save_result(report)
         return report
+
+    async def _send_away(self, target: Path, tell, report) -> None:
+        """Отправить копию в хранилище. Неудача не отменяет снимок.
+
+        Файл уже лежит на диске и уже проверен — это копия. Не уехала
+        наружу — скажем об этом словами, но называть снимок несделанным
+        нельзя: он сделан.
+        """
+        if self.storage is None or not self.storage.ready:
+            return
+        if not await self.settings.flag('backup.to_storage'):
+            return
+
+        await tell('Отправляю копию в хранилище', 1, 1)
+        try:
+            report.stored = await asyncio.to_thread(self.storage.upload, target)
+            report.stored_removed = await asyncio.to_thread(
+                self.storage.rotate, await self.keep())
+        except Exception as exc:      # noqa: BLE001 — снимок уже готов
+            report.store_error = str(exc)[:300]
+            log.error('копия не уехала наружу: %s', report.store_error)
 
     async def _dump(self, target: Path, tell=None,
                     expected: int = 0) -> tuple[int, dict]:

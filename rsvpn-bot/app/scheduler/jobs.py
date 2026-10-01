@@ -205,7 +205,12 @@ async def _backup_once(container) -> None:
             f'<b>Документов:</b> <code>{report.docs}</code>\n'
             f'<b>Заняло:</b> {report.seconds:.0f} с'
             + (f'\n<i>Старых удалено: {report.removed}</i>'
-               if report.removed else ''))
+               if report.removed else '')
+            + (f'\n{e("ok")} В хранилище: <code>{report.stored}</code>'
+               if report.stored else '')
+            + (f'\n{e("warning")} В хранилище не уехала: '
+               f'<code>{report.store_error}</code>'
+               if report.store_error else ''))
 
     if cards:
         await notifier.edit_all(cards, done)
@@ -334,9 +339,10 @@ async def watch_memory(container, bot) -> None:
     from app.services import pulse
 
     memory = pulse.beat()
+    limit = int(getattr(container.config, 'memory_limit_mb', 0) or 0)
     if memory:
-        log.info('память бота: %s МБ', memory)
-    if memory < pulse.WARN_MB or not container.notifier:
+        log.info('память бота: %s МБ из %s МБ', memory, limit or '?')
+    if not limit or memory < pulse.warn_mb(limit) or not container.notifier:
         return
 
     if pulse.told_recently():
@@ -346,11 +352,14 @@ async def watch_memory(container, bot) -> None:
     from app.content.emoji import e
 
     await container.notifier.dm(
-        f'{e("attention")} <b>Память бота: {memory} МБ</b>\n\n'
-        f'В ecosystem.config.js стоит <code>max_memory_restart</code> — '
-        f'при его достижении pm2 перезапустит бота посреди любой работы, '
-        f'в том числе посреди копии базы.\n\n'
-        f'Посмотреть лимит: <code>pm2 describe rsvpn-bot</code>')
+        f'{e("attention")} <b>Память бота: {memory} МБ из {limit} МБ</b>\n\n'
+        f'Это подход к <code>max_memory_restart</code> из '
+        f'ecosystem.config.js: на лимите pm2 перезапустит бота посреди '
+        f'любой работы.\n\n'
+        f'Если число растёт день ото дня — это утечка. Если держится '
+        f'ровно — лимит просто тесноват, поднимите его в '
+        f'ecosystem.config.js и там же в <code>MEMORY_LIMIT_MB</code>, '
+        f'чтобы бот знал новый порог.')
 
 
 @quiet_on_stop

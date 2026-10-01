@@ -58,6 +58,13 @@ def test_a_broken_file_is_not_a_death_either(here):
     assert pulse.last_death() == {}
 
 
+def test_the_warning_line_moves_with_the_limit():
+    """Жёсткое число однажды уже подвело: лимит подняли до полутора
+    гигабайт, а бот продолжал пугать на четырёхстах мегабайтах."""
+    assert pulse.warn_mb(500) == 400
+    assert pulse.warn_mb(1500) == 1200
+
+
 async def test_the_job_warns_when_the_memory_is_high(here, monkeypatch):
     from app.scheduler import jobs
 
@@ -70,12 +77,13 @@ async def test_the_job_warns_when_the_memory_is_high(here, monkeypatch):
 
     class Container:
         notifier = Notifier()
+        config = type('C', (), {'memory_limit_mb': 1500})()
 
-    monkeypatch.setattr(pulse, 'rss_mb', lambda: pulse.WARN_MB + 50)
+    monkeypatch.setattr(pulse, 'rss_mb', lambda: 1300.0)
 
     await jobs.watch_memory(Container(), bot=None)
 
-    assert told and 'max_memory_restart' in told[0]
+    assert told and '1300' in told[0] and '1500' in told[0]
 
 
 async def test_a_calm_bot_is_not_bothered(here, monkeypatch):
@@ -90,6 +98,7 @@ async def test_a_calm_bot_is_not_bothered(here, monkeypatch):
 
     class Container:
         notifier = Notifier()
+        config = type('C', (), {'memory_limit_mb': 1500})()
 
     monkeypatch.setattr(pulse, 'rss_mb', lambda: 50.0)
 
@@ -110,8 +119,9 @@ async def test_the_warning_is_not_repeated_every_minute(here, monkeypatch):
 
     class Container:
         notifier = Notifier()
+        config = type('C', (), {'memory_limit_mb': 1500})()
 
-    monkeypatch.setattr(pulse, 'rss_mb', lambda: pulse.WARN_MB + 50)
+    monkeypatch.setattr(pulse, 'rss_mb', lambda: 1300.0)
     container = Container()
 
     for _ in range(5):

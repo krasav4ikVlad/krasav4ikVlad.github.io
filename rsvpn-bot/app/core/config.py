@@ -111,6 +111,26 @@ class PaymentsConfig:
 
 
 @dataclass(frozen=True)
+class StorageConfig:
+    """Хранилище для копий базы — S3-совместимое (R2, B2, Selectel, любое).
+
+    Ключи живут в .env рядом с платёжными, а не в настройках: настройки
+    видны на экране админки и лежат в той самой базе, копию которой мы
+    и делаем.
+    """
+    endpoint: str = ''
+    bucket: str = ''
+    key: str = ''
+    secret: str = ''
+    region: str = 'auto'
+    prefix: str = 'rsvpn'
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.endpoint and self.bucket and self.key and self.secret)
+
+
+@dataclass(frozen=True)
 class Config:
     bot_token: str
     mongo_uri: str
@@ -119,12 +139,17 @@ class Config:
     vpn: VpnPanelConfig = field(default_factory=VpnPanelConfig)
     payments: PaymentsConfig = field(default_factory=PaymentsConfig)
     stats: StatsConfig = field(default_factory=StatsConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
     log_level: str = 'INFO'
     timezone: str = 'Europe/Moscow'
     environment: str = 'production'
     api_host: str = '0.0.0.0'
     api_port: int = 8000
     media_dir: str = 'media'
+    # Сколько памяти процессу разрешено по max_memory_restart в pm2. Бот
+    # не может узнать это сам, а знать обязан: предупреждать надо на
+    # подходе к настоящему лимиту, а не к выдуманному числу.
+    memory_limit_mb: int = 1500
     # True — использовать старые имена коллекций (с пробелом), как в текущем боте.
     # Тогда новый бот работает на боевой базе без миграции коллекций.
     legacy_collections: bool = False
@@ -174,6 +199,15 @@ class Config:
                 cloudpayments_secret=_env('CLOUDPAYMENTS_API_SECRET'),
             ),
             stats=StatsConfig(url=_env('API_URL_STATS'), key=_env('API_KEY_STATS')),
+            storage=StorageConfig(
+                endpoint=_env('BACKUP_S3_ENDPOINT'),
+                bucket=_env('BACKUP_S3_BUCKET'),
+                key=_env('BACKUP_S3_KEY'),
+                secret=_env('BACKUP_S3_SECRET'),
+                region=_env('BACKUP_S3_REGION', default='auto'),
+                prefix=_env('BACKUP_S3_PREFIX', default='rsvpn'),
+            ),
+            memory_limit_mb=_env_int('MEMORY_LIMIT_MB', 1500),
             log_level=_env('LOG_LEVEL', default='INFO'),
             timezone=_env('TZ', default='Europe/Moscow'),
             environment=_env('ENVIRONMENT', default='production'),

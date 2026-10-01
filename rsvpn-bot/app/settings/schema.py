@@ -519,6 +519,11 @@ SCHEMA: tuple[Group, ...] = (
         Setting('backup.dir', 'Каталог для копий', 'str', '',
                 hint='Пусто — ~/rsvpn-backups. Вне каталога бота, чтобы '
                      'обновление их не касалось'),
+        Setting('backup.to_storage', 'Увозить копию в хранилище', 'bool', True,
+                hint='S3-совместимое (R2, B2, Selectel…). Адрес и ключи — '
+                     'в .env: BACKUP_S3_ENDPOINT, BACKUP_S3_BUCKET, '
+                     'BACKUP_S3_KEY, BACKUP_S3_SECRET. Без них настройка '
+                     'ничего не делает'),
         Setting('backup.to_telegram', 'Присылать файл в личку админам', 'bool', True,
                 hint='Адресаты — только админы из .env. Большой файл '
                      'режется на части, они собираются обратно через cat'),

@@ -115,28 +115,40 @@ async def backup_now(message: types.Message, command: CommandObject, c,
              f'<b>Каталог:</b> <code>{Path(report.path).parent}</code>']
     if report.removed:
         lines.append(f'<i>Старых удалено: {report.removed}</i>')
+    if report.stored:
+        lines.append(f'{e("ok")} В хранилище: <code>{report.stored}</code>')
+    elif report.store_error:
+        lines.append(f'{e("warning")} В хранилище не уехала: '
+                     f'<code>{report.store_error}</code>')
     lines.append('')
     lines.append(RESTORE_HINT)
     await say(note, message, '\n'.join(lines))
 
-    # Файл — тому, кто попросил, а не в общий чат: в нём вся база.
+    # Файл — тому, кто попросил, а не в общий чат: в нём вся база. Большой
+    # уходит частями тем же путём, что и ночная копия: «слишком большой»
+    # означало бы, что копии в телефоне нет именно тогда, когда она нужна.
     limit = int(await settings.int('backup.max_mb') or 45)
-    if report.size > limit * 1024 * 1024:
-        await message.answer(
-            f'{e("warning")} Файл больше {limit} МБ — Telegram его не примет. '
-            f'Забрать с сервера:\n'
-            f'<code>scp root@сервер:{report.path} .</code>')
-        return
+    sent = 0
+    if c.notifier is not None:
+        sent = await c.notifier.backup_file(
+            report.path, limit_mb=limit,
+            chat_ids=[message.chat.id], backup=c.backup)
+    elif report.size <= limit * 1024 * 1024:
+        # Без Notifier (так бывает только в тестовой сборке) отправляем
+        # сами — но резать на части уже некому.
+        try:
+            await message.answer_document(
+                types.FSInputFile(report.path),
+                caption=f'{e("document")} Копия базы от {fmt(now())}')
+            sent = 1
+        except Exception as exc:      # noqa: BLE001 — копия уже на диске
+            log.warning('копия базы не отправилась: %s', exc)
 
-    try:
-        await message.answer_document(
-            types.FSInputFile(report.path),
-            caption=f'{e("document")} Копия базы от {fmt(now())}')
-    except Exception as exc:      # noqa: BLE001 — копия уже на диске
-        log.warning('копия базы не отправилась: %s', exc)
-        await message.answer(f'{e("warning")} Файл не отправился '
-                             f'(<code>{exc}</code>), но он на сервере: '
-                             f'<code>{report.path}</code>')
+    if not sent:
+        await message.answer(
+            f'{e("warning")} Файл не отправился. Он на сервере:\n'
+            f'<code>{report.path}</code>\n\n'
+            f'Забрать: <code>scp root@сервер:{report.path} .</code>')
 
 
 async def backups_list(message: types.Message, c, settings) -> None:
