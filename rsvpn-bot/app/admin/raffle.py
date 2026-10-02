@@ -60,11 +60,17 @@ USAGE = (
     f'деньги на балансе ещё не подписка.</blockquote>'
 )
 
-TICKET_COLUMNS = ('билет', 'дата', 'время', 'участник_id', 'участник_username',
+# Столбец «участник_id_скрытый» — рядом с настоящим id, а не вместо него:
+# файл делает две работы сразу. По полному id бот начисляет призы
+# (/rafflewin читает именно его), а закрытый — тот, что уходит в канал:
+# человек находит в списке себя, а чужой id из него не набрать.
+TICKET_COLUMNS = ('билет', 'дата', 'время', 'участник_id',
+                  'участник_id_скрытый', 'участник_username',
                   'за_что', 'подробности', 'друг_id')
 
-USER_COLUMNS = ('участник_id', 'username', 'билетов', 'из_них_за_друзей',
-                'друзей', 'за_свою_подписку', 'первый_билет')
+USER_COLUMNS = ('участник_id', 'участник_id_скрытый', 'username', 'билетов',
+                'из_них_за_друзей', 'друзей', 'за_свою_подписку',
+                'первый_билет')
 
 NO_DATES = (
     f'{e("cross")} <b>Не вижу даты акции</b>\n\n'
@@ -233,6 +239,7 @@ def ticket_rows(data: dict) -> list[list]:
              fmt(row['at'], '%d.%m.%Y'),
              fmt(row['at'], '%H:%M:%S'),
              row['owner'],
+             ids.public(row['owner']),
              row['owner_username'],
              row['kind'],
              row['detail'],
@@ -242,6 +249,7 @@ def ticket_rows(data: dict) -> list[list]:
 def user_rows(data: dict) -> list[list]:
     """Участники строками, от большего числа билетов к меньшему."""
     return [[item['user_id'],
+             ids.public(item['user_id']),
              item['username'],
              item['tickets'],
              item['tickets'] - item['own'],

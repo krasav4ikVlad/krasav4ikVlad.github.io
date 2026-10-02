@@ -308,8 +308,31 @@ async def test_the_user_table_has_a_line_per_person(repos, db):
     rows = admin.user_rows(await collect(repos))
 
     assert len(rows) == 2
-    owner = next(row for row in rows if row[0] == 1)
-    assert owner[2] == 6 and owner[3] == 3 and owner[4] == 1 and owner[5] == 3
+    # По названиям столбцов, а не по номерам: столбец в таблице однажды уже
+    # добавляли посередине, и тест падал не там, где сломалось.
+    owner = dict(zip(admin.USER_COLUMNS,
+                     next(row for row in rows if row[0] == 1)))
+    assert owner['билетов'] == 6 and owner['из_них_за_друзей'] == 3
+    assert owner['друзей'] == 1 and owner['за_свою_подписку'] == 3
+
+
+def test_every_table_has_a_hidden_id_beside_the_real_one():
+    """Полный id — для начислений, закрытый — для публикации в канале."""
+    from app.core.time import now
+
+    data = {'participants': [{'user_id': 802421217, 'username': 'vasya',
+                              'tickets': 3, 'friends': 1, 'own': 0,
+                              'first_at': now()}],
+            'rows': [{'ticket': 1, 'at': now(), 'owner': 802421217,
+                      'owner_username': 'vasya', 'kind': 'друг',
+                      'detail': '', 'friend': 802421301}]}
+
+    person_row = dict(zip(admin.USER_COLUMNS, admin.user_rows(data)[0]))
+    ticket_row = dict(zip(admin.TICKET_COLUMNS, admin.ticket_rows(data)[0]))
+
+    assert person_row['участник_id_скрытый'] == '802****17'
+    assert ticket_row['участник_id_скрытый'] == '802****17'
+    assert person_row['участник_id'] == ticket_row['участник_id'] == 802421217
 
 
 async def test_the_table_opens_in_excel(repos, db):

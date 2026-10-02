@@ -28,17 +28,34 @@ from contextvars import ContextVar
 KEEP = 2
 STAR = '*'
 
+# Для публикации — три цифры спереди и две сзади: 802421217 → 802****17.
+# Там задача обратная экранной: человек должен уверенно найти в списке
+# себя, поэтому видно чуть больше. Соседние id при этом не различаются —
+# у Telegram первые цифры означают примерное время регистрации, и у
+# тысяч людей они одинаковые.
+PUBLIC_HEAD = 3
+PUBLIC_TAIL = 2
+
 _masked: ContextVar[bool] = ContextVar('mask_ids', default=False)
 
 
-def mask(value) -> str:
+def mask(value, head: int = KEEP, tail: int = KEEP) -> str:
     """7095687 → 70***87. Короткое — звёздочками целиком."""
     raw = str(value or '').strip()
     if not raw:
         return ''
-    if len(raw) <= KEEP * 2:
+    if len(raw) <= head + tail:
         return STAR * len(raw)
-    return raw[:KEEP] + STAR * (len(raw) - KEEP * 2) + raw[-KEEP:]
+    return raw[:head] + STAR * (len(raw) - head - tail) + raw[-tail:]
+
+
+def public(value) -> str:
+    """802421217 → 802****17. Для списков, которые уходят на люди.
+
+    От режима съёмки (`/mask`) не зависит нарочно: столбец для публикации
+    должен быть закрыт всегда, а не когда кто-то не забыл включить режим.
+    """
+    return mask(value, PUBLIC_HEAD, PUBLIC_TAIL)
 
 
 def show(value) -> str:

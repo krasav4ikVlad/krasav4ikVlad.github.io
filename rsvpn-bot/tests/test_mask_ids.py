@@ -44,6 +44,20 @@ def test_nothing_is_invented_from_emptiness():
     assert ids.mask('') == '' and ids.mask(None) == ''
 
 
+def test_the_public_mask_keeps_three_and_two():
+    """Столбец для публикации: себя человек в списке узнаёт, чужой id — нет."""
+    assert ids.public(802421217) == '802****17'
+    assert len(ids.public(802421217)) == len('802421217')
+    assert ids.public(123) == '***'
+
+
+def test_the_public_mask_does_not_depend_on_the_mode():
+    """Режим съёмки могут забыть включить, а столбец закрыт всегда."""
+    ids.set_hidden(False)
+
+    assert ids.public(802421217) == '802****17'
+
+
 def test_show_depends_on_the_mode():
     assert ids.show(7095687) == '7095687'
     ids.set_hidden(True)
