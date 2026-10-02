@@ -1,5 +1,6 @@
 # Зависимости для запуска. Установка: pip install -r requirements.txt
-aiogram>=3.13
+# 3.31 — ради Rich Messages (Bot API 10.3): send_rich_message
+aiogram>=3.31
 motor>=3.5
 httpx>=0.27
 apscheduler>=3.10
