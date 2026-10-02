@@ -80,50 +80,76 @@ def _days_left(expires) -> str:
         return 'истекла'
     left = -(-int(seconds) // 86400)
     if left <= 1:
-        return 'заканчивается сегодня'
-    return f'осталось {left} дн'
+        return 'меньше суток'
+    return f'{left} дн'
+
+
+def fields(rows: list[tuple[str, str, str]], *, boxed: bool = True) -> str:
+    """Строки вида «значок Подпись: значение» и кнопка справа.
+
+    Таблицей (`boxed`) кнопка встаёт у правого края, а значения — столбиком
+    друг под другом: глазу есть за что зацепиться. Второй способ, абзацем
+    с <br>, оставлен не для красоты, а на случай отказа: таблицы в Rich
+    Message новые, и документация прямо говорит, что в ячейках разрешено
+    только строчное оформление — кнопка там может и не пройти. Тогда экран
+    уйдёт этим способом, он уже проверен живьём.
+    """
+    if boxed:
+        cells = ''.join(
+            f'<tr><td>{label}: {value}</td>'
+            f'<td align="right">{action}</td></tr>'
+            for label, value, action in rows)
+        return f'<table compact>{cells}</table>'
+
+    return '<p>' + '<br>'.join(
+        f'{label}: {value}' + (f' {action}' if action else '')
+        for label, value, action in rows) + '</p>'
 
 
 def main_menu(user: dict, *, balance: int = 0, friends: int = 0,
               devices: str = '', email: str = '', support_url: str = '',
-              raffle: bool = False, photo: str = '') -> str:
+              raffle: bool = False, photo: str = '', boxed: bool = True) -> str:
     """HTML главного меню. Ничего не отправляет — только собирает.
 
     `photo` — ссылка для <img>: `PHOTO_LINK`, если файл уходит списком
     media, или внешний https-адрес. Пусто — экран будет без шапки.
+    `boxed` — раскладка данных: таблицей или строками (см. fields).
     """
     card = (user or {}).get('user_data') or {}
     vpn = (user or {}).get('vpn') or {}
-    name = escape(str(card.get('first_name') or 'друг'))
     expires = parse_dt(vpn.get('expireAt'))
     has_sub = bool(vpn.get('shortUuid'))
 
-    parts = [image(photo),
-             f'<h3>{e("user")} Профиль</h3>',
-             f'<p>{e("wave")} Привет, <b>{name}</b>!</p>']
+    parts = [image(photo), f'<h3>{e("user")} Профиль</h3>']
 
     # Те же четыре строки, что на обычном экране профиля: человек узнаёт
-    # свой кабинет, а не разбирается в новой вёрстке. Кнопка «Пополнить»
-    # стоит прямо у баланса — в обычном боте за ней надо идти вниз, к
-    # клавиатуре, и искать её среди восьми других.
-    parts.append(
-        '<p>'
-        f'{e("id")} Идентификатор: <code>{ids.show(card.get("user_id", ""))}</code><br>'
-        f'{e("money")} Баланс: <b>{balance} ₽</b> '
-        + button(f'{e("plus")} Пополнить', 'payments', 'success') + '<br>'
-        f'{e("friends")} Друзей: <b>{friends}</b><br>'
-        f'{e("email")} Почта: <code>{escape(email) if email else "не привязана"}</code>'
-        '</p>')
+    # свой кабинет, а не разбирается в новой вёрстке. Кнопки стоят прямо у
+    # своих строк — в обычном боте за ними надо идти вниз, к клавиатуре, и
+    # искать среди восьми других. Подписи у них без значков: значок уже
+    # стоит слева, у самой строки, и второй рядом только мельтешит.
+    parts.append(fields([
+        (f'{e("id")} Идентификатор',
+         f'<code>{ids.show(card.get("user_id", ""))}</code>', ''),
+        (f'{e("money")} Баланс', f'<b>{balance} ₽</b>',
+         button('Пополнить', 'payments', 'success')),
+        (f'{e("friends")} Друзей', f'<b>{friends}</b>',
+         button('Пригласить', 'referrals')),
+        (f'{e("email")} Почта',
+         f'<code>{escape(email)}</code>' if email else 'не привязана',
+         button('Изменить' if email else 'Привязать', 'email')),
+    ], boxed=boxed))
 
     parts.append(f'<h4>{e("shield")} Подписка</h4>')
     if has_sub and expires:
+        date = f'<b>{fmt(expires, "%d.%m.%Y")}</b>'
         left = _days_left(expires)
-        parts.append(
-            '<p>'
-            f'{e("calendar")} Активна до <b>{fmt(expires, "%d.%m.%Y")}</b>'
-            f'{f" · {left}" if left else ""}<br>'
-            f'{e("devices")} Устройства: <b>{escape(devices) if devices else "—"}</b>'
-            '</p>')
+        lines = [(f'{e("calendar")} Истекла' if left == 'истекла'
+                  else f'{e("calendar")} Активна до', date, '')]
+        if left != 'истекла':
+            lines.append((f'{e("hourglass")} Осталось', f'<b>{left}</b>', ''))
+        lines.append((f'{e("devices")} Устройства',
+                      f'<b>{escape(devices)}</b>' if devices else '—', ''))
+        parts.append(fields(lines, boxed=boxed))
         parts.append(row(
             button(f'{e("shield")} Моя подписка', 'my_subscription', 'primary'),
             button(f'{e("renew")} Продлить', 'extend', 'success'),
@@ -135,21 +161,22 @@ def main_menu(user: dict, *, balance: int = 0, friends: int = 0,
             button(f'{e("plus")} Подключить', 'subscription', 'primary'),
             button(f'{e("gift")} Подарить', 'gifts')))
 
-    second = [button(f'{e("referrals")} Пригласить', 'referrals')]
-    if has_sub:
-        second.append(button(f'{e("gift")} Подарить', 'gifts'))
+    # «Пригласить» стоит выше, у строки с друзьями, и второй раз его тут
+    # быть не должно: две одинаковые кнопки на экране — это вопрос «а они
+    # разные?», а не удобство.
+    second = [button(f'{e("gift")} Подарить', 'gifts')] if has_sub else []
     if raffle:
         second.insert(0, button(f'{e("hot")} Розыгрыш', 'raffle'))
-    parts.append(row(*second[:ROW]))
+    if second:
+        parts.append(row(*second[:ROW]))
 
     # Сворачиваемый блок — то, чего в обычном меню нет вообще: редкие
     # кнопки перестают занимать экран, но остаются в одном нажатии.
     parts.append(
         '<details><summary>Ещё</summary>'
-        '<p>Почта нужна для чеков и восстановления доступа, промокод — '
-        'разовая скидка или подарочные дни.</p>'
-        + row(button(f'{e("mail")} Почта', 'email', 'link'),
-              button(f'{e("promo")} Промокод', 'promo', 'link'),
+        '<p>Промокод — разовая скидка или подарочные дни. В «О сервисе» — '
+        'правила, устройства и ответы на частые вопросы.</p>'
+        + row(button(f'{e("promo")} Промокод', 'promo', 'link'),
               button(f'{e("question")} О сервисе', 'about', 'link'),
               align='left')
         + '</details>')

@@ -24,7 +24,6 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from aiogram import Router, types
 from aiogram.filters import Command, CommandObject
@@ -34,8 +33,6 @@ from app.bot.screens import rich_menu
 from app.content.emoji import decorate, e
 
 log = logging.getLogger(__name__)
-
-IMAGE = re.compile(r'<img[^>]*/>')
 
 HELP = (
     f'{e("design")} <b>Примерка Rich Message</b>\n\n'
@@ -55,32 +52,23 @@ async def rich_preview(message: types.Message, command: CommandObject, c,
         return
 
     if what in ('all', 'всё', 'все'):
-        html, media = rich_menu.showcase(), []
+        tries = [(rich_menu.showcase(), [], '')]
     else:
-        html, media = await menu_html(message.from_user.id, c, settings)
+        tries = await attempts(message.from_user.id, c, settings)
 
     # Отказ запоминается в переменную: имя из `except ... as` после блока
     # уже не существует, а показать его надо в самом конце.
     failure: BaseException | None = None
-    try:
-        await _send(message, html, media)
-        return
-    except Exception as exc:      # noqa: BLE001 — ответ API важнее красоты
-        failure = exc
-        log.warning('rich-сообщение не ушло: %s', exc)
-
-    if media:
-        # Чаще всего отказ именно в картинке: она новая в этом API, а
-        # вёрстку посмотреть можно и без неё.
+    for html, media, note in tries:
         try:
-            await _send(message, IMAGE.sub('', html), [])
-            await message.answer(
-                f'{e("attention")} <b>Картинку Telegram не принял</b>, '
-                f'остальное — выше.')
-            return
-        except Exception as exc:      # noqa: BLE001
+            await _send(message, html, media)
+        except Exception as exc:      # noqa: BLE001 — ответ API важнее красоты
             failure = exc
-            log.warning('rich-сообщение не ушло и без картинки: %s', exc)
+            log.warning('rich-сообщение не ушло: %s', exc)
+            continue
+        if note:
+            await message.answer(note)
+        return
 
     await message.answer(
         f'{e("cross")} <b>Telegram не принял Rich Message</b>\n'
@@ -102,8 +90,16 @@ async def _send(message: types.Message, html: str, media: list) -> None:
                                       media=media or None))
 
 
-async def menu_html(user_id: int, c, settings) -> tuple[str, list]:
-    """Главное меню с настоящими данными того, кто позвал, и его картинкой."""
+async def attempts(user_id: int, c, settings) -> list[tuple[str, list, str]]:
+    """Что пробовать отправить, от красивого к надёжному.
+
+    Две вещи на экране новые для API и могут не пройти: картинка (едет
+    списком media) и таблица с кнопкой в ячейке — документация разрешает
+    в ячейках только строчное оформление. Отказ приходит один на всё
+    сообщение, и по тексту не всегда видно, что именно не понравилось,
+    поэтому следующие попытки снимают сначала одно, потом другое. Человек
+    видит экран и приписку, чего в нём не хватает, — вместо пустоты.
+    """
     from app.bot.handlers.raffle import running
 
     user = await c.users.get(user_id) or {}
@@ -121,16 +117,34 @@ async def menu_html(user_id: int, c, settings) -> tuple[str, list]:
         media.append(InputRichMessageMedia(
             id=rich_menu.PHOTO, media=InputMediaPhoto(media=photo.as_input())))
 
-    html = rich_menu.main_menu(
-        user,
-        balance=int(info.get('balance') or 0),
-        friends=len(stats.get('referrals') or []),
-        devices=devices,
-        email=str(info.get('email') or ''),
-        support_url=str(await settings.get('link.support') or ''),
-        raffle=await running(settings),
-        photo=rich_menu.PHOTO_LINK if media else '')
-    return html, media
+    support = str(await settings.get('link.support') or '')
+    raffle = await running(settings)
+
+    def html(*, boxed: bool, picture: bool) -> str:
+        return rich_menu.main_menu(
+            user,
+            balance=int(info.get('balance') or 0),
+            friends=len(stats.get('referrals') or []),
+            devices=devices,
+            email=str(info.get('email') or ''),
+            support_url=support,
+            raffle=raffle,
+            photo=rich_menu.PHOTO_LINK if (picture and media) else '',
+            boxed=boxed)
+
+    no_photo = (f'{e("attention")} <b>Картинку Telegram не принял</b>, '
+                f'остальное — выше.')
+    no_table = (f'{e("attention")} <b>Таблицу Telegram не принял</b> — '
+                f'строки выше собраны переносами.')
+
+    tries = [(html(boxed=True, picture=True), media, '')]
+    if media:
+        tries.append((html(boxed=True, picture=False), [], no_photo))
+    tries.append((html(boxed=False, picture=True), media, no_table))
+    if media:
+        tries.append((html(boxed=False, picture=False), [],
+                      f'{no_table}\n{no_photo}'))
+    return tries
 
 
 def register(router: Router) -> None:

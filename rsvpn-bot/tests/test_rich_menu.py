@@ -92,14 +92,57 @@ def test_the_usual_four_lines_are_in_place():
     assert '802421217' in html and 'i@rseeed.ru' in html
 
 
-def test_the_top_up_button_stands_next_to_the_balance():
-    """Кнопка должна быть в том же абзаце, что баланс, а не ниже экрана."""
+def rows(html: str) -> dict[str, str]:
+    """Строки таблицы по подписи: «Баланс» → содержимое всей строки."""
+    found = {}
+    for cells in re.findall(r'<tr>(.*?)</tr>', html):
+        label = re.sub(r'<[^>]+>', '', cells).split(':')[0].strip()
+        found[label.split(' ')[-1]] = cells
+    return found
+
+
+def test_each_line_has_its_own_button():
+    """Кнопка стоит у своей строки, а не внизу экрана среди восьми других."""
+    html = rich_menu.main_menu(user(), balance=270, friends=38,
+                               email='i@rseeed.ru')
+    line = rows(html)
+
+    assert Menu(screen='payments').pack() in line['Баланс']
+    assert Menu(screen='referrals').pack() in line['Друзей']
+    assert Menu(screen='email').pack() in line['Почта']
+
+
+def test_those_buttons_stand_at_the_right_edge():
+    """Значение слева, кнопка справа — иначе строки не читаются столбиком."""
     html = rich_menu.main_menu(user(), balance=270)
 
-    paragraph = next(p for p in re.findall(r'<p>(.*?)</p>', html)
-                     if 'Баланс' in p)
+    assert f'<td align="right">{rich_menu.button("Пополнить", "payments", "success")}' \
+        in rows(html)['Баланс']
 
-    assert Menu(screen='payments').pack() in paragraph
+
+def test_those_buttons_are_without_signs():
+    """Значок уже стоит слева, у самой строки: второй рядом только мельтешит."""
+    line = rows(rich_menu.main_menu(user(), email='i@rseeed.ru'))
+
+    for label in ('Баланс', 'Друзей', 'Почта'):
+        caption = re.search(r'<tg-button[^>]*>(.*?)</tg-button>', line[label])
+        assert caption and caption.group(1).isalpha(), label
+
+
+def test_a_person_without_email_is_offered_to_add_one():
+    html = rich_menu.main_menu(user(), email='')
+
+    assert 'Привязать' in html and 'не привязана' in html
+
+
+def test_the_same_data_can_be_laid_out_in_lines():
+    """Запасная раскладка на случай, если таблицу Telegram не примет."""
+    html = rich_menu.main_menu(user(), balance=270, friends=38,
+                               email='i@rseeed.ru', boxed=False)
+
+    assert '<table' not in html and '<br>' in html
+    for screen in ('payments', 'referrals', 'email'):
+        assert Menu(screen=screen).pack() in buttons(html)
 
 
 def test_the_picture_is_a_block_of_its_own():
@@ -119,25 +162,26 @@ def test_without_a_picture_there_is_no_empty_tag():
 def test_the_days_left_are_counted():
     html = rich_menu.main_menu(user())
 
-    assert 'осталось 15 дн' in html
+    assert 'Осталось' in html and '15 дн' in html
 
 
 def test_an_expired_subscription_says_so():
+    """«Осталось: истекла» не по-русски: у истёкшей меняется подпись даты."""
     card = user()
     card['vpn']['expireAt'] = now() - timedelta(days=2)
 
-    assert 'истекла' in rich_menu.main_menu(card)
+    html = rich_menu.main_menu(card)
+
+    assert 'Истекла' in html and 'Осталось' not in html
 
 
-def test_someones_name_cannot_break_the_markup():
-    """Имя приходит от человека, а разметка — наша. Пересекаться им нельзя."""
-    card = user()
-    card['user_data']['first_name'] = '<b>хитрый</b>'
+def test_what_a_person_typed_cannot_break_the_markup():
+    """Почту человек вписывает сам, а разметка — наша. Пересекаться нельзя."""
+    html = rich_menu.main_menu(user(), email='<script>x</script>@mail.ru',
+                               devices='<b>до 3</b>')
 
-    html = rich_menu.main_menu(card, email='<script>x</script>@mail.ru')
-
-    assert '<b>хитрый</b>' not in html and '&lt;b&gt;' in html
-    assert '<script>' not in html
+    assert '<script>' not in html and '&lt;script&gt;' in html
+    assert '<b>до 3</b>' not in html
 
 
 # ── витрина возможностей ────────────────────────────────────────────────────
@@ -169,21 +213,25 @@ from tests.test_admin_panel import ADMIN, admin_env, message  # noqa: E402, F401
 class Spy:
     """Бот, запоминающий, что ему передали вместо отправки.
 
-    `broken` — отказывать всегда, `picky` — только сообщениям с картинкой:
-    так ведёт себя Telegram, которому не понравилась именно она.
+    `broken` — отказывать всегда, `picky` — сообщениям с картинкой,
+    `fussy` — сообщениям с таблицей: так ведёт себя Telegram, которому не
+    понравилась одна конкретная часть экрана.
     """
 
-    def __init__(self, broken: str = '', picky: str = ''):
+    def __init__(self, broken: str = '', picky: str = '', fussy: str = ''):
         self.sent: list[str] = []
         self.media: list[list] = []
         self.broken = broken
         self.picky = picky
+        self.fussy = fussy
 
     async def send_rich_message(self, chat_id, rich_message, **kwargs):
         if self.broken:
             raise RuntimeError(self.broken)
         if self.picky and rich_message.media:
             raise RuntimeError(self.picky)
+        if self.fussy and '<table' in rich_message.html:
+            raise RuntimeError(self.fussy)
         self.sent.append(rich_message.html)
         self.media.append(list(rich_message.media or []))
         return True
@@ -264,6 +312,22 @@ async def test_the_layout_survives_a_refused_picture(admin_env, monkeypatch):
     assert spy.sent and '<img' not in spy.sent[0]
     assert 'Профиль' in spy.sent[0]
     assert 'артинку' in session.last_text
+
+
+async def test_the_layout_survives_a_refused_table(admin_env, monkeypatch):
+    """Кнопка в ячейке документацией не обещана — на этот случай есть строки."""
+    dp, bot, session, c = admin_env
+    await c.users.create({'user_data': {'user_id': ADMIN.id}, 'info': {}})
+    spy = Spy(fussy='TABLE_CELL_INVALID')
+    monkeypatch.setattr(type(bot), 'send_rich_message', spy.send_rich_message,
+                        raising=False)
+    monkeypatch.setattr(c, 'media', lambda key: None)
+
+    await dp.feed_update(bot, message('/rich'))
+
+    assert spy.sent and '<table' not in spy.sent[0] and '<br>' in spy.sent[0]
+    assert Menu(screen='payments').pack() in buttons(spy.sent[0])
+    assert 'аблицу' in session.last_text
 
 
 async def test_the_brand_emoji_are_put_in_by_hand(admin_env, monkeypatch):
