@@ -11,11 +11,11 @@
 
 from __future__ import annotations
 
-VERSION = '189'
+VERSION = '190'
 
 # Что появилось в этой сборке — короткой строкой, чтобы по логу было понятно
 # не только «другая», но и «та ли самая».
-BUILD = 'примерка Rich Message: /rich'
+BUILD = '/rich: картинка, профиль списком, кнопка у баланса'
 
 
 def version_line() -> str:

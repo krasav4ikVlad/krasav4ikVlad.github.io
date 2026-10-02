@@ -3,7 +3,7 @@
 Rich Messages появились в Bot API 10.1 (июнь 2026), кнопки внутри текста —
 в 10.3 (август). Это не картинка и не Mini App: сообщение остаётся текстом,
 которое можно копировать и читать с экрана, но внутри у него заголовки,
-таблицы, сворачиваемые блоки и кнопки прямо в потоке текста.
+картинка, сворачиваемые блоки и кнопки прямо в потоке текста.
 
 Здесь собран один экран — профиль, он же главное меню, — чтобы посмотреть
 на него живьём и решить, переводить ли на такой вид весь бот. Данные
@@ -13,6 +13,20 @@ Rich Messages появились в Bot API 10.1 (июнь 2026), кнопки �
 Разметка — HTML (поле `html` у InputRichMessage). Блочный способ
 (`blocks`) даёт то же самое объектами, но читать его в коде втрое длиннее,
 а чинить вёрстку приходится как раз глазами.
+
+Картинка
+────────
+В HTML она ставится тегом <img>, но src — не путь к файлу: либо внешняя
+ссылка http(s), либо `tg://photo?id=<id>`, а сам файл уезжает отдельным
+списком `media` у InputRichMessage (InputRichMessageMedia с тем же id).
+Второй способ и используется: картинки бота лежат в media/ на сервере,
+наружу они не опубликованы, а file_id из кэша Telegram принимает как
+обычно — повторная отправка снова не грузит PNG.
+
+Важное ограничение API: «Images, videos, and audio files can be specified
+only as separate media blocks» — внутрь <p> картинку вставлять нельзя,
+только отдельным блоком. Поэтому она идёт самой первой строкой, как шапка
+на остальных экранах бота.
 """
 
 from __future__ import annotations
@@ -20,12 +34,18 @@ from __future__ import annotations
 from html import escape
 
 from app.bot.callbacks import Menu
+from app.content import ids
 from app.content.emoji import e
 from app.core.time import fmt, now, parse_dt
 
 # Кнопок в ряду — не больше восьми (ограничение Bot API), но на телефоне
 # больше трёх уже не читается.
 ROW = 3
+
+# id картинки внутри сообщения. По документации — 1–64 знака, только
+# A-Z, a-z, 0-9, _ и -: имя файла или путь сюда не годятся.
+PHOTO = 'menu'
+PHOTO_LINK = f'tg://photo?id={PHOTO}'
 
 
 def button(text: str, screen: str, style: str = '') -> str:
@@ -38,6 +58,13 @@ def button(text: str, screen: str, style: str = '') -> str:
 def row(*buttons: str, align: str = 'center') -> str:
     return (f'<tg-button-row align="{align}">'
             + ''.join(b for b in buttons if b) + '</tg-button-row>')
+
+
+def image(src: str) -> str:
+    """Картинка — отдельным блоком: внутри абзаца Telegram её не примет."""
+    if not src:
+        return ''
+    return f'<img src="{escape(src, quote=True)}"/>'
 
 
 def _days_left(expires) -> str:
@@ -59,53 +86,71 @@ def _days_left(expires) -> str:
 
 def main_menu(user: dict, *, balance: int = 0, friends: int = 0,
               devices: str = '', email: str = '', support_url: str = '',
-              raffle: bool = False) -> str:
-    """HTML главного меню. Ничего не отправляет — только собирает."""
+              raffle: bool = False, photo: str = '') -> str:
+    """HTML главного меню. Ничего не отправляет — только собирает.
+
+    `photo` — ссылка для <img>: `PHOTO_LINK`, если файл уходит списком
+    media, или внешний https-адрес. Пусто — экран будет без шапки.
+    """
+    card = (user or {}).get('user_data') or {}
     vpn = (user or {}).get('vpn') or {}
-    name = escape(str(((user or {}).get('user_data') or {}).get('first_name')
-                      or 'друг'))
+    name = escape(str(card.get('first_name') or 'друг'))
     expires = parse_dt(vpn.get('expireAt'))
     has_sub = bool(vpn.get('shortUuid'))
 
-    parts = [f'<h3>{e("user")} Профиль</h3>']
+    parts = [image(photo),
+             f'<h3>{e("user")} Профиль</h3>',
+             f'<p>{e("wave")} Привет, <b>{name}</b>!</p>']
 
-    if has_sub and expires:
-        parts.append(
-            f'<p>{name}, подписка активна до '
-            f'<b>{fmt(expires, "%d.%m.%Y")}</b>, {_days_left(expires)}.</p>')
-    else:
-        parts.append(f'<p>{name}, подписки пока нет. '
-                     f'Подключение занимает минуту.</p>')
-
-    # Таблица вместо четырёх строк «ключ: значение»: то же место на экране,
-    # но числа стоят столбиком и читаются одним взглядом.
+    # Те же четыре строки, что на обычном экране профиля: человек узнаёт
+    # свой кабинет, а не разбирается в новой вёрстке. Кнопка «Пополнить»
+    # стоит прямо у баланса — в обычном боте за ней надо идти вниз, к
+    # клавиатуре, и искать её среди восьми других.
     parts.append(
-        '<table compact>'
-        f'<tr><th>Баланс</th><th>Друзей</th><th>Устройства</th></tr>'
-        f'<tr><td><b>{balance} ₽</b></td><td>{friends}</td>'
-        f'<td>{escape(devices or "—")}</td></tr>'
-        '</table>')
+        '<p>'
+        f'{e("id")} Идентификатор: <code>{ids.show(card.get("user_id", ""))}</code><br>'
+        f'{e("money")} Баланс: <b>{balance} ₽</b> '
+        + button(f'{e("plus")} Пополнить', 'payments', 'success') + '<br>'
+        f'{e("friends")} Друзей: <b>{friends}</b><br>'
+        f'{e("email")} Почта: <code>{escape(email) if email else "не привязана"}</code>'
+        '</p>')
 
-    parts.append(row(
-        button(f'{e("shield")} Моя подписка' if has_sub
-               else f'{e("plus")} Подключить',
-               'my_subscription' if has_sub else 'subscription', 'primary'),
-        button(f'{e("money")} Пополнить', 'payments', 'success')))
+    parts.append(f'<h4>{e("shield")} Подписка</h4>')
+    if has_sub and expires:
+        left = _days_left(expires)
+        parts.append(
+            '<p>'
+            f'{e("calendar")} Активна до <b>{fmt(expires, "%d.%m.%Y")}</b>'
+            f'{f" · {left}" if left else ""}<br>'
+            f'{e("devices")} Устройства: <b>{escape(devices) if devices else "—"}</b>'
+            '</p>')
+        parts.append(row(
+            button(f'{e("shield")} Моя подписка', 'my_subscription', 'primary'),
+            button(f'{e("renew")} Продлить', 'extend', 'success'),
+            button(f'{e("devices")} Устройства', 'devices')))
+    else:
+        parts.append('<p>Подписки пока нет — подключение занимает минуту, '
+                     'а первые настройки бот сделает сам.</p>')
+        parts.append(row(
+            button(f'{e("plus")} Подключить', 'subscription', 'primary'),
+            button(f'{e("gift")} Подарить', 'gifts')))
 
-    second = [button(f'{e("referrals")} Пригласить', 'referrals'),
-              button(f'{e("gift")} Подарить', 'gifts')]
+    second = [button(f'{e("referrals")} Пригласить', 'referrals')]
+    if has_sub:
+        second.append(button(f'{e("gift")} Подарить', 'gifts'))
     if raffle:
-        second.insert(0, button(f'{e("gift")} Розыгрыш', 'raffle'))
+        second.insert(0, button(f'{e("hot")} Розыгрыш', 'raffle'))
     parts.append(row(*second[:ROW]))
 
     # Сворачиваемый блок — то, чего в обычном меню нет вообще: редкие
     # кнопки перестают занимать экран, но остаются в одном нажатии.
     parts.append(
         '<details><summary>Ещё</summary>'
-        f'<p>Почта: <code>{escape(email or "не привязана")}</code> — '
-        f'нужна для чеков и восстановления доступа.</p>'
+        '<p>Почта нужна для чеков и восстановления доступа, промокод — '
+        'разовая скидка или подарочные дни.</p>'
         + row(button(f'{e("mail")} Почта', 'email', 'link'),
               button(f'{e("promo")} Промокод', 'promo', 'link'),
+              button(f'{e("question")} О сервисе', 'about', 'link'),
               align='left')
         + '</details>')
 
