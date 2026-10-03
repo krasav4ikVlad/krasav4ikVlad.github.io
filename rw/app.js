@@ -59,6 +59,56 @@ function fmtBytes(b) {
     return `${v.toFixed(v >= 100 || i === 0 ? 0 : v >= 10 ? 1 : 2)} ${units[i]}`;
 }
 
+// Как xbytes в панели: 85.86 TiB, 215.70 GiB, 0 B
+function fmtIec(b) {
+    const v0 = Number(b) || 0;
+    if (v0 < 1024) return `${Math.round(v0)} B`;
+    const units = ['KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+    let v = v0 / 1024;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return `${v.toFixed(2)} ${units[i]}`;
+}
+
+// Скорость в битах, SI: 1.00 Gb/s, 231.74 Mb/s
+function fmtBitsPerSec(bytesPerSec) {
+    if (!bytesPerSec) return '0 b/s';
+    let v = Number(bytesPerSec) * 8;
+    const units = ['b', 'Kb', 'Mb', 'Gb', 'Tb'];
+    let i = 0;
+    while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
+    return `${i === 0 ? Math.round(v) : v.toFixed(2)} ${units[i]}/s`;
+}
+
+// Аптайм xray коротко: 2d / 14h / 5m / 30s
+function fmtUptimeShort(sec) {
+    const s = Number(sec) || 0;
+    if (s >= 86400) return `${Math.round(s / 86400)}d`;
+    if (s >= 3600) return `${Math.round(s / 3600)}h`;
+    if (s >= 60) return `${Math.round(s / 60)}m`;
+    return `${Math.round(s)}s`;
+}
+
+// Сколько дней до сброса трафика (день месяца targetDay)
+function daysUntilReset(targetDay) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const at = (y, m) => {
+        const last = new Date(y, m + 1, 0).getDate();
+        return new Date(y, m, Math.min(targetDay || 1, last));
+    };
+    let target = at(today.getFullYear(), today.getMonth());
+    if (target < today) target = at(today.getFullYear(), today.getMonth() + 1);
+    return Math.round((target - today) / 86400000);
+}
+
+// Стабильный цвет по строке (как color-hash в панели)
+function hashColor(str) {
+    let h = 0;
+    for (const ch of String(str)) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+    return `hsl(${h % 360}, 65%, 65%)`;
+}
+
 function fmtUptime(sec) {
     if (!sec) return '—';
     const d = Math.floor(sec / 86400);
@@ -172,9 +222,15 @@ function handleError(e) {
     toast('error', 'Ошибка', e.message || String(e));
 }
 
-async function loadProfiles() {
+let profilesCache = null; // { at, data }
+async function loadProfiles({ fresh = false } = {}) {
+    if (!fresh && profilesCache && Date.now() - profilesCache.at < 30000) return profilesCache.data;
     const r = await api('GET', '/api/config-profiles');
-    return r.configProfiles || [];
+    profilesCache = { at: Date.now(), data: r.configProfiles || [] };
+    return profilesCache.data;
+}
+function invalidateProfiles() {
+    profilesCache = null;
 }
 
 /* =========================================================================
@@ -255,9 +311,38 @@ function openModal({ title, icon, size = '', body = '', foot = '', onMount, onCl
     document.body.appendChild(overlay);
     modalStack.push(close);
     const modal = $('.modal', overlay);
+    close.modal = modal;
     if (onMount) onMount(modal, close);
-    const first = $('input:not([type=checkbox]):not([type=hidden]), select, textarea', modal);
+    focusFirst(modal);
+    return close;
+}
+
+function focusFirst(modal) {
+    const first = $('.modal-body input:not([type=checkbox]):not([type=hidden]), .modal-body select, .modal-body textarea', modal);
     if (first) setTimeout(() => first.focus(), 30);
+}
+
+// Модалка открывается сразу с индикатором загрузки, содержимое появляется после load()
+function openModalAsync({ title, icon, size, load, render: renderContent }) {
+    let closed = false;
+    const close = openModal({ title, icon, size, body: loaderHtml(), onClose: () => { closed = true; } });
+    const modal = close.modal;
+    (async () => {
+        let data;
+        try {
+            data = await load();
+        } catch (e) {
+            if (!closed) close();
+            handleError(e);
+            return;
+        }
+        if (closed) return;
+        const { body, foot, onMount } = renderContent(data);
+        $('.modal-body', modal).innerHTML = body;
+        if (foot) modal.insertAdjacentHTML('beforeend', `<div class="modal-foot">${foot}</div>`);
+        if (onMount) onMount(modal, close);
+        focusFirst(modal);
+    })();
     return close;
 }
 document.addEventListener('keydown', (e) => {
@@ -386,10 +471,10 @@ function logout() {
  * ========================================================================= */
 
 const NAV = [
-    { id: 'squads', text: 'Внутренние сквады', icon: 'ph-circles-three-plus' },
-    { id: 'profiles', text: 'Профили', icon: 'ph-file-code' },
-    { id: 'hosts', text: 'Хосты', icon: 'ph-list-checks' },
     { id: 'nodes', text: 'Ноды', icon: 'ph-cpu' },
+    { id: 'hosts', text: 'Хосты', icon: 'ph-list-checks' },
+    { id: 'profiles', text: 'Профили', icon: 'ph-file-code' },
+    { id: 'squads', text: 'Внутренние сквады', icon: 'ph-circles-three-plus' },
 ];
 
 function mountShell() {
@@ -515,10 +600,101 @@ function errorBox(e) {
  * ========================================================================= */
 
 function nodeStatus(n) {
-    if (n.isDisabled) return { cls: 'disabled', text: 'Отключена' };
-    if (n.isConnecting) return { cls: 'connecting', text: 'Подключение…' };
-    if (n.isConnected) return { cls: 'online', text: 'Онлайн' };
-    return { cls: 'offline', text: n.lastStatusMessage ? `Офлайн: ${n.lastStatusMessage}` : 'Офлайн' };
+    // порядок проверок — как в NodeStatusBadge панели
+    if (n.isConnected) return { cls: 'online', icon: 'ph-pulse', text: 'Подключена' };
+    if (n.isConnecting) return { cls: 'connecting', icon: 'ph-cloud-arrow-up', text: 'Подключение…' };
+    if (n.isDisabled) return { cls: 'disabled', icon: 'ph-prohibit', text: 'Отключена' };
+    return { cls: 'offline', icon: 'ph-warning-circle', text: n.lastStatusMessage ? `Офлайн: ${n.lastStatusMessage}` : 'Офлайн' };
+}
+
+function nodeCardTone(n) {
+    if (n.isDisabled) return 'disabled';
+    if (n.isConnected) return 'online';
+    if (n.isConnecting) return 'connecting';
+    return 'offline';
+}
+
+function nodeCardHtml(n) {
+    const st = nodeStatus(n);
+    const cp = n.configProfile || {};
+    const dangling = !cp.activeConfigProfileUuid || !(cp.activeInbounds || []).length;
+    const online = n.usersOnline || 0;
+
+    // трафик: без учёта — полная бирюзовая полоса и ∞, как в панели
+    const tracking = n.isTrafficTrackingActive;
+    const limit = n.trafficLimitBytes || 0;
+    let pct = 100;
+    let barCls = 'teal';
+    if (tracking && limit > 0) {
+        pct = Math.min(100, Math.floor(((n.trafficUsedBytes || 0) * 100) / limit));
+        barCls = pct > 95 ? 'red' : pct > 80 ? 'yellow' : 'teal';
+    }
+    const maxText = tracking && limit ? fmtIec(limit) : '∞';
+
+    const isOnline = n.isConnected && n.xrayUptime && !n.isDisabled;
+
+    // нагрузка сервера
+    const sys = n.system;
+    let ramPct = null;
+    let ramCls = 'teal';
+    let loads = null;
+    let cpus = 1;
+    let rx = null;
+    let tx = null;
+    if (sys && sys.info && sys.stats) {
+        if (sys.info.memoryTotal) {
+            ramPct = Math.round((sys.stats.memoryUsed / sys.info.memoryTotal) * 100);
+            ramCls = ramPct > 90 ? 'red' : ramPct > 70 ? 'yellow' : 'teal';
+        }
+        cpus = sys.info.cpus || 1;
+        if (sys.stats.interface) {
+            loads = sys.stats.loadAvg || null;
+            rx = fmtBitsPerSec(sys.stats.interface.rxBytesPerSec);
+            tx = fmtBitsPerSec(sys.stats.interface.txBytesPerSec);
+        }
+    }
+    const loadCls = (l) => (l / cpus > 1 ? 'red' : l / cpus > 0.7 ? 'yellow' : '');
+    const loadTitle = loads
+        ? `Load Average (${cpus} ${plural(cpus, 'ядро', 'ядра', 'ядер')})\n` +
+          ['1 мин', '5 мин', '15 мин'].map((p, i) => `${p}: ${loads[i].toFixed(2)} (${Math.round((loads[i] / cpus) * 100)}%)`).join('\n') +
+          '\n0–70% норма · 70–100% высокая · >100% перегрузка'
+        : 'Нет данных';
+
+    return `
+    <div class="node-card tone-${nodeCardTone(n)}" data-id="${esc(n.uuid)}">
+        <div class="nc-grid">
+            <div class="nc-main">
+                ${dangling
+                    ? '<span class="badge red filled-red nc-dangling"><i class="ph ph-warning-circle"></i>DANGLING</span>'
+                    : `<span class="st-icon ${st.cls}" title="${esc(st.text)}"><i class="ph-duotone ${st.icon}"></i></span>
+                       <span class="users-badge ${online > 0 ? 'active' : ''}" title="Пользователей онлайн"><i class="ph-duotone ph-users"></i>${esc(online)}</span>`}
+                ${n.countryCode && n.countryCode !== 'XX' ? `<span class="flag">${flag(n.countryCode)}</span>` : ''}
+                <span class="nc-name">${esc(n.name)}</span>
+            </div>
+            <div class="nc-addr"><i class="ph ph-globe-simple"></i><span class="nc-addr-text" data-copy="${esc(n.address)}" title="Скопировать">${esc(n.address)}</span></div>
+            <div class="nc-traffic">
+                <div class="row between"><span class="mono fw6 dimmed sm">${fmtIec(n.trafficUsedBytes)}</span><span class="xs dimmed">${maxText}</span></div>
+                <div class="progress ${barCls}"><div style="width:${pct}%"></div></div>
+            </div>
+            <div class="nc-right">
+                ${tracking ? `<span class="nc-meta" title="Дней до сброса трафика"><i class="ph ph-arrows-counter-clockwise"></i>${daysUntilReset(n.trafficResetDay)}</span>` : '<span></span>'}
+                ${isOnline ? `<span class="nc-uptime" title="Аптайм Xray"><i class="ph-fill ph-star-four"></i>${fmtUptimeShort(n.xrayUptime)}</span>` : ''}
+            </div>
+        </div>
+        <div class="nc-sub">
+            <span class="nc-ram" title="Память"><i class="ph-duotone ph-memory"></i>
+                <span class="progress xs ${ramCls}"><span style="width:${ramPct ?? 0}%"></span></span>
+                <span class="mono">${ramPct !== null ? ramPct + '%' : '—'}</span></span>
+            <span class="nc-stat" title="${esc(loadTitle)}"><i class="ph-duotone ph-cpu"></i>
+                ${loads ? loads.slice(0, 3).map((l) => `<span class="${loadCls(l)}">${l.toFixed(2)}</span>`).join(' ') : '—'}</span>
+            <span class="nc-stat" title="Входящий трафик"><i class="ph-duotone ph-arrow-down" style="color:var(--teal-5)"></i>${rx ?? '—'}</span>
+            <span class="nc-stat" title="Исходящий трафик"><i class="ph-duotone ph-arrow-up" style="color:var(--cyan-6)"></i>${tx ?? '—'}</span>
+            <span class="spacer"></span>
+            <span class="nc-stat" title="Версия Xray"><i class="ph-fill ph-star-four"></i>${n.versions && n.versions.xray ? esc(n.versions.xray) : '—'}</span>
+            <span class="nc-stat" title="Версия Remnawave Node"><i class="ph ph-waveform"></i>${n.versions && n.versions.node ? esc(n.versions.node) : '—'}</span>
+        </div>
+        <button class="nc-menu" data-menu data-id="${esc(n.uuid)}" aria-label="Действия"><i class="ph ph-dots-six-vertical"></i></button>
+    </div>`;
 }
 
 function pageNodes(root, _param, page) {
@@ -527,7 +703,6 @@ function pageNodes(root, _param, page) {
         crumbs: ['Ноды'],
         actions: `
             <button class="icon-btn" id="refresh" title="Обновить"><i class="ph ph-arrows-clockwise"></i></button>
-            <button class="btn btn-light" id="restart-all"><i class="ph ph-arrow-counter-clockwise"></i>Перезапустить все</button>
             <button class="btn" id="create"><i class="ph ph-plus"></i>Создать</button>`,
     }) + `<div id="list">${loaderHtml()}</div>`;
 
@@ -549,33 +724,15 @@ function pageNodes(root, _param, page) {
             list.innerHTML = `<div class="card empty"><i class="ph-duotone ph-cpu"></i>Нод пока нет<div class="sm" style="margin-top:6px">Нажмите «Создать», чтобы добавить первую ноду</div></div>`;
             return;
         }
-        list.innerHTML = `<div class="node-list">${nodes.map((n) => {
-            const st = nodeStatus(n);
-            const limit = n.isTrafficTrackingActive && n.trafficLimitBytes ? n.trafficLimitBytes : 0;
-            const pct = limit ? Math.min(100, (n.trafficUsedBytes / limit) * 100) : 0;
-            return `
-            <div class="card clickable node-row" data-id="${esc(n.uuid)}">
-                <span class="dot ${st.cls}" title="${esc(st.text)}"></span>
-                <div style="min-width:0">
-                    <div class="name"><span class="flag">${flag(n.countryCode)}</span><span class="ellipsis">${esc(n.name)}</span></div>
-                    <div class="xs dimmed ellipsis">${esc(st.text)}${n.tags && n.tags.length ? ' · ' + n.tags.map(esc).join(', ') : ''}</div>
-                    <div class="xs dimmed mono ellipsis hidden m-only">${esc(n.address)}:${esc(n.port ?? '')}</div>
-                </div>
-                <div class="c-addr mono sm ellipsis dimmed">${esc(n.address)}${n.port ? ':' + esc(n.port) : ''}</div>
-                <div class="c-traffic">
-                    <div class="xs" style="margin-bottom:4px">${fmtBytes(n.trafficUsedBytes)} <span class="dimmed">/ ${limit ? fmtBytes(limit) : '∞'}</span></div>
-                    ${limit ? `<div class="progress ${pct >= 100 ? 'full' : pct >= 80 ? 'warn' : ''}"><div style="width:${pct}%"></div></div>` : '<div class="progress"><div style="width:0"></div></div>'}
-                </div>
-                <div class="c-online"><span class="online-pill" title="Пользователей онлайн"><i class="ph-duotone ph-users"></i>${esc(n.usersOnline ?? 0)}</span></div>
-                <div class="c-ver">${n.versions && n.versions.xray ? `<span class="badge gray lower">xray ${esc(n.versions.xray)}</span>` : `<span class="xs dimmed">—</span>`}
-                    ${n.xrayUptime ? `<div class="xs dimmed" style="margin-top:3px">${fmtUptime(n.xrayUptime)}</div>` : ''}</div>
-                <button class="icon-btn subtle" data-menu data-id="${esc(n.uuid)}" aria-label="Действия"><i class="ph ph-dots-three-vertical"></i></button>
-            </div>`;
-        }).join('')}</div>`;
+        list.innerHTML = `<div class="node-list">${nodes.map(nodeCardHtml).join('')}</div>`;
 
-        $$('.node-row', list).forEach((row) => row.addEventListener('click', () => {
+        $$('.node-card', list).forEach((row) => row.addEventListener('click', () => {
             const n = nodes.find((x) => x.uuid === row.dataset.id);
             if (n) nodeModal(n, () => load(true));
+        }));
+        $$('[data-copy]', list).forEach((el) => el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            copyText(el.dataset.copy);
         }));
         bindRowMenu(list, '[data-menu]', (id) => {
             const n = nodes.find((x) => x.uuid === id);
@@ -594,7 +751,7 @@ function pageNodes(root, _param, page) {
                         }
                     },
                 },
-                { text: 'Копировать UUID', icon: 'ph-copy', onClick: () => copyText(id) },
+                { text: 'Копировать адрес', icon: 'ph-copy', onClick: () => copyText(n.address) },
                 { divider: true },
                 {
                     text: 'Удалить', icon: 'ph-trash', red: true, onClick: async () => {
@@ -609,15 +766,99 @@ function pageNodes(root, _param, page) {
 
     $('#refresh', root).onclick = () => load();
     $('#create', root).onclick = () => nodeModal(null, () => load(true));
-    $('#restart-all', root).onclick = async () => {
-        if (await confirmDialog({ title: 'Перезапустить все ноды?', text: 'Xray будет перезапущен на всех нодах. Пользователи на пару секунд потеряют соединение.', confirmText: 'Перезапустить' })) {
-            run(() => api('POST', '/api/nodes/actions/restart-all', { forceRestart: false }), { success: 'Перезапуск отправлен на все ноды' }).then(() => load(true));
-        }
-    };
 
     load();
-    const timer = setInterval(() => { if (!modalStack.length && !openMenuEl) load(true); }, 15000);
+    const timer = setInterval(() => { if (!modalStack.length && !openMenuEl) load(true); }, 10000);
     page.destroy = () => clearInterval(timer);
+}
+
+/* ---------- выбор страны (выпадающий список с поиском, как в панели) ---------- */
+
+let ruRegionNames = null;
+try { ruRegionNames = new Intl.DisplayNames(['ru'], { type: 'region' }); } catch { /* старый браузер */ }
+
+function countryLabel(code) {
+    const c = COUNTRIES.find((x) => x[0] === code) || COUNTRIES[0];
+    return `${c[0] === 'XX' ? '🏴‍☠️' : flag(c[0])} ${c[1]}`;
+}
+
+function countrySelectHtml(name, value) {
+    const v = COUNTRIES.some((c) => c[0] === value) ? value : 'XX';
+    return `
+        <div class="combo" data-combo>
+            <input type="hidden" name="${esc(name)}" value="${esc(v)}">
+            <div class="input-wrap">
+                <i class="ph ph-map-pin"></i>
+                <input class="input combo-input" placeholder="Выберите страну" autocomplete="off" spellcheck="false" value="${esc(v === 'XX' ? '' : countryLabel(v))}">
+                <i class="ph ph-caret-up-down combo-chevron"></i>
+            </div>
+            <div class="combo-drop hidden" role="listbox"></div>
+        </div>`;
+}
+
+function bindCountrySelect(root) {
+    const box = $('[data-combo]', root);
+    if (!box) return;
+    const hidden = $('input[type=hidden]', box);
+    const input = $('.combo-input', box);
+    const drop = $('.combo-drop', box);
+    let items = [];
+    let active = 0;
+
+    const searchText = (c) => `${c[0]} ${c[1]} ${ruRegionNames && c[0] !== 'XX' ? ruRegionNames.of(c[0]) || '' : ''}`.toLowerCase();
+
+    const draw = (query) => {
+        const q = (query || '').trim().toLowerCase();
+        items = q ? COUNTRIES.filter((c) => searchText(c).includes(q)) : COUNTRIES;
+        active = Math.max(0, items.findIndex((c) => c[0] === hidden.value));
+        if (q) active = 0;
+        drop.innerHTML = items.length
+            ? items.map((c, i) => `<div class="combo-opt ${i === active ? 'active' : ''} ${c[0] === hidden.value ? 'selected' : ''}" data-i="${i}">${esc(countryLabel(c[0]))}</div>`).join('')
+            : '<div class="combo-empty">Ничего не найдено</div>';
+        const act = $('.combo-opt.active', drop);
+        if (act) act.scrollIntoView({ block: 'nearest' });
+    };
+    const open = () => {
+        drop.classList.remove('hidden');
+        draw('');
+    };
+    const close = () => {
+        drop.classList.add('hidden');
+        input.value = hidden.value === 'XX' ? '' : countryLabel(hidden.value);
+    };
+    const choose = (i) => {
+        const c = items[i];
+        if (!c) return;
+        hidden.value = c[0];
+        close();
+        input.blur();
+    };
+    const setActive = (i) => {
+        active = Math.max(0, Math.min(items.length - 1, i));
+        $$('.combo-opt', drop).forEach((el, k) => el.classList.toggle('active', k === active));
+        const act = $('.combo-opt.active', drop);
+        if (act) act.scrollIntoView({ block: 'nearest' });
+    };
+
+    input.addEventListener('focus', () => { input.select(); open(); });
+    input.addEventListener('click', () => { if (drop.classList.contains('hidden')) open(); });
+    input.addEventListener('input', () => { drop.classList.remove('hidden'); draw(input.value); });
+    input.addEventListener('blur', () => setTimeout(close, 120));
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); if (drop.classList.contains('hidden')) open(); else setActive(active + 1); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(active - 1); }
+        else if (e.key === 'Enter') { e.preventDefault(); choose(active); }
+        else if (e.key === 'Escape' && !drop.classList.contains('hidden')) { e.stopPropagation(); close(); input.blur(); }
+    });
+    drop.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // не терять фокус до выбора
+        const opt = e.target.closest('.combo-opt');
+        if (opt) choose(Number(opt.dataset.i));
+    });
+    $('.combo-chevron', box).addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        if (drop.classList.contains('hidden')) input.focus(); else { close(); input.blur(); }
+    });
 }
 
 function dockerCompose(secret, port) {
@@ -639,25 +880,22 @@ function dockerCompose(secret, port) {
       - SECRET_KEY="${(secret || '').trimEnd()}"`;
 }
 
-async function nodeModal(node, onDone) {
+function nodeModal(node, onDone) {
     const isNew = !node;
-    const closeLoading = openModal({ title: isNew ? 'Новая нода' : node.name, icon: 'ph-cpu', size: 'lg', body: loaderHtml() });
-    let profiles = [];
-    let secret = '';
-    try {
-        const [p, k] = await Promise.all([
+    openModalAsync({
+        title: isNew ? 'Новая нода' : node.name,
+        icon: 'ph-cpu',
+        size: 'lg',
+        load: () => Promise.all([
             loadProfiles(),
             isNew ? api('GET', '/api/keygen').catch((e) => { if (e.status === 401) throw e; return null; }) : Promise.resolve(null),
-        ]);
-        profiles = p;
-        secret = k && k.secretKey ? k.secretKey : '';
-    } catch (e) {
-        closeLoading();
-        handleError(e);
-        return;
-    }
-    closeLoading();
+        ]),
+        render: ([profiles, k]) => nodeModalContent(node, profiles, k && k.secretKey ? k.secretKey : '', onDone),
+    });
+}
 
+function nodeModalContent(node, profiles, secret, onDone) {
+    const isNew = !node;
     const n = node || {};
     const cp = n.configProfile || {};
     const activeProfile = cp.activeConfigProfileUuid || (profiles[0] && profiles[0].uuid) || '';
@@ -676,9 +914,7 @@ async function nodeModal(node, onDone) {
         <form class="fgrid" id="node-form" autocomplete="off">
             <div class="field"><label>Название<span class="req">*</span></label>
                 <input class="input" name="name" value="${esc(n.name)}" minlength="3" maxlength="30" required placeholder="Germany 1"></div>
-            <div class="field"><label>Код страны</label>
-                <div class="input-wrap"><i class="flag" id="cc-flag" style="font-style:normal">${flag(n.countryCode)}</i>
-                <input class="input" name="countryCode" value="${esc(n.countryCode && n.countryCode !== 'XX' ? n.countryCode : '')}" maxlength="2" placeholder="DE" style="text-transform:uppercase"></div></div>
+            <div class="field"><label>Страна</label>${countrySelectHtml('countryCode', n.countryCode)}</div>
             <div class="field"><label>Адрес<span class="req">*</span></label>
                 <input class="input mono" name="address" value="${esc(n.address)}" required minlength="2" placeholder="1.2.3.4 или node.example.com"></div>
             <div class="field"><label>Порт ноды</label>
@@ -711,10 +947,7 @@ async function nodeModal(node, onDone) {
         </form>
         ${!isNew ? `<div class="xs dimmed">UUID: <span class="mono">${esc(n.uuid)}</span> · создана ${esc(fmtDate(n.createdAt))}</div>` : ''}`;
 
-    openModal({
-        title: isNew ? 'Новая нода' : node.name,
-        icon: 'ph-cpu',
-        size: 'lg',
+    return {
         body,
         foot: `${!isNew ? '<button class="btn btn-red-light left" id="del"><i class="ph ph-trash"></i>Удалить</button>' : ''}
                <button class="btn btn-default" data-cancel>Отмена</button>
@@ -724,7 +957,7 @@ async function nodeModal(node, onDone) {
             const f = (name) => form.elements[name];
             $('[data-cancel]', m).onclick = close;
 
-            f('countryCode').addEventListener('input', () => { $('#cc-flag', m).textContent = flag(f('countryCode').value); });
+            bindCountrySelect(m);
 
             if (isNew && secret) {
                 const updateCompose = () => {
@@ -777,7 +1010,7 @@ async function nodeModal(node, onDone) {
                     name: f('name').value.trim(),
                     address: f('address').value.trim(),
                     port: num('port'),
-                    countryCode: (f('countryCode').value.trim() || 'XX').toUpperCase(),
+                    countryCode: f('countryCode').value || 'XX',
                     isTrafficTrackingActive: f('isTrafficTrackingActive').checked,
                     trafficLimitBytes: limitGb !== undefined ? Math.round(limitGb * GB) : 0,
                     trafficResetDay: num('trafficResetDay'),
@@ -803,7 +1036,7 @@ async function nodeModal(node, onDone) {
                 if (r !== undefined) { close(); onDone(); }
             };
         },
-    });
+    };
 }
 
 /* =========================================================================
@@ -875,7 +1108,7 @@ function pageProfiles(root) {
 
     const load = async () => {
         try {
-            profiles = await loadProfiles();
+            profiles = await loadProfiles({ fresh: true });
             draw();
         } catch (e) {
             if (e instanceof ApiError && e.status === 401) return handleError(e);
@@ -916,6 +1149,7 @@ function pageProfiles(root) {
                         title: 'Переименовать профиль', icon: 'ph-file-code', value: p.name, confirmText: 'Сохранить',
                         onSubmit: async (name) => {
                             const r = await run(() => api('PATCH', '/api/config-profiles', { uuid: id, name }), { success: 'Профиль переименован' });
+                            invalidateProfiles();
                             if (r !== undefined) load();
                             return r !== undefined;
                         },
@@ -927,7 +1161,7 @@ function pageProfiles(root) {
                     text: 'Удалить', icon: 'ph-trash', red: true, onClick: async () => {
                         const nodesNote = (p.nodes || []).length ? `<br><br>Профиль используется на ${p.nodes.length} ${plural(p.nodes.length, 'ноде', 'нодах', 'нодах')}.` : '';
                         if (await confirmDialog({ title: 'Удалить профиль?', text: `Профиль <b>${esc(p.name)}</b> будет удалён. Это действие необратимо.${nodesNote}`, confirmText: 'Удалить', danger: true })) {
-                            run(() => api('DELETE', `/api/config-profiles/${id}`), { success: 'Профиль удалён' }).then(load);
+                            run(() => api('DELETE', `/api/config-profiles/${id}`), { success: 'Профиль удалён' }).then(() => { invalidateProfiles(); load(); });
                         }
                     },
                 },
@@ -940,6 +1174,7 @@ function pageProfiles(root) {
         title: 'Новый профиль', icon: 'ph-file-code', confirmText: 'Создать',
         onSubmit: async (name) => {
             const r = await run(() => api('POST', '/api/config-profiles', { name, config: defaultProfileConfig() }), { success: 'Профиль создан' });
+            invalidateProfiles();
             if (r && r.uuid) location.hash = `#/profile/${r.uuid}`;
             else if (r !== undefined) load();
             return r !== undefined;
@@ -1057,6 +1292,7 @@ async function pageProfileEditor(root, uuid, page) {
         const r = await run(() => api('PATCH', '/api/config-profiles', { uuid, config }), { success: 'Профиль сохранён' });
         setBusy(btn, false);
         if (r !== undefined) {
+            invalidateProfiles();
             saved = getValue();
             markDirty();
             if (r && r.inbounds) drawSide({ ...profile, ...r });
@@ -1215,20 +1451,20 @@ function pageSquads(root) {
     load();
 }
 
-async function squadModal(squad, onDone) {
+function squadModal(squad, onDone) {
+    openModalAsync({
+        title: squad ? squad.name : 'Новый внутренний сквад',
+        icon: 'ph-circles-three-plus',
+        load: () => loadProfiles(),
+        render: (profiles) => squadModalContent(squad, profiles, onDone),
+    });
+}
+
+function squadModalContent(squad, profiles, onDone) {
     const isNew = !squad;
-    let profiles;
-    try {
-        profiles = await loadProfiles();
-    } catch (e) {
-        handleError(e);
-        return;
-    }
     const selected = new Set(((squad && squad.inbounds) || []).map((i) => i.uuid));
 
-    openModal({
-        title: isNew ? 'Новый внутренний сквад' : squad.name,
-        icon: 'ph-circles-three-plus',
+    return {
         body: `
             <form id="sf" class="stack" autocomplete="off" style="gap:14px">
                 <div class="field"><label>Название<span class="req">*</span></label>
@@ -1269,7 +1505,7 @@ async function squadModal(squad, onDone) {
                 if (r !== undefined) { close(); onDone(); }
             };
         },
-    });
+    };
 }
 
 /* =========================================================================
@@ -1279,7 +1515,13 @@ async function squadModal(squad, onDone) {
 const FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', '360', 'qq', 'random', 'randomized'];
 const ALPNS = ['h3', 'h2', 'http/1.1', 'h2,http/1.1', 'h3,h2,http/1.1', 'h3,h2'];
 
-function pageHosts(root) {
+function hostStatus(h) {
+    if (h.isDisabled) return { cls: 'disabled', icon: 'ph-prohibit', text: 'Отключён' };
+    if (h.isHidden) return { cls: 'hidden-host', icon: 'ph-eye-slash', text: 'Скрыт из подписки' };
+    return { cls: 'online', icon: 'ph-pulse', text: 'Активен' };
+}
+
+function pageHosts(root, _param, page) {
     root.innerHTML = pageHead({
         title: 'Хосты',
         crumbs: ['Хосты'],
@@ -1289,51 +1531,72 @@ function pageHosts(root) {
     const list = $('#list', root);
     let hosts = [];
     let profiles = [];
+    const selected = new Set();
+
+    const bar = document.createElement('div');
+    bar.className = 'bulk-bar hidden';
+    document.body.appendChild(bar);
+    page.destroy = () => bar.remove();
 
     const load = async () => {
         try {
             [hosts, profiles] = await Promise.all([
                 api('GET', '/api/hosts'),
-                loadProfiles().catch((e) => { if (e.status === 401) throw e; return []; }),
+                loadProfiles({ fresh: true }).catch((e) => { if (e.status === 401) throw e; return []; }),
             ]);
+            const alive = new Set(hosts.map((h) => h.uuid));
+            [...selected].forEach((u) => { if (!alive.has(u)) selected.delete(u); });
             draw();
         } catch (e) {
             if (e instanceof ApiError && e.status === 401) return handleError(e);
             list.innerHTML = errorBox(e);
+            selected.clear();
+            drawBar();
         }
     };
 
-    const inboundLabel = (h) => {
+    const inboundInfo = (h) => {
         const p = profiles.find((x) => x.uuid === (h.inbound && h.inbound.configProfileUuid));
         const i = p && (p.inbounds || []).find((x) => x.uuid === h.inbound.configProfileInboundUuid);
-        return { profile: p ? p.name : '—', tag: i ? i.tag : '—' };
+        return { profile: p, tag: i ? i.tag : null };
     };
 
     const draw = () => {
         if (!hosts.length) {
             list.innerHTML = '<div class="card empty"><i class="ph-duotone ph-list-checks"></i>Хостов пока нет</div>';
+            drawBar();
             return;
         }
         list.innerHTML = `<div class="node-list">${hosts.map((h) => {
-            const il = inboundLabel(h);
+            const st = hostStatus(h);
+            const inf = inboundInfo(h);
             return `
-            <div class="card clickable host-row ${h.isDisabled ? 'off' : ''}" data-id="${esc(h.uuid)}">
-                <span class="dot ${h.isDisabled ? 'disabled' : 'online'}" title="${h.isDisabled ? 'Отключён' : 'Включён'}"></span>
-                <div style="min-width:0">
-                    <div class="fw6 ellipsis">${esc(h.remark)}</div>
-                    <div class="row" style="gap:6px;margin-top:2px">
-                        ${h.isHidden ? '<span class="badge gray">скрыт</span>' : ''}
-                        ${h.securityLayer && h.securityLayer !== 'DEFAULT' ? `<span class="badge violet">${esc(h.securityLayer)}</span>` : ''}
+            <div class="host-card ${selected.has(h.uuid) ? 'selected' : ''} ${inf.profile ? '' : 'dangling'}" data-id="${esc(h.uuid)}">
+                <label class="hc-check" title="Выбрать"><input type="checkbox" data-sel="${esc(h.uuid)}" ${selected.has(h.uuid) ? 'checked' : ''}></label>
+                <div class="hc-body" data-open="${esc(h.uuid)}">
+                    <div class="hc-line">
+                        <span class="st-icon sm ${st.cls}" title="${esc(st.text)}"><i class="ph-duotone ${st.icon}"></i></span>
+                        <span class="hc-remark">${esc(h.remark)}</span>
+                        <span class="hc-addr">${esc(h.address)}${h.port ? ':' + esc(h.port) : ''}</span>
+                    </div>
+                    <div class="hc-tags">
+                        ${inf.profile
+                            ? `<span class="hc-tag" style="color:${hashColor(inf.profile.uuid)}"><i class="ph-fill ph-star-four"></i>${esc(inf.profile.name)}<span class="sep">›</span><span style="opacity:.75">${esc(inf.tag || 'UNKNOWN')}</span></span>`
+                            : '<span class="hc-tag" style="color:var(--red-5)"><i class="ph ph-warning-circle"></i>DANGLING</span>'}
+                        ${(h.tags || []).slice().sort().map((t) => `<span class="hc-tag" style="color:${hashColor(t)}"><i class="ph ph-star"></i>${esc(t)}</span>`).join('')}
                     </div>
                 </div>
-                <div class="c-addr mono sm dimmed ellipsis">${esc(h.address)}:${esc(h.port)}</div>
-                <div class="c-inb" style="min-width:0"><div class="mono sm fw6 ellipsis">${esc(il.tag)}</div><div class="xs dimmed ellipsis">${esc(il.profile)}</div></div>
-                <button class="icon-btn subtle" data-menu data-id="${esc(h.uuid)}"><i class="ph ph-dots-three-vertical"></i></button>
+                <button class="icon-btn subtle" data-menu data-id="${esc(h.uuid)}" aria-label="Действия"><i class="ph ph-dots-three-vertical"></i></button>
             </div>`;
         }).join('')}</div>`;
 
-        $$('.host-row', list).forEach((row) => row.addEventListener('click', () => {
-            hostModal(hosts.find((x) => x.uuid === row.dataset.id), profiles, load);
+        $$('[data-open]', list).forEach((el) => el.addEventListener('click', () => {
+            hostModal(hosts.find((x) => x.uuid === el.dataset.open), profiles, load);
+        }));
+        $$('[data-sel]', list).forEach((cb) => cb.addEventListener('change', () => {
+            if (cb.checked) selected.add(cb.dataset.sel); else selected.delete(cb.dataset.sel);
+            cb.closest('.host-card').classList.toggle('selected', cb.checked);
+            drawBar();
         }));
         bindRowMenu(list, '[data-menu]', (id) => {
             const h = hosts.find((x) => x.uuid === id);
@@ -1341,10 +1604,14 @@ function pageHosts(root) {
                 { label: h.remark },
                 { text: 'Редактировать', icon: 'ph-pencil-simple', onClick: () => hostModal(h, profiles, load) },
                 {
-                    text: h.isDisabled ? 'Включить' : 'Отключить', icon: 'ph-power',
+                    text: h.isDisabled ? 'Включить' : 'Отключить', icon: h.isDisabled ? 'ph-pulse' : 'ph-prohibit',
                     onClick: () => run(() => api('PATCH', '/api/hosts', { uuid: id, isDisabled: !h.isDisabled }), { success: h.isDisabled ? 'Хост включён' : 'Хост отключён' }).then(load),
                 },
-                { text: 'Копировать UUID', icon: 'ph-copy', onClick: () => copyText(id) },
+                {
+                    text: h.isHidden ? 'Показать в подписке' : 'Скрыть из подписки', icon: h.isHidden ? 'ph-eye' : 'ph-eye-slash',
+                    onClick: () => run(() => api('PATCH', '/api/hosts', { uuid: id, isHidden: !h.isHidden }), { success: h.isHidden ? 'Хост снова в подписке' : 'Хост скрыт из подписки' }).then(load),
+                },
+                { text: 'Клонировать', icon: 'ph-copy', onClick: () => run(() => api('POST', '/api/hosts/actions/clone', { cloneFromUuid: id }), { success: 'Хост склонирован' }).then(load) },
                 { divider: true },
                 {
                     text: 'Удалить', icon: 'ph-trash', red: true, onClick: async () => {
@@ -1355,11 +1622,114 @@ function pageHosts(root) {
                 },
             ];
         });
+        drawBar();
+    };
+
+    // ---------- массовые действия ----------
+
+    const uuids = () => hosts.filter((h) => selected.has(h.uuid)).map((h) => h.uuid);
+
+    const bulk = async (method, path, body, msg) => {
+        const r = await run(() => api(method, path, body), { success: msg });
+        if (r !== undefined) selected.clear();
+        load();
+    };
+
+    const move = async (dir) => {
+        const order = hosts.slice();
+        const sel = (h) => selected.has(h.uuid);
+        if (dir === 'top') order.sort((a, b) => sel(b) - sel(a));
+        if (dir === 'bottom') order.sort((a, b) => sel(a) - sel(b));
+        if (dir === 'up') {
+            for (let i = 1; i < order.length; i++) {
+                if (sel(order[i]) && !sel(order[i - 1])) [order[i - 1], order[i]] = [order[i], order[i - 1]];
+            }
+        }
+        if (dir === 'down') {
+            for (let i = order.length - 2; i >= 0; i--) {
+                if (sel(order[i]) && !sel(order[i + 1])) [order[i], order[i + 1]] = [order[i + 1], order[i]];
+            }
+        }
+        if (order.every((h, i) => h === hosts[i])) return;
+        hosts = order;
+        draw();
+        const r = await run(() => api('POST', '/api/hosts/actions/reorder', { hosts: order.map((h, i) => ({ uuid: h.uuid, viewPosition: i })) }));
+        if (r === undefined) load();
+    };
+
+    const drawBar = () => {
+        const ids = uuids();
+        if (!ids.length) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
+        const allHidden = hosts.filter((h) => selected.has(h.uuid)).every((h) => h.isHidden);
+        bar.classList.remove('hidden');
+        bar.innerHTML = `
+            <div class="bulk-inner">
+                <div class="row between">
+                    <span class="badge gray filled-gray">Выбрано: ${ids.length}</span>
+                    <span class="row" style="gap:2px">
+                        <button class="icon-btn subtle" data-b="all" title="Выбрать все"><i class="ph ph-selection-all"></i></button>
+                        <button class="icon-btn subtle" data-b="clear" title="Снять выделение"><i class="ph ph-x"></i></button>
+                    </span>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-soft-gray" data-b="top" title="В начало"><i class="ph ph-arrow-line-up"></i></button>
+                    <button class="btn btn-soft-gray" data-b="up" title="Выше"><i class="ph ph-arrow-fat-up"></i></button>
+                    <button class="btn btn-soft-gray" data-b="down" title="Ниже"><i class="ph ph-arrow-fat-down"></i></button>
+                    <button class="btn btn-soft-gray" data-b="bottom" title="В конец"><i class="ph ph-arrow-line-down"></i></button>
+                </div>
+                <div class="bulk-pair">
+                    <button class="btn btn-soft-green" data-b="enable"><i class="ph-duotone ph-pulse"></i>Включить</button>
+                    <button class="btn btn-soft-gray" data-b="disable"><i class="ph-duotone ph-prohibit"></i>Выключить</button>
+                </div>
+                ${allHidden
+                    ? '<button class="btn btn-soft-violet btn-block" data-b="show"><i class="ph ph-eye"></i>Показать в подписке</button>'
+                    : '<button class="btn btn-soft-violet btn-block" data-b="hide"><i class="ph ph-eye-slash"></i>Скрыть из подписки</button>'}
+                <button class="btn btn-soft-cyan btn-block" data-b="update"><i class="ph ph-squares-four"></i>Обновить</button>
+                <button class="btn btn-soft-indigo btn-block" data-b="clone"><i class="ph ph-copy"></i>Клонировать</button>
+                <button class="btn btn-red-light btn-block" data-b="delete"><i class="ph ph-trash"></i>Удалить</button>
+            </div>`;
+
+        const actions = {
+            all: () => { hosts.forEach((h) => selected.add(h.uuid)); draw(); },
+            clear: () => { selected.clear(); draw(); },
+            top: () => move('top'),
+            up: () => move('up'),
+            down: () => move('down'),
+            bottom: () => move('bottom'),
+            enable: () => bulk('POST', '/api/hosts/bulk/enable', { uuids: ids }, `Включено: ${ids.length}`),
+            disable: () => bulk('POST', '/api/hosts/bulk/disable', { uuids: ids }, `Выключено: ${ids.length}`),
+            hide: () => bulk('PATCH', '/api/hosts/bulk/update', { uuids: ids, isHidden: true }, `Скрыто из подписки: ${ids.length}`),
+            show: () => bulk('PATCH', '/api/hosts/bulk/update', { uuids: ids, isHidden: false }, `Возвращено в подписку: ${ids.length}`),
+            update: () => bulkUpdateModal(ids, profiles, () => { selected.clear(); load(); }),
+            clone: async () => {
+                const src = hosts.filter((h) => selected.has(h.uuid) && h.inbound && h.inbound.configProfileInboundUuid);
+                if (!src.length) { toast('error', 'Нечего клонировать', 'У выбранных хостов нет инбаунда'); return; }
+                if (!(await confirmDialog({ title: 'Клонировать хосты?', text: `Будет создано копий: <b>${src.length}</b>.`, confirmText: 'Клонировать' }))) return;
+                let ok = 0;
+                for (const h of src) {
+                    try { await api('POST', '/api/hosts/actions/clone', { cloneFromUuid: h.uuid }); ok++; } catch (e) { handleError(e); break; }
+                }
+                if (ok) toast('success', `Склонировано: ${ok}`);
+                selected.clear();
+                load();
+            },
+            delete: async () => {
+                if (await confirmDialog({ title: 'Удалить хосты?', text: `Будет удалено хостов: <b>${ids.length}</b>. Они пропадут из подписок пользователей.`, confirmText: 'Удалить', danger: true })) {
+                    bulk('POST', '/api/hosts/bulk/delete', { uuids: ids }, `Удалено: ${ids.length}`);
+                }
+            },
+        };
+        $$('[data-b]', bar).forEach((b) => { b.onclick = () => actions[b.dataset.b](); });
     };
 
     $('#refresh', root).onclick = load;
     $('#create', root).onclick = () => hostModal(null, profiles, load);
     load();
+}
+
+function hostInboundOptions(profiles, cur, emptyLabel) {
+    const opt = (v, label) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+    return opt('', emptyLabel) + profiles.map((p) => `<optgroup label="${esc(p.name)}">${(p.inbounds || []).map((i) => opt(`${p.uuid}|${i.uuid}`, `${i.tag} (${i.type}${i.port ? ', ' + i.port : ''})`)).join('')}</optgroup>`).join('');
 }
 
 function hostModal(host, profiles, onDone) {
@@ -1377,10 +1747,7 @@ function hostModal(host, profiles, onDone) {
                 <div class="field"><label>Название (remark)<span class="req">*</span></label>
                     <input class="input" name="remark" value="${esc(h.remark)}" required maxlength="100" placeholder="🇩🇪 Germany"></div>
                 <div class="field"><label>Инбаунд<span class="req">*</span></label>
-                    <select class="select" name="inbound" required>
-                        <option value="">— выберите —</option>
-                        ${profiles.map((p) => `<optgroup label="${esc(p.name)}">${(p.inbounds || []).map((i) => opt(`${p.uuid}|${i.uuid}`, curInbound, `${i.tag} (${i.type}${i.port ? ', ' + i.port : ''})`)).join('')}</optgroup>`).join('')}
-                    </select></div>
+                    <select class="select" name="inbound" required>${hostInboundOptions(profiles, curInbound, '— выберите —')}</select></div>
                 <div class="field"><label>Адрес<span class="req">*</span></label>
                     <input class="input mono" name="address" value="${esc(h.address)}" required placeholder="node.example.com"></div>
                 <div class="field"><label>Порт<span class="req">*</span></label>
@@ -1390,7 +1757,6 @@ function hostModal(host, profiles, onDone) {
                     <div class="fieldset-legend"><i class="ph ph-shield-check"></i>Транспорт и безопасность</div>
                     <div class="fgrid">
                         <div class="field"><label>SNI</label><input class="input mono" name="sni" value="${esc(h.sni)}"></div>
-                        <div class="field"><label>Host</label><input class="input mono" name="host" value="${esc(h.host)}"></div>
                         <div class="field"><label>Path</label><input class="input mono" name="path" value="${esc(h.path)}"></div>
                         <div class="field"><label>Security layer</label>
                             <select class="select" name="securityLayer">${['DEFAULT', 'TLS', 'NONE'].map((v) => opt(v, h.securityLayer)).join('')}</select></div>
@@ -1398,11 +1764,14 @@ function hostModal(host, profiles, onDone) {
                             <select class="select" name="alpn">${opt('', h.alpn, 'по умолчанию')}${ALPNS.map((v) => opt(v, h.alpn)).join('')}</select></div>
                         <div class="field"><label>Fingerprint</label>
                             <select class="select" name="fingerprint">${opt('', h.fingerprint, 'по умолчанию')}${FINGERPRINTS.map((v) => opt(v, h.fingerprint)).join('')}</select></div>
+                        <div class="field"><label>Описание сервера</label>
+                            <input class="input" name="serverDescription" maxlength="30" value="${esc(h.serverDescription)}" placeholder="до 30 символов"></div>
                     </div>
                 </div>
 
-                <div class="field full"><label>Описание сервера</label>
-                    <input class="input" name="serverDescription" maxlength="30" value="${esc(h.serverDescription)}" placeholder="до 30 символов"></div>
+                <div class="field full"><label>Теги</label>
+                    <div class="desc">Через запятую. Только A–Z, 0–9, _ и :</div>
+                    <input class="input mono" name="tags" value="${esc((h.tags || []).join(', '))}" placeholder="ALL_COUNTRY, NETHERLANDSGROUP_MAIN"></div>
                 <div class="row wrap full" style="gap:24px">
                     <label class="switch"><input type="checkbox" name="isDisabled" ${h.isDisabled ? 'checked' : ''}><span class="track"></span><span>Отключён</span></label>
                     <label class="switch"><input type="checkbox" name="isHidden" ${h.isHidden ? 'checked' : ''}><span class="track"></span><span>Скрыт из подписки</span></label>
@@ -1427,18 +1796,19 @@ function hostModal(host, profiles, onDone) {
                 if (!form.reportValidity()) return;
                 const [configProfileUuid, configProfileInboundUuid] = f('inbound').value.split('|');
                 const orNull = (n) => f(n).value.trim() || null;
+                // поле host не трогаем: оно берётся из конфига инбаунда
                 const payload = {
                     remark: f('remark').value.trim(),
                     address: f('address').value.trim(),
                     port: Number(f('port').value),
                     inbound: { configProfileUuid, configProfileInboundUuid },
                     sni: orNull('sni'),
-                    host: orNull('host'),
                     path: orNull('path'),
                     securityLayer: f('securityLayer').value,
                     alpn: orNull('alpn'),
                     fingerprint: orNull('fingerprint'),
                     serverDescription: orNull('serverDescription'),
+                    tags: parseTags(f('tags').value),
                     isDisabled: f('isDisabled').checked,
                     isHidden: f('isHidden').checked,
                 };
@@ -1448,6 +1818,64 @@ function hostModal(host, profiles, onDone) {
                     () => (isNew ? api('POST', '/api/hosts', payload) : api('PATCH', '/api/hosts', { uuid: h.uuid, ...payload })),
                     { success: isNew ? 'Хост создан' : 'Хост сохранён' },
                 );
+                setBusy(btn, false);
+                if (r !== undefined) { close(); onDone(); }
+            };
+        },
+    });
+}
+
+// Массовое изменение: применяются только заполненные поля
+function bulkUpdateModal(ids, profiles, onDone) {
+    const keep = '— не менять —';
+    const opt = (v, label) => `<option value="${esc(v)}">${esc(label ?? v)}</option>`;
+    openModal({
+        title: `Обновить хосты (${ids.length})`,
+        icon: 'ph-squares-four',
+        size: 'lg',
+        body: `
+            <div class="alert info"><i class="ph ph-info"></i><div class="sm">Изменятся только заполненные поля. Пустые останутся как есть у каждого хоста.</div></div>
+            <form class="fgrid" id="bf" autocomplete="off">
+                <div class="field full"><label>Инбаунд</label>
+                    <select class="select" name="inbound">${hostInboundOptions(profiles, '', keep)}</select></div>
+                <div class="field"><label>Адрес</label><input class="input mono" name="address" placeholder="${keep}"></div>
+                <div class="field"><label>Порт</label><input class="input mono" name="port" type="number" min="1" max="65535" placeholder="${keep}"></div>
+                <div class="field"><label>SNI</label><input class="input mono" name="sni" placeholder="${keep}"></div>
+                <div class="field"><label>Path</label><input class="input mono" name="path" placeholder="${keep}"></div>
+                <div class="field"><label>Security layer</label>
+                    <select class="select" name="securityLayer">${opt('', keep)}${['DEFAULT', 'TLS', 'NONE'].map((v) => opt(v)).join('')}</select></div>
+                <div class="field"><label>ALPN</label>
+                    <select class="select" name="alpn">${opt('', keep)}${ALPNS.map((v) => opt(v)).join('')}</select></div>
+                <div class="field"><label>Fingerprint</label>
+                    <select class="select" name="fingerprint">${opt('', keep)}${FINGERPRINTS.map((v) => opt(v)).join('')}</select></div>
+                <div class="field"><label>Описание сервера</label><input class="input" name="serverDescription" maxlength="30" placeholder="${keep}"></div>
+                <div class="field full"><label>Теги</label>
+                    <div class="desc">Заменят текущие теги выбранных хостов. Через запятую.</div>
+                    <input class="input mono" name="tags" placeholder="${keep}"></div>
+            </form>`,
+        foot: `<button class="btn btn-default" data-cancel>Отмена</button>
+               <button class="btn" id="save"><i class="ph ph-floppy-disk"></i>Применить</button>`,
+        onMount: (m, close) => {
+            const form = $('#bf', m);
+            const f = (n) => form.elements[n];
+            $('[data-cancel]', m).onclick = close;
+            $('#save', m).onclick = async () => {
+                if (!form.reportValidity()) return;
+                const payload = { uuids: ids };
+                if (f('inbound').value) {
+                    const [configProfileUuid, configProfileInboundUuid] = f('inbound').value.split('|');
+                    payload.inbound = { configProfileUuid, configProfileInboundUuid };
+                }
+                ['address', 'sni', 'path', 'serverDescription', 'securityLayer', 'alpn', 'fingerprint'].forEach((n) => {
+                    const v = f(n).value.trim();
+                    if (v) payload[n] = v;
+                });
+                if (f('port').value) payload.port = Number(f('port').value);
+                if (f('tags').value.trim()) payload.tags = parseTags(f('tags').value);
+                if (Object.keys(payload).length === 1) { toast('info', 'Нет изменений', 'Заполните хотя бы одно поле'); return; }
+                const btn = $('#save', m);
+                setBusy(btn, true);
+                const r = await run(() => api('PATCH', '/api/hosts/bulk/update', payload), { success: `Обновлено хостов: ${ids.length}` });
                 setBusy(btn, false);
                 if (r !== undefined) { close(); onDone(); }
             };
