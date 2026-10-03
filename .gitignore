@@ -1,3 +1,4 @@
 # Локальные данные админки скриптов — не должны попадать в git
 /data/
 /includes/scripts_config.php
+/includes/rw_config.php
