@@ -311,6 +311,21 @@ async def month(message: types.Message, command, c, settings) -> None:
 
     snap = await published(c, data)
     tickets = (snap.get('rows') if snap else None) or data['rows']
+    pool = len(tickets)
+
+    # Победители главных призов в этом жребии не участвуют: приз в одни
+    # руки — то, о чём договариваются до розыгрыша. Список берётся тот же,
+    # что показывает `/rafflewinners`, — хоть брошенный ботом, хоть
+    # присланный таблицей.
+    main = await saved(c, key[6:])
+    busy = {int(item['user_id']) for item in (main or {}).get('winners') or []}
+    if busy:
+        tickets = [item for item in tickets if int(item['owner']) not in busy]
+    if not tickets:
+        await message.answer(f'{e("cross")} Тащить не из чего: все билеты '
+                             f'принадлежат победителям главных призов.')
+        return
+
     winners = domain.draw(tickets, count)
 
     row = {'_id': key, 'at': now(), 'admin_id': message.from_user.id,
@@ -327,6 +342,10 @@ async def month(message: types.Message, command, c, settings) -> None:
              key, len(row['winners']), len(data['participants']))
 
     text = month_text(row)
+    if busy:
+        text += (f'\n{e("ok")} Победители главных призов в жребии не '
+                 f'участвовали: {len(busy)} чел., их {pool - len(tickets)} '
+                 f'билетов отложены.')
     if len(winners) < count:
         text += (f'\n\n{e("warning")} Просили {count}, а участников хватило '
                  f'на {len(winners)}: один человек получает не больше '
@@ -379,6 +398,8 @@ async def _award_month(message, c, settings, key: str, row: dict) -> None:
 
 WINNERS_USAGE = (
     f'{e("trophy")} <b>Список победителей</b>\n\n'
+    f'<code>/rafflewinners</code> без списка — показать всех, кто уже '
+    f'записан.\n\n'
     f'Пришлите таблицу — по строке на человека. Можно прямо копией из '
     f'Excel:\n\n'
     f'<code>iPhone 18 Pro\t347****14\t5389\t347223714\n'
@@ -468,6 +489,57 @@ def parse_winners(text: str) -> tuple[list[dict], list[str]]:
     return found, broken
 
 
+async def everyone(c, settings) -> str:
+    """Общий список: главные призы и месяцы подписки одним экраном.
+
+    Списка два, потому что письма у них разные, но смотреть на них
+    приходится вместе: «кто вообще что выиграл» — первый вопрос, который
+    задают после розыгрыша.
+    """
+    start, end = await period(_no_args(None), settings)
+    if not start or not end:
+        return NO_DATES + USAGE
+
+    base = f'{fmt(start, "%Y%m%d")}-{fmt(end, "%Y%m%d")}'
+    main = await saved(c, base)
+    monthly = await saved(c, f'month-{base}')
+    if not main and not monthly:
+        return (f'{e("cross")} Победителей пока нет.\n\n' + WINNERS_USAGE)
+
+    lines = [f'{e("trophy")} <b>Победители розыгрыша</b>',
+             f'{fmt(start, "%d.%m.%Y")} — {fmt(end, "%d.%m.%Y")}', '']
+
+    for title, row, extra in (
+            (f'{e("gift")} Главные призы', main, ''),
+            (f'{e("calendar")} Месяц подписки', monthly,
+             'начислено' if (monthly or {}).get('awarded_at') else
+             'дни ещё не начислены')):
+        if not row or not row.get('winners'):
+            continue
+        head = f'<b>{title}: {len(row["winners"])}</b>'
+        if extra:
+            head += f' — {extra}'
+        if row.get('noted_at'):
+            head += f', письма отправлены {fmt(row["noted_at"], "%d.%m %H:%M")}'
+        lines.append(head)
+        for place, item in enumerate(row['winners'], start=1):
+            who = f'@{item["username"]}' if item.get('username') else 'без ника'
+            prize = (f'<b>{item["prize"]}</b> — '
+                     if row is main and item.get('prize') else '')
+            ticket = f', билет №{item["ticket"]}' if item.get('ticket') else ''
+            lines.append(f'{place}. {prize}<code>'
+                         f'{ids.show(item["user_id"])}</code> ({who}){ticket}')
+        lines.append('')
+
+    both = {int(item['user_id'])
+            for row in (main, monthly) if row
+            for item in row.get('winners') or []}
+    lines.append(f'<blockquote>Всего людей: {len(both)}. Письма по призам — '
+                 f'<code>/rafflenote</code>, по месяцам — '
+                 f'<code>/rafflenote месяц</code>.</blockquote>')
+    return '\n'.join(lines)
+
+
 async def winners(message: types.Message, command, c, settings) -> None:
     """`/rafflewinners` со списком — записать победителей в бота."""
     raw = command.args or ''
@@ -475,8 +547,11 @@ async def winners(message: types.Message, command, c, settings) -> None:
     # Месяцы живут отдельным списком: у них свой ключ, своё письмо и своя
     # выдача. Иначе они перетёрли бы победителей призов, и наоборот.
     monthly = any(word in raw.lower().split() for word in MONTH_WORDS)
-    if not raw.strip() or raw.strip().lower() in ('help', '?'):
+    if raw.strip().lower() in ('help', '?'):
         await message.answer(WINNERS_USAGE)
+        return
+    if not raw.strip():
+        await message.answer(await everyone(c, settings))
         return
 
     rows, broken = parse_winners(without_words(raw))
@@ -673,7 +748,7 @@ async def _send_all(message, c, key: str, row: dict, *,
     await message.answer('\n'.join(lines))
 
 
-def _no_args(command):
+def _no_args(command=None):
     """Аргументы этих команд — не даты периода, а слова управления."""
     return type('Cmd', (), {'args': ''})()
 

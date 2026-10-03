@@ -242,6 +242,44 @@ async def test_the_hand_written_month_list_is_awarded(dates, monkeypatch):
     assert 'Месяцы начислены' in session.last_text
 
 
+async def test_the_bot_skips_the_main_winners_when_drawing_months(dates):
+    """Приз в одни руки: тот, кто взял главный, в месяцы не попадает."""
+    dp, bot, session, c = dates
+    await fill(c)
+    await dp.feed_update(bot, message('/rafflewinners Главный приз 1 802421217'))
+
+    await dp.feed_update(bot, message('/rafflemonth 5'))
+
+    row = await c.db['raffle_draws'].find_one(
+        {'_id': 'month-20261001-20261022'})
+    assert [w['user_id'] for w in row['winners']] == [802421301]
+    assert 'в жребии не участвовали' in session.last_text
+
+
+async def test_the_whole_list_is_shown_at_once(dates):
+    """«Кто вообще что выиграл» — первый вопрос после розыгрыша."""
+    dp, bot, session, c = dates
+    await fill(c)
+    await dp.feed_update(bot, message('/rafflewinners ' + PASTE))
+    await dp.feed_update(bot, message('/rafflemonth 1'))
+
+    await dp.feed_update(bot, message('/rafflewinners'))
+
+    text = session.last_text
+    assert 'Главные призы: 3' in text and 'Месяц подписки: 1' in text
+    assert 'iPhone 18 Pro' in text
+    assert 'дни ещё не начислены' in text
+    assert 'Всего людей: 4' in text
+
+
+async def test_an_empty_list_says_so(dates):
+    dp, bot, session, c = dates
+
+    await dp.feed_update(bot, message('/rafflewinners'))
+
+    assert 'Победителей пока нет' in session.last_text
+
+
 async def test_the_hand_written_list_feeds_the_letters(dates, monkeypatch):
     dp, bot, session, c = dates
     await dp.feed_update(bot, message('/rafflewinners ' + PASTE))
