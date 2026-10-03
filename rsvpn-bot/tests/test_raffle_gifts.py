@@ -257,6 +257,44 @@ async def test_the_letters_report_who_got_them(dates, monkeypatch):
     assert row['noted'] == 1 and row['noted_at']
 
 
+async def test_the_public_file_counts_tickets_afresh(dates):
+    """Снимок недельной давности — главная ловушка: он молча отдавал старый
+    список, и в посте с итогами стояли бы чужие номера."""
+    dp, bot, session, c = dates
+    await fill(c)
+    await c.db['raffle_tickets'].insert_one({
+        '_id': '20261001-20261022', 'at': now(), 'total': 1,
+        'rows': [ticket(1, 802421217, day=2, hour=22)]})
+
+    await dp.feed_update(bot, message('/rafflepublic'))
+
+    assert 'Билетов в файле: <b>2</b>' in session.last_text
+    assert 'пересчитаны живьём' in session.last_text
+    assert 'он старше' in session.last_text
+
+
+async def test_the_snapshot_is_taken_by_word(dates):
+    dp, bot, session, c = dates
+    await fill(c)
+    await c.db['raffle_tickets'].insert_one({
+        '_id': '20261001-20261022', 'at': now(), 'total': 1,
+        'rows': [ticket(1, 802421217, day=2, hour=22)]})
+
+    await dp.feed_update(bot, message('/rafflepublic снимок'))
+
+    assert 'Билетов в файле: <b>1</b>' in session.last_text
+    assert 'из снимка' in session.last_text
+
+
+async def test_without_a_snapshot_the_word_is_refused(dates):
+    dp, bot, session, c = dates
+    await fill(c)
+
+    await dp.feed_update(bot, message('/rafflepublic снимок'))
+
+    assert 'Снимка нет' in session.last_text
+
+
 async def test_the_public_file_is_sent_with_a_cutoff(dates):
     dp, bot, session, c = dates
     await fill(c)

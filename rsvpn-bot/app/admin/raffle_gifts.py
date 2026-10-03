@@ -58,10 +58,14 @@ PUBLIC_USAGE = (
     f'{e("document")} <b>Файл билетов для публикации</b>\n\n'
     f'<code>/rafflepublic</code> — все билеты за акцию\n'
     f'<code>/rafflepublic 02.10.2026 23:00</code> — только до этого момента\n'
-    f'<code>/rafflepublic 02.10.2026</code> — по конец этого дня\n\n'
+    f'<code>/rafflepublic 02.10.2026</code> — по конец этого дня\n'
+    f'<code>/rafflepublic снимок</code> — из выгруженного ранее списка\n\n'
     f'<blockquote>Время в боте всегда московское, независимо от часов '
     f'сервера: что показано в файле, то и считается. Отсечка нужна, когда '
-    f'приём билетов закончился раньше, чем вы собрали файл.</blockquote>'
+    f'приём билетов закончился раньше, чем вы собрали файл.\n\n'
+    f'Номера считаются живьём. Слово «снимок» берёт их из выгрузки '
+    f'<code>/raffletickets</code> — это нужно, только если тот список уже '
+    f'лежит в канале и номера в нём обещаны людям.</blockquote>'
 )
 
 MONTH_USAGE = (
@@ -91,13 +95,19 @@ NOTE_USAGE = (
 
 
 # ── публичный файл билетов ──────────────────────────────────────────────────
+# Слова управления командой — не даты: их надо убрать до разбора отсечки,
+# иначе «снимок» прилетает в парсер дня и команда отвечает «не понял».
+WORDS = ('снимок', 'снимка', 'snapshot')
+
+
 def cutoff(args: str) -> tuple[datetime | None, str]:
     """«02.10.2026 23:00» → момент отсечки. Возвращает (момент, ошибка).
 
     Время московское — то же, что в самом файле: пересчитывать его в часы
     сервера не нужно, бот живёт по Москве в любой таймзоне машины.
     """
-    parts = (args or '').split()
+    parts = [word for word in (args or '').split()
+             if word.lower() not in WORDS]
     if not parts:
         return None, ''
 
@@ -145,8 +155,19 @@ async def public(message: types.Message, command, c, settings) -> None:
 
     from app.admin.raffle import published
 
+    # Снимок — это выгрузка `/raffletickets`, сделанная когда-то раньше.
+    # Для файла, который публикуют сейчас, он подходит только если список
+    # уже выложен и номера в нём обещаны людям. Поэтому по умолчанию —
+    # пересчёт живьём, а снимок берётся словом: иначе команда молча отдаёт
+    # список недельной давности, и это заметно уже по дате в файле.
     snap = await published(c, data)
-    rows = (snap.get('rows') if snap else None) or data['rows']
+    old = any(word in (command.args or '').lower() for word in WORDS)
+    rows = (snap.get('rows') or []) if (old and snap) else data['rows']
+    if old and not snap:
+        await message.answer(f'{e("cross")} Снимка нет: список ещё не '
+                             f'выгружали командой <code>/raffletickets</code>.')
+        return
+
     taken = until(rows, moment)
     if not taken:
         await message.answer(f'{e("cross")} До этого момента билетов нет.')
@@ -159,11 +180,28 @@ async def public(message: types.Message, command, c, settings) -> None:
         message, data, what='raffle-public', columns=PUBLIC_COLUMNS,
         rows=public_rows(taken), sheet='Билеты',
         caption=(
-            f'{e("document")} Билетов в файле: <b>{len(taken)}</b>{note}\n\n'
+            f'{e("document")} Билетов в файле: <b>{len(taken)}</b>{note}\n'
+            + source_note(snap, old=old, total=len(rows)) + '\n\n'
             f'<blockquote>Полных id в файле нет: только первые три цифры и '
             f'последние две. Свою строку человек найдёт, чужой id из файла '
             f'не набрать.\n\nВремя московское — то же, что видят люди в '
             f'боте.</blockquote>'))
+
+
+def source_note(snap: dict | None, *, old: bool, total: int) -> str:
+    """Откуда взяты номера. Молчать об этом нельзя: снимок и живой пересчёт
+    дают разные номера, а в посте с итогами стоят конкретные числа."""
+    if old and snap:
+        return (f'{e("clock")} Номера из снимка от <b>{fmt(snap["at"])}</b> '
+                f'({snap.get("total", 0)} билетов) — того, что уже выложен.')
+
+    line = f'{e("refresh")} Номера пересчитаны живьём: всего <b>{total}</b>.'
+    if snap:
+        line += (f'\n{e("warning")} Есть снимок от <b>{fmt(snap["at"])}</b> '
+                 f'на {snap.get("total", 0)} билетов — он старше. Если в '
+                 f'канале уже лежит он, берите <code>/rafflepublic '
+                 f'снимок</code>, иначе номера в файле и в посте разойдутся.')
+    return line
 
 
 # ── месяц подписки случайным ────────────────────────────────────────────────
