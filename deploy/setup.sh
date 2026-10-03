@@ -72,6 +72,7 @@ cat <<EOF
   Список:     https://scripts.nodewiki.info/
   Админка:    https://scripts.nodewiki.info/admin
   Сырой curl: https://scripts.nodewiki.info/<slug>
+  Работник:   https://nodewiki.info/rw/  (перед этим: cp includes/rw_config.example.php includes/rw_config.php и впиши адрес панели)
 
 Для последующих обновлений: bash $WEBROOT/deploy/update.sh
 EOF
