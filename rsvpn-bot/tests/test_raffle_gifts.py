@@ -195,6 +195,53 @@ async def test_an_existing_list_is_not_overwritten_by_accident(dates):
     assert len(row['winners']) == 1
 
 
+async def test_the_month_list_can_be_written_by_hand(dates):
+    """Месяцы тоже разыгрывают на видео — боту нужен готовый список."""
+    dp, bot, session, c = dates
+
+    await dp.feed_update(bot, message(
+        '/rafflewinners месяц\n802421217\n802421301 7'))
+
+    assert 'получателей месяца: 2' in session.last_text
+    assert '/rafflemonth выдать' in session.last_text
+    row = await c.db['raffle_draws'].find_one(
+        {'_id': 'month-20261001-20261022'})
+    assert [w['user_id'] for w in row['winners']] == [802421217, 802421301]
+    assert all(w['prize'] == gifts.MONTH_PRIZE for w in row['winners'])
+    assert row['days'] == gifts.MONTH_DAYS
+
+
+async def test_the_two_lists_do_not_overwrite_each_other(dates):
+    dp, bot, session, c = dates
+    await dp.feed_update(bot, message('/rafflewinners ' + PASTE))
+
+    await dp.feed_update(bot, message('/rafflewinners месяц\n802421217'))
+
+    prizes_row = await c.db['raffle_draws'].find_one(
+        {'_id': '20261001-20261022'})
+    month_row = await c.db['raffle_draws'].find_one(
+        {'_id': 'month-20261001-20261022'})
+    assert len(prizes_row['winners']) == 3 and len(month_row['winners']) == 1
+
+
+async def test_the_hand_written_month_list_is_awarded(dates, monkeypatch):
+    """Выдача идёт по записанному списку — как и после жребия бота."""
+    dp, bot, session, c = dates
+    seen = {}
+
+    async def award(users, vpn, winners, **kwargs):
+        seen['winners'] = winners
+        return {'done': winners, 'failed': [], 'skipped': []}
+
+    monkeypatch.setattr('app.services.raffle_prizes.award', award)
+    await dp.feed_update(bot, message('/rafflewinners месяц\n802421217'))
+
+    await dp.feed_update(bot, message('/rafflemonth выдать'))
+
+    assert [w['user_id'] for w in seen['winners']] == [802421217]
+    assert 'Месяцы начислены' in session.last_text
+
+
 async def test_the_hand_written_list_feeds_the_letters(dates, monkeypatch):
     dp, bot, session, c = dates
     await dp.feed_update(bot, message('/rafflewinners ' + PASTE))

@@ -383,6 +383,8 @@ WINNERS_USAGE = (
     f'Excel:\n\n'
     f'<code>iPhone 18 Pro\t347****14\t5389\t347223714\n'
     f'AirPods 5\t834*****13\t1260\t8347392713</code>\n\n'
+    f'Те, кому достался месяц подписки, — отдельным списком:\n'
+    f'<code>/rafflewinners месяц\n802421217\n802421301</code>\n\n'
     f'<blockquote>Приз — текст в начале строки, дальше числа в любом '
     f'порядке: длинное считается идентификатором, короткое — номером '
     f'билета. Закрытые id со звёздочками пропускаются, их можно не '
@@ -407,15 +409,20 @@ def _number(token: str) -> int | None:
 # первой: таблицу копируют целиком, а слово дописывают сверху.
 REPLACE = ('заменить', 'replace', 'перезаписать')
 
+# Слово «месяц» переключает команду на второй список — тех, кому достался
+# месяц подписки.
+MONTH_WORDS = ('месяц', 'месяца', 'месяцы', 'month')
+
 
 def without_words(raw: str) -> str:
     """Убрать слова управления, оставив таблицу как есть."""
     kept = []
+    control = REPLACE + MONTH_WORDS
     for line in (raw or '').splitlines():
         text = line.strip()
-        if text.lower() in REPLACE:
+        if text.lower() in control:
             continue
-        for word in REPLACE:
+        for word in control:
             low = text.lower()
             if low.startswith(f'{word} ') or low.startswith(f'{word}\t'):
                 text = text[len(word):].strip()
@@ -464,7 +471,10 @@ def parse_winners(text: str) -> tuple[list[dict], list[str]]:
 async def winners(message: types.Message, command, c, settings) -> None:
     """`/rafflewinners` со списком — записать победителей в бота."""
     raw = command.args or ''
-    replace = 'заменить' in raw.lower()
+    replace = any(word in raw.lower() for word in REPLACE)
+    # Месяцы живут отдельным списком: у них свой ключ, своё письмо и своя
+    # выдача. Иначе они перетёрли бы победителей призов, и наоборот.
+    monthly = any(word in raw.lower().split() for word in MONTH_WORDS)
     if not raw.strip() or raw.strip().lower() in ('help', '?'):
         await message.answer(WINNERS_USAGE)
         return
@@ -484,12 +494,15 @@ async def winners(message: types.Message, command, c, settings) -> None:
         await message.answer(NO_DATES + USAGE)
         return
 
-    key = f'{fmt(start, "%Y%m%d")}-{fmt(end, "%Y%m%d")}'
+    base = f'{fmt(start, "%Y%m%d")}-{fmt(end, "%Y%m%d")}'
+    key = f'month-{base}' if monthly else base
     old = await saved(c, key)
     if old and not replace:
         await message.answer(
-            f'{e("warning")} Список победителей уже записан '
-            f'({len(old.get("winners") or [])} чел., {fmt(old["at"])}).\n\n'
+            f'{e("warning")} Список '
+            + ('получателей месяца' if monthly else 'победителей')
+            + f' уже записан ({len(old.get("winners") or [])} чел., '
+            f'{fmt(old["at"])}).\n\n'
             f'Если он неверный — пришлите заново со словом '
             f'<code>заменить</code> в первой строке.')
         return
@@ -504,14 +517,24 @@ async def winners(message: types.Message, command, c, settings) -> None:
         if not user:
             unknown.append(item)
 
+    if monthly:
+        # Приз у всех один и тот же, и писать его в каждой строке таблицы
+        # незачем: в письме он всё равно не упоминается.
+        for item in rows:
+            item['prize'] = MONTH_PRIZE
+
     row = {'_id': key, 'at': now(), 'admin_id': message.from_user.id,
            'source': 'hand', 'tickets_total': 0, 'participants': len(rows),
            'winners': rows}
+    if monthly:
+        row['kind'], row['days'] = 'month', MONTH_DAYS
     await c.db[names.RAFFLE_DRAWS].delete_one({'_id': key})
     await c.db[names.RAFFLE_DRAWS].insert_one(row)
     log.info('победители %s записаны вручную: %s', key, len(rows))
 
-    lines = [f'{e("trophy")} <b>Записано победителей: {len(rows)}</b>', '']
+    lines = [f'{e("trophy")} <b>Записано '
+             + ('получателей месяца' if monthly else 'победителей')
+             + f': {len(rows)}</b>', '']
     for place, item in enumerate(rows, start=1):
         who = f'@{item["username"]}' if item['username'] else 'без ника'
         ticket = f', билет №{item["ticket"]}' if item['ticket'] else ''
@@ -525,9 +548,16 @@ async def winners(message: types.Message, command, c, settings) -> None:
         for item in unknown[:10]:
             lines.append(f'   <code>{item["user_id"]}</code>')
     lines.append('')
-    lines.append(f'<blockquote>Ничего не начислено и никому не отправлено. '
-                 f'Письма — <code>/rafflenote</code>: сначала покажет текст '
-                 f'и список, отправит только по второй команде.</blockquote>')
+    if monthly:
+        lines.append(f'<blockquote>Ничего не начислено. Выдать им по '
+                     f'{MONTH_DAYS} дней — <code>/rafflemonth выдать</code>, '
+                     f'и только после этого письма: <code>/rafflenote '
+                     f'месяц</code>.</blockquote>')
+    else:
+        lines.append(f'<blockquote>Ничего не начислено и никому не '
+                     f'отправлено. Письма — <code>/rafflenote</code>: '
+                     f'сначала покажет текст и список, отправит только по '
+                     f'второй команде.</blockquote>')
     await message.answer('\n'.join(lines))
 
 
