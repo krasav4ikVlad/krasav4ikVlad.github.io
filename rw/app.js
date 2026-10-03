@@ -168,7 +168,8 @@ class ApiError extends Error {
 async function api(method, path, body) {
     let res;
     try {
-        res = await fetch(`${API_URL}?p=${encodeURIComponent(path)}`, {
+        const [p, qs] = path.split('?'); // query-параметры идут отдельно от пути
+        res = await fetch(`${API_URL}?p=${encodeURIComponent(p)}${qs ? `&${qs}` : ''}`, {
             method,
             headers: {
                 Authorization: `Bearer ${token}`,
@@ -192,7 +193,9 @@ async function api(method, path, body) {
         if (res.status === 401) {
             msg = 'Токен недействителен или истёк';
         }
-        if (data && Array.isArray(data.errors) && data.errors.length) {
+        if (data && data.success === false && Array.isArray(data.errors) && data.errors.length) {
+            msg = data.errors.map((e) => e.message).join('; ');
+        } else if (data && Array.isArray(data.errors) && data.errors.length) {
             msg += ': ' + data.errors.map((e) => (e.path && e.path.length ? e.path.join('.') + ' — ' : '') + e.message).join('; ');
         }
         throw new ApiError(res.status, msg);
@@ -477,6 +480,7 @@ const NAV = [
     { id: 'hosts', text: 'Хосты', icon: 'ph-list-checks' },
     { id: 'profiles', text: 'Профили', icon: 'ph-file-code' },
     { id: 'squads', text: 'Внутренние сквады', icon: 'ph-circles-three-plus' },
+    { id: 'domains', text: 'Домены', icon: 'ph-globe-hemisphere-west' },
 ];
 
 function mountShell() {
@@ -545,14 +549,14 @@ function render() {
 
     $$('.nav-link').forEach((a) => {
         const id = a.dataset.nav;
-        a.classList.toggle('active', id === route || (id === 'profiles' && route === 'profile'));
+        a.classList.toggle('active', id === route || (id === 'profiles' && route === 'profile') || (id === 'domains' && route === 'domain'));
     });
 
     destroyPage();
     closeMenu();
     while (modalStack.length) modalStack[modalStack.length - 1]();
 
-    const routes = { nodes: pageNodes, profiles: pageProfiles, profile: pageProfileEditor, squads: pageSquads, hosts: pageHosts };
+    const routes = { nodes: pageNodes, profiles: pageProfiles, profile: pageProfileEditor, squads: pageSquads, hosts: pageHosts, domains: pageDomains, domain: pageZone };
     const fn = routes[route];
     if (!fn) { location.replace('#/nodes'); return; }
     currentPage = {};
@@ -2084,6 +2088,330 @@ function hostModal(host, profiles, onDone) {
                 );
                 setBusy(btn, false);
                 if (r !== undefined) { close(); onDone(); }
+            };
+        },
+    });
+}
+
+/* =========================================================================
+ * Домены (DNS Cloudflare через прокси; ключ Cloudflare хранится на сервере)
+ * ========================================================================= */
+
+const CF_TTLS = [[1, 'Авто'], [60, '1 мин'], [120, '2 мин'], [300, '5 мин'], [600, '10 мин'], [900, '15 мин'], [1800, '30 мин'],
+    [3600, '1 ч'], [7200, '2 ч'], [18000, '5 ч'], [43200, '12 ч'], [86400, '1 день']];
+const CF_TYPES = ['A', 'AAAA', 'CNAME', 'TXT', 'MX', 'NS'];
+const CF_PROXIABLE = ['A', 'AAAA', 'CNAME'];
+const CF_TYPE_COLORS = { A: 'var(--cyan-4)', AAAA: '#4dabf7', CNAME: 'var(--violet-4)', TXT: 'var(--yellow-5)', MX: '#ff922b', NS: 'var(--teal-5)' };
+const CF_CONTENT_LABEL = { A: 'IPv4-адрес', AAAA: 'IPv6-адрес', CNAME: 'Цель (домен)', TXT: 'Текст', MX: 'Почтовый сервер', NS: 'Сервер имён' };
+const CF_CONTENT_PH = { A: '1.2.3.4', AAAA: '2001:db8::1', CNAME: 'target.example.com', TXT: 'v=spf1 include:_spf.example.com ~all', MX: 'mail.example.com', NS: 'ns1.example.com' };
+
+const cf = (method, path, body) => api(method, `/cf${path}`, body);
+
+// Все страницы списка Cloudflare
+async function cfAll(path, perPage = 100) {
+    const out = [];
+    for (let page = 1; page <= 50; page++) {
+        const sep = path.includes('?') ? '&' : '?';
+        const r = await cf('GET', `${path}${sep}page=${page}&per_page=${perPage}`);
+        out.push(...(r.result || []));
+        const info = r.result_info || {};
+        if (!info.total_pages || page >= info.total_pages) break;
+    }
+    return out;
+}
+
+function cfTtlLabel(ttl) {
+    const t = CF_TTLS.find((x) => x[0] === ttl);
+    if (t) return t[1];
+    if (ttl >= 86400 && ttl % 86400 === 0) return `${ttl / 86400} д`;
+    if (ttl >= 3600 && ttl % 3600 === 0) return `${ttl / 3600} ч`;
+    if (ttl >= 60 && ttl % 60 === 0) return `${ttl / 60} мин`;
+    return `${ttl} с`;
+}
+
+function cfRelName(name, zone) {
+    if (name === zone) return '@';
+    return name.endsWith(`.${zone}`) ? name.slice(0, -(zone.length + 1)) : name;
+}
+
+function cfFqdn(rel, zone) {
+    const v = rel.trim().replace(/\.$/, '').toLowerCase();
+    if (!v || v === '@') return zone;
+    return v === zone || v.endsWith(`.${zone}`) ? v : `${v}.${zone}`;
+}
+
+function cfNotConfigured(e) {
+    return e instanceof ApiError && e.status === 501
+        ? `<div class="alert warn"><i class="ph ph-cloud-slash"></i><div><div class="fw6">Cloudflare не подключён</div>
+            <div class="sm">Администратор должен указать ключ Cloudflare (CF_API_TOKEN) в настройках сервера интерфейса.</div></div></div>`
+        : null;
+}
+
+function pageDomains(root) {
+    root.innerHTML = pageHead({
+        title: 'Домены',
+        crumbs: ['Домены'],
+        actions: '<button class="icon-btn" id="refresh" title="Обновить"><i class="ph ph-arrows-clockwise"></i></button>',
+    }) + `<div id="list">${loaderHtml()}</div>`;
+    const list = $('#list', root);
+
+    const load = async () => {
+        list.innerHTML = loaderHtml();
+        let zones;
+        try {
+            zones = await cfAll('/zones', 50);
+        } catch (e) {
+            if (e instanceof ApiError && e.status === 401) return handleError(e);
+            list.innerHTML = cfNotConfigured(e) || errorBox(e);
+            return;
+        }
+        if (!zones.length) {
+            list.innerHTML = '<div class="card empty"><i class="ph-duotone ph-globe-hemisphere-west"></i>Нет доступных доменов<div class="sm" style="margin-top:6px">Ключ Cloudflare не даёт доступа ни к одной зоне</div></div>';
+            return;
+        }
+        zones.sort((a, b) => a.name.localeCompare(b.name));
+        list.innerHTML = `<div class="grid">${zones.map((z) => {
+            const st = z.status === 'active' ? ['teal', 'Активен'] : z.status === 'pending' ? ['yellow', 'Ожидает NS'] : ['gray', z.status];
+            return `
+            <div class="card clickable" data-zone="${esc(z.id)}">
+                <div class="card-head">
+                    <div class="card-icon" style="color:#f6821f;border-color:rgba(246,130,31,.35);background:rgba(246,130,31,.1)"><i class="ph-duotone ph-globe-hemisphere-west"></i></div>
+                    <div style="min-width:0;flex:1">
+                        <div class="card-title ellipsis">${esc(z.name)}</div>
+                        <div class="xs dimmed">${esc(z.plan && z.plan.name ? z.plan.name : '')}</div>
+                    </div>
+                    <span class="badge ${st[0]}">${esc(st[1])}</span>
+                </div>
+                ${z.paused ? '<div class="xs" style="margin-top:10px;color:var(--yellow-5)">Cloudflare на паузе — прокси не работает</div>' : ''}
+            </div>`;
+        }).join('')}</div>`;
+        $$('[data-zone]', list).forEach((c) => c.addEventListener('click', () => { location.hash = `#/domain/${c.dataset.zone}`; }));
+    };
+
+    $('#refresh', root).onclick = load;
+    load();
+}
+
+async function pageZone(root, zoneId, page) {
+    if (!/^[a-f0-9]{32}$/.test(zoneId || '')) { location.replace('#/domains'); return; }
+    root.innerHTML = loaderHtml();
+    let zone;
+    try {
+        zone = (await cf('GET', `/zones/${zoneId}`)).result;
+    } catch (e) {
+        if (e instanceof ApiError && e.status === 401) return handleError(e);
+        root.innerHTML = pageHead({ title: 'Домен', crumbs: [{ text: 'Домены', href: '#/domains' }] }) + (cfNotConfigured(e) || errorBox(e));
+        return;
+    }
+    if (page !== currentPage) return;
+
+    root.innerHTML = pageHead({
+        title: `<i class="ph-duotone ph-globe-hemisphere-west" style="color:#f6821f"></i>${esc(zone.name)}`,
+        crumbs: [{ text: 'Домены', href: '#/domains' }, zone.name],
+        actions: `<button class="icon-btn" id="refresh" title="Обновить"><i class="ph ph-arrows-clockwise"></i></button>
+                  <button class="btn" id="create"><i class="ph ph-plus"></i>Добавить запись</button>`,
+    }) + `
+        <div class="row wrap dns-filters">
+            <div class="input-wrap" style="flex:1;min-width:200px"><i class="ph ph-magnifying-glass"></i>
+                <input class="input" id="q" placeholder="Поиск по имени или значению"></div>
+            <select class="select" id="type" style="width:auto;min-width:140px"><option value="">Все типы</option></select>
+        </div>
+        <div id="list">${loaderHtml()}</div>`;
+    const list = $('#list', root);
+    let records = [];
+
+    const load = async () => {
+        try {
+            records = await cfAll(`/zones/${zoneId}/dns_records`);
+            const types = [...new Set(records.map((r) => r.type))].sort();
+            const sel = $('#type', root);
+            const cur = sel.value;
+            sel.innerHTML = '<option value="">Все типы</option>' + types.map((t) => `<option ${t === cur ? 'selected' : ''}>${esc(t)}</option>`).join('');
+            draw();
+        } catch (e) {
+            if (e instanceof ApiError && e.status === 401) return handleError(e);
+            list.innerHTML = errorBox(e);
+        }
+    };
+
+    const draw = () => {
+        const q = $('#q', root).value.trim().toLowerCase();
+        const t = $('#type', root).value;
+        const order = { A: 0, AAAA: 1, CNAME: 2, MX: 3, TXT: 4, NS: 5 };
+        const shown = records
+            .filter((r) => (!t || r.type === t) && (!q || r.name.toLowerCase().includes(q) || String(r.content).toLowerCase().includes(q)))
+            .sort((a, b) => (order[a.type] ?? 9) - (order[b.type] ?? 9) || a.name.localeCompare(b.name));
+        if (!records.length) {
+            list.innerHTML = '<div class="card empty"><i class="ph-duotone ph-list-dashes"></i>Записей пока нет</div>';
+            return;
+        }
+        if (!shown.length) {
+            list.innerHTML = '<div class="card empty"><i class="ph-duotone ph-magnifying-glass"></i>Ничего не найдено</div>';
+            return;
+        }
+        list.innerHTML = `<div class="dns-count xs dimmed">${shown.length} ${plural(shown.length, 'запись', 'записи', 'записей')}</div>
+            <div class="node-list">${shown.map((r) => `
+            <div class="dns-row" data-id="${esc(r.id)}">
+                <span class="dns-type" style="color:${CF_TYPE_COLORS[r.type] || 'var(--dark-1)'}">${esc(r.type)}</span>
+                <div class="dns-name" title="${esc(r.name)}">${esc(cfRelName(r.name, zone.name))}</div>
+                <div class="dns-content" title="${esc(r.content)}">${r.type === 'MX' && r.priority !== undefined ? `<span class="dimmed">${esc(r.priority)}</span> ` : ''}${esc(r.content)}</div>
+                <div class="dns-proxy">${r.proxiable
+                    ? `<button class="cf-cloud ${r.proxied ? 'on' : ''}" data-proxy="${esc(r.id)}" title="${r.proxied ? 'Проксируется (оранжевое облако). Нажмите, чтобы выключить' : 'Только DNS (серое облако). Нажмите, чтобы включить прокси'}">
+                        <i class="ph-fill ph-cloud"></i><span>${r.proxied ? 'Прокси' : 'DNS'}</span></button>`
+                    : '<span class="xs dimmed">—</span>'}</div>
+                <div class="dns-ttl xs dimmed">${esc(cfTtlLabel(r.ttl))}</div>
+                <button class="icon-btn subtle" data-menu data-id="${esc(r.id)}" aria-label="Действия"><i class="ph ph-dots-three-vertical"></i></button>
+            </div>`).join('')}</div>`;
+
+        $$('.dns-row', list).forEach((row) => row.addEventListener('click', () => {
+            dnsRecordModal(zone, records.find((x) => x.id === row.dataset.id), load);
+        }));
+        $$('[data-proxy]', list).forEach((b) => b.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const r = records.find((x) => x.id === b.dataset.proxy);
+            b.disabled = true;
+            const res = await run(() => cf('PATCH', `/zones/${zoneId}/dns_records/${r.id}`, { proxied: !r.proxied }), { success: r.proxied ? 'Прокси выключен' : 'Прокси включён' });
+            if (res !== undefined) load(); else b.disabled = false;
+        }));
+        bindRowMenu(list, '[data-menu]', (id) => {
+            const r = records.find((x) => x.id === id);
+            return [
+                { label: `${r.type} ${cfRelName(r.name, zone.name)}` },
+                { text: 'Редактировать', icon: 'ph-pencil-simple', onClick: () => dnsRecordModal(zone, r, load) },
+                r.proxiable ? {
+                    text: r.proxied ? 'Выключить прокси' : 'Включить прокси', icon: 'ph-cloud',
+                    onClick: () => run(() => cf('PATCH', `/zones/${zoneId}/dns_records/${r.id}`, { proxied: !r.proxied }), { success: 'Сохранено' }).then(load),
+                } : null,
+                { text: 'Копировать значение', icon: 'ph-copy', onClick: () => copyText(r.content) },
+                { text: 'Копировать имя', icon: 'ph-copy', onClick: () => copyText(r.name) },
+                { divider: true },
+                { text: 'Удалить', icon: 'ph-trash', red: true, onClick: () => dnsDelete(zone, r, load) },
+            ];
+        });
+    };
+
+    $('#q', root).addEventListener('input', draw);
+    $('#type', root).addEventListener('change', draw);
+    $('#refresh', root).onclick = load;
+    $('#create', root).onclick = () => dnsRecordModal(zone, null, load);
+    load();
+}
+
+async function dnsDelete(zone, r, onDone) {
+    if (await confirmDialog({
+        title: 'Удалить запись?',
+        text: `<span class="mono">${esc(r.type)} ${esc(r.name)} → ${esc(r.content)}</span><br><br>Запись будет удалена из Cloudflare. Это действие необратимо.`,
+        confirmText: 'Удалить', danger: true,
+    })) {
+        const res = await run(() => cf('DELETE', `/zones/${zone.id}/dns_records/${r.id}`), { success: 'Запись удалена' });
+        if (res !== undefined) onDone();
+        return res !== undefined;
+    }
+    return false;
+}
+
+function dnsRecordModal(zone, rec, onDone) {
+    const isNew = !rec;
+    const r = rec || { type: 'A', name: '', content: '', ttl: 1, proxied: false, comment: '' };
+    const editable = CF_TYPES.includes(r.type);
+    const types = editable ? CF_TYPES : [r.type];
+
+    openModal({
+        title: isNew ? 'Новая DNS-запись' : `${r.type} ${cfRelName(r.name, zone.name)}`,
+        icon: 'ph-globe-hemisphere-west',
+        body: `
+            ${!editable ? `<div class="alert warn"><i class="ph ph-info"></i><div class="sm">Записи типа ${esc(r.type)} здесь можно только удалить. Изменить — в панели Cloudflare.</div></div>` : ''}
+            <form class="fgrid" id="df" autocomplete="off">
+                <div class="field"><label>Тип</label>
+                    <select class="select" name="type" ${isNew ? '' : 'disabled'}>${types.map((t) => `<option ${t === r.type ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
+                <div class="field"><label>Имя<span class="req">*</span></label>
+                    <div class="input-wrap dns-name-wrap">
+                        <input class="input mono" name="name" value="${esc(isNew ? '' : cfRelName(r.name, zone.name))}" placeholder="@ или www" ${editable ? '' : 'disabled'}>
+                        <span class="dns-suffix">.${esc(zone.name)}</span>
+                    </div>
+                    <div class="desc">@ — сам домен ${esc(zone.name)}</div></div>
+                <div class="field full"><label id="content-label">${esc(CF_CONTENT_LABEL[r.type] || 'Значение')}<span class="req">*</span></label>
+                    ${r.type === 'TXT'
+                        ? `<textarea class="textarea mono" name="content" rows="3" ${editable ? '' : 'disabled'}>${esc(r.content)}</textarea>`
+                        : `<input class="input mono" name="content" value="${esc(r.content)}" ${editable ? '' : 'disabled'}>`}</div>
+                <div class="field" id="prio-field"><label>Приоритет</label>
+                    <input class="input" name="priority" type="number" min="0" max="65535" value="${esc(r.priority ?? 10)}"></div>
+                <div class="field" id="ttl-field"><label>TTL</label>
+                    <select class="select" name="ttl">${CF_TTLS.map(([v, l]) => `<option value="${v}" ${v === r.ttl ? 'selected' : ''}>${l}</option>`).join('')}
+                        ${CF_TTLS.some((x) => x[0] === r.ttl) ? '' : `<option value="${esc(r.ttl)}" selected>${esc(cfTtlLabel(r.ttl))}</option>`}</select></div>
+                <div class="field full" id="proxy-field">
+                    <label class="switch"><input type="checkbox" name="proxied" ${r.proxied ? 'checked' : ''}><span class="track"></span>
+                        <span><i class="ph-fill ph-cloud" style="color:#f6821f"></i> Проксировать через Cloudflare</span></label>
+                    <div class="desc" style="margin-top:4px">Оранжевое облако: трафик идёт через Cloudflare, реальный IP скрыт. Для нод VPN обычно выключают.</div>
+                </div>
+                <div class="field full"><label>Комментарий</label>
+                    <input class="input" name="comment" maxlength="100" value="${esc(r.comment || '')}" placeholder="необязательно" ${editable ? '' : 'disabled'}></div>
+            </form>`,
+        foot: `${!isNew ? '<button class="btn btn-red-light left" id="del"><i class="ph ph-trash"></i>Удалить</button>' : ''}
+               <button class="btn btn-default" data-cancel>Отмена</button>
+               ${editable ? `<button class="btn" id="save"><i class="ph ph-floppy-disk"></i>${isNew ? 'Создать' : 'Сохранить'}</button>` : ''}`,
+        onMount: (m, close) => {
+            const form = $('#df', m);
+            const f = (n) => form.elements[n];
+            $('[data-cancel]', m).onclick = close;
+
+            const sync = () => {
+                const t = f('type').value;
+                $('#prio-field', m).classList.toggle('hidden', t !== 'MX');
+                $('#proxy-field', m).classList.toggle('hidden', !CF_PROXIABLE.includes(t));
+                const proxied = CF_PROXIABLE.includes(t) && f('proxied').checked;
+                f('ttl').disabled = proxied || !editable;
+                if (proxied) f('ttl').value = '1';
+                $('#content-label', m).firstChild.textContent = CF_CONTENT_LABEL[t] || 'Значение';
+                // TXT — многострочное поле, остальное — однострочное
+                const cur = f('content');
+                const wantArea = t === 'TXT';
+                if ((cur.tagName === 'TEXTAREA') !== wantArea) {
+                    const el = document.createElement(wantArea ? 'textarea' : 'input');
+                    el.className = wantArea ? 'textarea mono' : 'input mono';
+                    el.name = 'content';
+                    if (wantArea) el.rows = 3;
+                    el.value = cur.value;
+                    cur.replaceWith(el);
+                }
+                f('content').placeholder = CF_CONTENT_PH[t] || '';
+            };
+            f('type').addEventListener('change', sync);
+            f('proxied').addEventListener('change', sync);
+            sync();
+
+            if (!isNew) {
+                $('#del', m).onclick = async () => { if (await dnsDelete(zone, r, onDone)) close(); };
+            }
+            if (!editable) return;
+
+            $('#save', m).onclick = async () => {
+                const type = f('type').value;
+                const content = f('content').value.trim();
+                const nameRaw = f('name').value;
+                if (!nameRaw.trim()) { toast('error', 'Укажите имя', 'Для самого домена введите @'); return; }
+                if (!content) { toast('error', 'Укажите значение'); return; }
+                if (type === 'A' && !/^(\d{1,3}\.){3}\d{1,3}$/.test(content)) { toast('error', 'Некорректный IPv4-адрес'); return; }
+                if (type === 'AAAA' && !content.includes(':')) { toast('error', 'Некорректный IPv6-адрес'); return; }
+                const payload = {
+                    type,
+                    name: cfFqdn(nameRaw, zone.name),
+                    content,
+                    ttl: Number(f('ttl').value) || 1,
+                };
+                if (CF_PROXIABLE.includes(type)) payload.proxied = f('proxied').checked;
+                if (type === 'MX') payload.priority = Number(f('priority').value) || 0;
+                const comment = f('comment').value.trim();
+                if (comment || (!isNew && r.comment)) payload.comment = comment;
+
+                const btn = $('#save', m);
+                setBusy(btn, true);
+                const res = await run(
+                    () => (isNew ? cf('POST', `/zones/${zone.id}/dns_records`, payload) : cf('PATCH', `/zones/${zone.id}/dns_records/${r.id}`, payload)),
+                    { success: isNew ? 'Запись создана' : 'Запись сохранена' },
+                );
+                setBusy(btn, false);
+                if (res !== undefined) { close(); onDone(); }
             };
         },
     });
