@@ -59,6 +59,7 @@ PUBLIC_USAGE = (
     f'<code>/rafflepublic</code> — все билеты за акцию\n'
     f'<code>/rafflepublic 02.10.2026 23:00</code> — только до этого момента\n'
     f'<code>/rafflepublic 02.10.2026</code> — по конец этого дня\n'
+    f'<code>/rafflepublic 7042</code> — по этот номер билета включительно\n'
     f'<code>/rafflepublic снимок</code> — из выгруженного ранее списка\n\n'
     f'<blockquote>Время в боте всегда московское, независимо от часов '
     f'сервера: что показано в файле, то и считается. Отсечка нужна, когда '
@@ -107,7 +108,7 @@ def cutoff(args: str) -> tuple[datetime | None, str]:
     сервера не нужно, бот живёт по Москве в любой таймзоне машины.
     """
     parts = [word for word in (args or '').split()
-             if word.lower() not in WORDS]
+             if word.lower() not in WORDS and not word.isdigit()]
     if not parts:
         return None, ''
 
@@ -141,6 +142,24 @@ def until(rows: list[dict], moment: datetime | None) -> list[dict]:
     return [row for row in rows if (parse_dt(row['at']) or now()) <= moment]
 
 
+def last_number(args: str) -> int:
+    """Голое число в аргументах — это номер последнего билета.
+
+    Отсечку по времени сначала считают глазами («до полуночи по Москве —
+    это 23:00 у нас»), и ошибиться в ней легче, чем в номере: номер видно
+    в предыдущем файле. Поэтому можно сказать и так.
+    """
+    return next((int(word) for word in (args or '').split()
+                 if word.isdigit()), 0)
+
+
+def up_to(rows: list[dict], number: int) -> list[dict]:
+    """Билеты по номер включительно."""
+    if number <= 0:
+        return list(rows)
+    return [row for row in rows if int(row['ticket']) <= number]
+
+
 async def public(message: types.Message, command, c, settings) -> None:
     """`/rafflepublic` — файл билетов, который не страшно выложить."""
     moment, bad = cutoff(command.args or '')
@@ -168,14 +187,20 @@ async def public(message: types.Message, command, c, settings) -> None:
                              f'выгружали командой <code>/raffletickets</code>.')
         return
 
-    taken = until(rows, moment)
+    number = last_number(command.args or '')
+    taken = up_to(until(rows, moment), number)
     if not taken:
-        await message.answer(f'{e("cross")} До этого момента билетов нет.')
+        await message.answer(f'{e("cross")} До этой отсечки билетов нет.')
         return
 
     cut = len(rows) - len(taken)
-    note = (f'\n{e("clock")} Отсечка: <b>{fmt(moment)}</b> по Москве — '
-            f'после неё отброшено <b>{cut}</b>.' if moment else '')
+    note = ''
+    if moment:
+        note += (f'\n{e("clock")} Отсечка: <b>{fmt(moment)}</b> по Москве.')
+    if number:
+        note += f'\n{e("pin")} Последний билет: <b>№{number}</b>.'
+    if cut:
+        note += f'\n{e("trash")} Отброшено после отсечки: <b>{cut}</b>.'
     await send_table(
         message, data, what='raffle-public', columns=PUBLIC_COLUMNS,
         rows=public_rows(taken), sheet='Билеты',

@@ -257,6 +257,31 @@ async def test_the_letters_report_who_got_them(dates, monkeypatch):
     assert row['noted'] == 1 and row['noted_at']
 
 
+def test_a_cutoff_can_be_a_ticket_number():
+    """Время сначала считают глазами и ошибаются; номер видно в файле."""
+    rows = [ticket(1, 1), ticket(2, 2), ticket(3, 3)]
+
+    assert [row['ticket'] for row in gifts.up_to(rows, 2)] == [1, 2]
+    assert gifts.up_to(rows, 0) == rows
+    assert gifts.last_number('03.10.2026 23:00 7042') == 7042
+
+
+def test_a_number_is_not_mistaken_for_a_date():
+    moment, bad = gifts.cutoff('7042')
+
+    assert not bad and moment is None
+
+
+async def test_the_public_file_stops_at_the_given_number(dates):
+    dp, bot, session, c = dates
+    await fill(c)
+
+    await dp.feed_update(bot, message('/rafflepublic 1'))
+
+    assert 'Билетов в файле: <b>1</b>' in session.last_text
+    assert 'Последний билет: <b>№1</b>' in session.last_text
+
+
 async def test_the_public_file_counts_tickets_afresh(dates):
     """Снимок недельной давности — главная ловушка: он молча отдавал старый
     список, и в посте с итогами стояли бы чужие номера."""
@@ -305,4 +330,4 @@ async def test_the_public_file_is_sent_with_a_cutoff(dates):
         'файл не ушёл'
     caption = session.last_text
     assert 'Билетов в файле: <b>1</b>' in caption
-    assert 'отброшено <b>1</b>' in caption
+    assert 'Отброшено после отсечки: <b>1</b>' in caption
