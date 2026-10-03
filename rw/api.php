@@ -43,7 +43,9 @@ if (!in_array($method, RW_ALLOWED_METHODS, true)) {
 }
 
 $path = (string)($_GET['p'] ?? '');
-if (!preg_match(RW_ALLOWED_PATH_RE, $path) || strpos($path, '..') !== false) {
+// Список плагинов нод — только чтение (для выбора плагина у ноды)
+$isPluginList = $path === '/api/node-plugins' && $method === 'GET';
+if (!$isPluginList && (!preg_match(RW_ALLOWED_PATH_RE, $path) || strpos($path, '..') !== false)) {
     rw_fail(403, 'Этот раздел API недоступен через интерфейс работника');
 }
 

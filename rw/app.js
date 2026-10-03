@@ -264,7 +264,7 @@ function openMenu(anchor, items) {
         if (it.divider) { menu.insertAdjacentHTML('beforeend', '<div class="menu-divider"></div>'); return; }
         if (it.label && !it.onClick) { menu.insertAdjacentHTML('beforeend', `<div class="menu-label">${esc(it.label)}</div>`); return; }
         const row = document.createElement('div');
-        row.className = 'menu-item' + (it.red ? ' red' : '');
+        row.className = 'menu-item' + (it.red ? ' red' : '') + (it.green ? ' green' : '');
         row.innerHTML = `<i class="ph ${it.icon || 'ph-dot'}"></i><span>${esc(it.text)}</span>`;
         row.addEventListener('click', (e) => { e.stopPropagation(); closeMenu(); it.onClick(); });
         menu.appendChild(row);
@@ -286,13 +286,13 @@ window.addEventListener('scroll', closeMenu, true);
 window.addEventListener('resize', closeMenu);
 
 const modalStack = [];
-function openModal({ title, icon, size = '', body = '', foot = '', onMount, onClose }) {
+function openModal({ title, titleHtml, icon, size = '', body = '', foot = '', onMount, onClose }) {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
         <div class="modal ${size}" role="dialog" aria-modal="true">
             <div class="modal-head">
-                <div class="modal-title">${icon ? `<i class="ph-duotone ${icon}" style="color:var(--cyan-4);font-size:20px"></i>` : ''}${esc(title)}</div>
+                <div class="modal-title">${icon ? `<i class="ph-duotone ${icon}" style="color:var(--cyan-4);font-size:20px"></i>` : ''}${titleHtml ?? esc(title)}</div>
                 <button class="icon-btn subtle" data-close aria-label="Закрыть"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body">${body}</div>
@@ -318,14 +318,16 @@ function openModal({ title, icon, size = '', body = '', foot = '', onMount, onCl
 }
 
 function focusFirst(modal) {
-    const first = $('.modal-body input:not([type=checkbox]):not([type=hidden]), .modal-body select, .modal-body textarea', modal);
+    // на телефоне не открываем клавиатуру сами; выпадающий список стран не раскрываем
+    if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) return;
+    const first = $('.modal-body input:not([type=checkbox]):not([type=hidden]):not(.combo-input):not([readonly]), .modal-body select, .modal-body textarea', modal);
     if (first) setTimeout(() => first.focus(), 30);
 }
 
 // Модалка открывается сразу с индикатором загрузки, содержимое появляется после load()
-function openModalAsync({ title, icon, size, load, render: renderContent }) {
+function openModalAsync({ title, titleHtml, icon, size, load, render: renderContent }) {
     let closed = false;
-    const close = openModal({ title, icon, size, body: loaderHtml(), onClose: () => { closed = true; } });
+    const close = openModal({ title, titleHtml, icon, size, body: loaderHtml(), onClose: () => { closed = true; } });
     const modal = close.modal;
     (async () => {
         let data;
@@ -614,7 +616,7 @@ function nodeCardTone(n) {
     return 'offline';
 }
 
-function nodeCardHtml(n) {
+function nodeCardHtml(n, pluginName) {
     const st = nodeStatus(n);
     const cp = n.configProfile || {};
     const dangling = !cp.activeConfigProfileUuid || !(cp.activeInbounds || []).length;
@@ -690,11 +692,26 @@ function nodeCardHtml(n) {
             <span class="nc-stat" title="Входящий трафик"><i class="ph-duotone ph-arrow-down" style="color:var(--teal-5)"></i>${rx ?? '—'}</span>
             <span class="nc-stat" title="Исходящий трафик"><i class="ph-duotone ph-arrow-up" style="color:var(--cyan-6)"></i>${tx ?? '—'}</span>
             <span class="spacer"></span>
+            ${pluginName ? `<span class="nc-stat nc-plugin" title="Плагин"><i class="ph-duotone ph-package"></i>${esc(pluginName)}</span>` : ''}
             <span class="nc-stat" title="Версия Xray"><i class="ph-fill ph-star-four"></i>${n.versions && n.versions.xray ? esc(n.versions.xray) : '—'}</span>
             <span class="nc-stat" title="Версия Remnawave Node"><i class="ph ph-waveform"></i>${n.versions && n.versions.node ? esc(n.versions.node) : '—'}</span>
         </div>
-        <button class="nc-menu" data-menu data-id="${esc(n.uuid)}" aria-label="Действия"><i class="ph ph-dots-six-vertical"></i></button>
+        <div class="nc-handle" data-drag title="Перетащите, чтобы изменить порядок"><i class="ph ph-dots-six-vertical"></i></div>
     </div>`;
+}
+
+let pluginsCache = null; // { at, data } — null в data, если нет доступа
+async function loadPlugins() {
+    if (pluginsCache && Date.now() - pluginsCache.at < 60000) return pluginsCache.data;
+    let data = null;
+    try {
+        const r = await api('GET', '/api/node-plugins');
+        data = r.nodePlugins || [];
+    } catch (e) {
+        if (e instanceof ApiError && e.status === 401) throw e;
+    }
+    pluginsCache = { at: Date.now(), data };
+    return data;
 }
 
 function pageNodes(root, _param, page) {
@@ -707,16 +724,23 @@ function pageNodes(root, _param, page) {
     }) + `<div id="list">${loaderHtml()}</div>`;
 
     let nodes = [];
+    let plugins = [];
+    let dragging = false;
     const list = $('#list', root);
 
     const load = async (silent) => {
         try {
-            nodes = await api('GET', '/api/nodes');
-            draw();
+            [nodes, plugins] = await Promise.all([api('GET', '/api/nodes'), loadPlugins()]);
+            if (!dragging) draw();
         } catch (e) {
             if (e instanceof ApiError && e.status === 401) return handleError(e);
             if (!silent) list.innerHTML = errorBox(e);
         }
+    };
+
+    const pluginName = (n) => {
+        const p = n.activePluginUuid && (plugins || []).find((x) => x.uuid === n.activePluginUuid);
+        return p ? p.name : '';
     };
 
     const draw = () => {
@@ -724,7 +748,7 @@ function pageNodes(root, _param, page) {
             list.innerHTML = `<div class="card empty"><i class="ph-duotone ph-cpu"></i>Нод пока нет<div class="sm" style="margin-top:6px">Нажмите «Создать», чтобы добавить первую ноду</div></div>`;
             return;
         }
-        list.innerHTML = `<div class="node-list">${nodes.map(nodeCardHtml).join('')}</div>`;
+        list.innerHTML = `<div class="node-list">${nodes.map((n) => nodeCardHtml(n, pluginName(n))).join('')}</div>`;
 
         $$('.node-card', list).forEach((row) => row.addEventListener('click', () => {
             const n = nodes.find((x) => x.uuid === row.dataset.id);
@@ -734,41 +758,86 @@ function pageNodes(root, _param, page) {
             e.stopPropagation();
             copyText(el.dataset.copy);
         }));
-        bindRowMenu(list, '[data-menu]', (id) => {
-            const n = nodes.find((x) => x.uuid === id);
-            const act = (path, body, msg) => run(() => api('POST', path, body), { success: msg }).then(() => load(true));
-            return [
-                { label: n.name },
-                { text: 'Редактировать', icon: 'ph-pencil-simple', onClick: () => nodeModal(n, () => load(true)) },
-                n.isDisabled
-                    ? { text: 'Включить', icon: 'ph-power', onClick: () => act(`/api/nodes/${id}/actions/enable`, undefined, 'Нода включена') }
-                    : { text: 'Отключить', icon: 'ph-power', onClick: () => act(`/api/nodes/${id}/actions/disable`, undefined, 'Нода отключена') },
-                { text: 'Перезапустить', icon: 'ph-arrow-counter-clockwise', onClick: () => act(`/api/nodes/${id}/actions/restart`, { forceRestart: false }, 'Перезапуск отправлен') },
-                {
-                    text: 'Сбросить трафик', icon: 'ph-chart-line-down', onClick: async () => {
-                        if (await confirmDialog({ title: 'Сбросить трафик?', text: `Счётчик трафика ноды <b>${esc(n.name)}</b> будет обнулён.`, confirmText: 'Сбросить' })) {
-                            act(`/api/nodes/${id}/actions/reset-traffic`, undefined, 'Трафик сброшен');
-                        }
-                    },
-                },
-                { text: 'Копировать адрес', icon: 'ph-copy', onClick: () => copyText(n.address) },
-                { divider: true },
-                {
-                    text: 'Удалить', icon: 'ph-trash', red: true, onClick: async () => {
-                        if (await confirmDialog({ title: 'Удалить ноду?', text: `Нода <b>${esc(n.name)}</b> будет удалена из панели. Это действие необратимо.`, confirmText: 'Удалить', danger: true })) {
-                            run(() => api('DELETE', `/api/nodes/${id}`), { success: 'Нода удалена' }).then(() => load(true));
-                        }
-                    },
-                },
-            ];
+        $$('[data-drag]', list).forEach((h) => {
+            h.addEventListener('click', (e) => e.stopPropagation());
+            h.addEventListener('pointerdown', (e) => startDrag(e, h));
         });
+    };
+
+    // Перетаскивание за ручку справа (мышь и тач)
+    const startDrag = (e, handle) => {
+        if (e.button !== undefined && e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const card = handle.closest('.node-card');
+        const cards = $$('.node-card', list);
+        const from = cards.indexOf(card);
+        const startScroll = window.scrollY;
+        const rects = cards.map((c) => {
+            const r = c.getBoundingClientRect();
+            return { top: r.top + startScroll, height: r.height };
+        });
+        const gap = 8;
+        const startY = e.clientY + startScroll;
+        let lastClientY = e.clientY;
+        let to = from;
+        dragging = true;
+        card.classList.add('dragging');
+        cards.forEach((c, i) => { if (i !== from) c.classList.add('shifting'); });
+        try { handle.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+
+        const update = () => {
+            const dy = lastClientY + window.scrollY - startY;
+            card.style.transform = `translateY(${dy}px)`;
+            const center = rects[from].top + rects[from].height / 2 + dy;
+            to = 0;
+            rects.forEach((r, i) => { if (i !== from && r.top + r.height / 2 < center) to++; });
+            const shift = rects[from].height + gap;
+            cards.forEach((c, i) => {
+                if (i === from) return;
+                let t = 0;
+                if (from < to && i > from && i <= to) t = -shift;
+                if (to < from && i >= to && i < from) t = shift;
+                c.style.transform = t ? `translateY(${t}px)` : '';
+            });
+        };
+        // автопрокрутка у краёв экрана
+        let raf = 0;
+        const autoScroll = () => {
+            const edge = 70;
+            let v = 0;
+            if (lastClientY < edge) v = -Math.ceil((edge - lastClientY) / 6);
+            else if (lastClientY > window.innerHeight - edge) v = Math.ceil((lastClientY - (window.innerHeight - edge)) / 6);
+            if (v) { window.scrollBy(0, v); update(); }
+            raf = requestAnimationFrame(autoScroll);
+        };
+        raf = requestAnimationFrame(autoScroll);
+
+        const onMove = (ev) => { lastClientY = ev.clientY; update(); };
+        const onUp = async () => {
+            cancelAnimationFrame(raf);
+            handle.removeEventListener('pointermove', onMove);
+            handle.removeEventListener('pointerup', onUp);
+            handle.removeEventListener('pointercancel', onUp);
+            dragging = false;
+            cards.forEach((c) => { c.style.transform = ''; c.classList.remove('dragging', 'shifting'); });
+            if (to === from) return;
+            const [moved] = nodes.splice(from, 1);
+            nodes.splice(to, 0, moved);
+            draw();
+            const r = await run(() => api('POST', '/api/nodes/actions/reorder', { nodes: nodes.map((n, i) => ({ uuid: n.uuid, viewPosition: i })) }));
+            if (r === undefined) load();
+        };
+        handle.addEventListener('pointermove', onMove);
+        handle.addEventListener('pointerup', onUp);
+        handle.addEventListener('pointercancel', onUp);
     };
 
     $('#refresh', root).onclick = () => load();
     $('#create', root).onclick = () => nodeModal(null, () => load(true));
 
     load();
-    const timer = setInterval(() => { if (!modalStack.length && !openMenuEl) load(true); }, 10000);
+    const timer = setInterval(() => { if (!modalStack.length && !openMenuEl && !dragging) load(true); }, 10000);
     page.destroy = () => clearInterval(timer);
 }
 
@@ -880,163 +949,362 @@ function dockerCompose(secret, port) {
       - SECRET_KEY="${(secret || '').trimEnd()}"`;
 }
 
+// Байты в SI для итоговых счётчиков интерфейса: 211.87 TB
+function fmtSi(b) {
+    let v = Number(b) || 0;
+    if (v < 1000) return `${Math.round(v)} B`;
+    const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
+    let i = -1;
+    while (v >= 1000 && i < units.length - 1) { v /= 1000; i++; }
+    return `${v.toFixed(2)} ${units[i]}`;
+}
+
+function fmtDuration(sec) {
+    const s = Math.floor(Number(sec) || 0);
+    return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s`;
+}
+
 function nodeModal(node, onDone) {
     const isNew = !node;
     openModalAsync({
         title: isNew ? 'Новая нода' : node.name,
+        titleHtml: isNew
+            ? 'Новая нода'
+            : `${node.countryCode && node.countryCode !== 'XX' ? `<span class="flag">${flag(node.countryCode)}</span>` : ''}<span>${esc(node.name)}</span>
+               <button type="button" class="icon-btn subtle nm-link" data-copy-uuid="${esc(node.uuid)}" title="Скопировать UUID"><i class="ph ph-link"></i></button>`,
         icon: 'ph-cpu',
-        size: 'lg',
+        size: 'xl',
         load: () => Promise.all([
             loadProfiles(),
-            isNew ? api('GET', '/api/keygen').catch((e) => { if (e.status === 401) throw e; return null; }) : Promise.resolve(null),
+            api('GET', '/api/keygen').catch((e) => { if (e.status === 401) throw e; return null; }),
+            loadPlugins(),
+            isNew ? Promise.resolve(null) : api('GET', `/api/nodes/${node.uuid}`).catch((e) => { if (e.status === 401) throw e; return node; }),
         ]),
-        render: ([profiles, k]) => nodeModalContent(node, profiles, k && k.secretKey ? k.secretKey : '', onDone),
+        render: ([profiles, k, plugins, fresh]) => nodeModalContent(fresh || node, profiles, k && k.secretKey ? k.secretKey : '', plugins, onDone),
     });
 }
 
-function nodeModalContent(node, profiles, secret, onDone) {
+function nodeModalContent(node, profiles, secret, plugins, onDone) {
     const isNew = !node;
-    const n = node || {};
+    const n = node || { port: 2222, countryCode: 'XX' };
     const cp = n.configProfile || {};
-    const activeProfile = cp.activeConfigProfileUuid || (profiles[0] && profiles[0].uuid) || '';
-    const activeInbounds = new Set((cp.activeInbounds || []).map((i) => i.uuid));
+    // состояние конфигурации ядра (меняется в отдельном окне)
+    const core = {
+        profileUuid: cp.activeConfigProfileUuid || '',
+        inbounds: (cp.activeInbounds || []).map((i) => i.uuid),
+    };
+    const initialCore = JSON.stringify(core);
+
+    const sys = n.system;
+    const isOnline = n.isConnected && n.xrayUptime && !n.isDisabled;
+    const tracking = n.isTrafficTrackingActive;
+    const limit = n.trafficLimitBytes || 0;
+    let pct = 100;
+    let barCls = 'teal';
+    if (tracking && limit > 0) {
+        pct = Math.min(100, Math.floor(((n.trafficUsedBytes || 0) * 100) / limit));
+        barCls = pct > 95 ? 'red' : pct > 80 ? 'yellow' : 'teal';
+    }
+
+    const detailsCard = isNew ? '' : `
+        <section class="nm-card">
+            <div class="nm-head">
+                <span class="nm-ico teal"><i class="ph-duotone ph-wifi-high"></i></span>
+                <span class="nm-title">Подробности</span>
+                <span class="spacer"></span>
+                ${isOnline ? `<span class="nm-pill teal" title="Аптайм Xray"><i class="ph-fill ph-star-four"></i>${fmtUptimeShort(n.xrayUptime).toUpperCase()}</span>` : ''}
+                <span id="nm-power-wrap"></span>
+            </div>
+            <div class="nm-tools">
+                <button type="button" class="nm-tool" id="nm-json" title="Посмотреть JSON ноды">JSON</button>
+            </div>
+            <div class="nm-sep"></div>
+            <div class="nm-traffic">
+                <div class="row between"><span class="mono fw6">${fmtIec(n.trafficUsedBytes)}</span><span class="dimmed">${tracking && limit ? fmtIec(limit) : '∞'}</span></div>
+                <div class="progress ${barCls}"><div style="width:${pct}%"></div></div>
+            </div>
+            <div class="nm-sep"></div>
+            <div class="nm-tiles">
+                <div class="nm-tile teal" title="Пользователей онлайн"><i class="ph-duotone ph-users"></i>${esc(n.usersOnline ?? 0)}</div>
+                <div class="nm-tile violet" title="Версия Xray"><i class="ph-fill ph-star-four"></i>${n.versions && n.versions.xray ? esc(n.versions.xray) : '—'}</div>
+                <div class="nm-tile indigo" title="Версия Remnawave Node"><i class="ph ph-waveform"></i>${n.versions && n.versions.node ? esc(n.versions.node) : '—'}</div>
+            </div>
+        </section>`;
+
+    const mainCard = `
+        <section class="nm-card">
+            <div class="nm-head">
+                <span class="nm-ico blue"><i class="ph-duotone ph-hard-drives"></i></span>
+                <div style="min-width:0"><div class="nm-title">Основное</div>${!isNew ? `<div class="xs dimmed ellipsis">${esc(n.uuid)}</div>` : ''}</div>
+            </div>
+            <div class="nm-sep"></div>
+            <form class="stack" id="node-form" autocomplete="off" style="gap:16px">
+                <div class="field"><label>Страна<span class="req">*</span></label>${countrySelectHtml('countryCode', n.countryCode)}</div>
+                <div class="field"><label>Внутреннее название<span class="req">*</span></label>
+                    <div class="input-wrap"><i class="ph ph-user"></i>
+                    <input class="input" name="name" value="${esc(n.name)}" minlength="3" maxlength="30" required placeholder="Германия-1 | Общий"></div></div>
+                <div class="nm-2">
+                    <div class="field"><label>Адрес<span class="req">*</span></label>
+                        <div class="input-wrap"><i class="ph ph-globe"></i>
+                        <input class="input" name="address" value="${esc(n.address)}" required minlength="2" placeholder="1.2.3.4"></div></div>
+                    <div class="field"><label>Node Port<span class="req">*</span></label>
+                        <input class="input" name="port" type="number" min="1" max="65535" required value="${esc(n.port ?? 2222)}"></div>
+                </div>
+                ${secret ? `
+                <div class="field"><label>Secret Key (SECRET_KEY)</label>
+                    <div class="input-wrap"><i class="ph ph-certificate"></i>
+                    <input class="input mono" value="${esc(secret)}" readonly style="padding-right:40px">
+                    <button type="button" class="icon-btn subtle right" id="copy-secret" title="Копировать"><i class="ph ph-copy"></i></button></div>
+                    ${isNew ? '<button type="button" class="btn btn-default btn-block" id="copy-compose" style="margin-top:8px"><i class="ph ph-copy"></i>Скопировать docker-compose.yml</button>' : ''}
+                </div>` : ''}
+                ${plugins ? `
+                <div class="field"><label>Плагин</label>
+                    <div class="input-wrap"><i class="ph ph-package"></i>
+                    <select class="select" name="plugin" style="padding-left:36px">
+                        <option value="">Без плагина</option>
+                        ${plugins.map((p) => `<option value="${esc(p.uuid)}" ${p.uuid === n.activePluginUuid ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+                    </select></div></div>` : ''}
+            </form>
+        </section>`;
+
+    let systemCard = '';
+    if (!isNew) {
+        if (sys && sys.info && sys.stats) {
+            const memPct = sys.info.memoryTotal ? Math.round((sys.stats.memoryUsed / sys.info.memoryTotal) * 100) : 0;
+            const memCls = memPct > 90 ? 'red' : memPct > 70 ? 'yellow' : 'teal';
+            const ifc = sys.stats.interface;
+            const nics = sys.info.networkInterfaces || [];
+            systemCard = `
+            <section class="nm-card">
+                <div class="nm-head">
+                    <span class="nm-ico violet"><i class="ph-duotone ph-monitor"></i></span>
+                    <span class="nm-title">О системе</span>
+                    <span class="spacer"></span>
+                    <span class="nm-pill outline violet">${esc((sys.info.platform || '').toUpperCase())} / ${esc((sys.info.arch || '').toUpperCase())}</span>
+                    <span class="nm-pill teal mono" title="Аптайм сервера"><i class="ph ph-timer"></i>${esc(fmtDuration(sys.stats.uptime).toUpperCase())}</span>
+                </div>
+                <div class="nm-sep"></div>
+                <div class="nm-block">
+                    <div class="nm-label">Память</div>
+                    <div class="mono fw6">${fmtIec(sys.stats.memoryUsed)} / ${fmtIec(sys.info.memoryTotal)} <span class="dimmed">(${memPct}%)</span></div>
+                    <div class="progress ${memCls}" style="margin-top:8px"><div style="width:${memPct}%"></div></div>
+                </div>
+                ${ifc ? `
+                <div class="nm-block">
+                    <div class="row between"><span class="nm-label">Интерфейс</span><span class="badge lower mono">${esc(ifc.interface)}</span></div>
+                    <div class="nm-2" style="margin-top:6px">
+                        <div><div class="dimmed sm"><i class="ph ph-arrow-down"></i> RX</div><div class="mono fw6">${fmtBitsPerSec(ifc.rxBytesPerSec)}</div><div class="mono xs dimmed">Всего: ${fmtSi(ifc.rxTotal)}</div></div>
+                        <div><div class="dimmed sm"><i class="ph ph-arrow-up"></i> TX</div><div class="mono fw6">${fmtBitsPerSec(ifc.txBytesPerSec)}</div><div class="mono xs dimmed">Всего: ${fmtSi(ifc.txTotal)}</div></div>
+                    </div>
+                </div>` : ''}
+                <div class="nm-block">
+                    <div class="nm-label">Система</div>
+                    <div class="dimmed sm" style="margin-top:4px"><i class="ph ph-cpu"></i> CPU</div>
+                    <div class="mono fw6">${esc(sys.info.cpus)} x ${esc(sys.info.cpuModel)}</div>
+                    <div class="nm-2" style="margin-top:6px">
+                        <div><div class="dimmed sm"><i class="ph ph-linux-logo"></i> Ядро</div><div class="mono fw6 ellipsis">${esc(sys.info.release)}</div></div>
+                        <div><div class="dimmed sm"><i class="ph ph-tree-structure"></i> Сеть</div><div class="mono fw6 ellipsis" title="${esc(nics.join(', '))}">${esc(nics.slice(0, 3).join(', '))}${nics.length > 3 ? ` +${nics.length - 3}` : ''}</div></div>
+                    </div>
+                </div>
+            </section>`;
+        } else {
+            systemCard = `
+            <section class="nm-card">
+                <div class="nm-head"><span class="nm-ico violet"><i class="ph-duotone ph-monitor"></i></span><span class="nm-title">О системе</span></div>
+                <div class="nm-sep"></div>
+                <div class="sm dimmed">Нет данных: нода не подключена.</div>
+            </section>`;
+        }
+    }
+
+    const coreCard = `
+        <section class="nm-card">
+            <div class="nm-head">
+                <span class="nm-ico green"><i class="ph-duotone ph-atom"></i></span>
+                <span class="nm-title">Конфигурация ядра</span>
+            </div>
+            <div class="nm-sep"></div>
+            <div id="nm-core"></div>
+        </section>`;
 
     const body = `
-        ${isNew ? `
-        <div class="fieldset">
-            <div class="fieldset-legend"><i class="ph ph-terminal-window"></i>1. Установите Remnawave Node на сервер</div>
-            ${secret ? `
-            <div class="sm dimmed">Создайте <span class="mono">docker-compose.yml</span> на сервере ноды и запустите <span class="mono">docker compose up -d</span>.</div>
-            <div class="codeblock" id="compose">${esc(dockerCompose(secret, 2222))}<button class="icon-btn copy" type="button" id="copy-compose" title="Копировать"><i class="ph ph-copy"></i></button></div>`
-            : `<div class="alert warn"><i class="ph ph-lock-key"></i><div class="sm">Не удалось получить SECRET_KEY: у токена нет скоупа <span class="mono">keygen:get</span>.</div></div>`}
-        </div>
-        <div class="fieldset-legend" style="margin-top:2px"><i class="ph ph-sliders"></i>2. Параметры ноды в панели</div>` : ''}
-        <form class="fgrid" id="node-form" autocomplete="off">
-            <div class="field"><label>Название<span class="req">*</span></label>
-                <input class="input" name="name" value="${esc(n.name)}" minlength="3" maxlength="30" required placeholder="Germany 1"></div>
-            <div class="field"><label>Страна</label>${countrySelectHtml('countryCode', n.countryCode)}</div>
-            <div class="field"><label>Адрес<span class="req">*</span></label>
-                <input class="input mono" name="address" value="${esc(n.address)}" required minlength="2" placeholder="1.2.3.4 или node.example.com"></div>
-            <div class="field"><label>Порт ноды</label>
-                <input class="input mono" name="port" type="number" min="1" max="65535" value="${esc(n.port ?? 2222)}"></div>
-
-            <div class="fieldset full">
-                <div class="fieldset-legend"><i class="ph ph-file-code"></i>Профиль конфигурации</div>
-                ${profiles.length ? `
-                <select class="select" name="profile">${profiles.map((p) => `<option value="${esc(p.uuid)}" ${p.uuid === activeProfile ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
-                <div class="row between"><span class="sm dimmed">Активные инбаунды</span><button type="button" class="btn btn-subtle btn-sm" id="inb-all">Выбрать все</button></div>
-                <div id="inb-list" class="stack" style="gap:2px"></div>` : `<div class="alert warn"><i class="ph ph-warning"></i><div class="sm">Нет доступных профилей. Сначала создайте профиль конфигурации.</div></div>`}
-            </div>
-
-            <div class="fieldset full">
-                <div class="fieldset-legend"><i class="ph ph-chart-bar"></i>Трафик</div>
-                <label class="switch"><input type="checkbox" name="isTrafficTrackingActive" ${n.isTrafficTrackingActive ? 'checked' : ''}><span class="track"></span><span>Учитывать трафик</span></label>
-                <div class="fgrid">
-                    <div class="field"><label>Лимит, ГБ</label><input class="input" name="limit" type="number" min="0" step="any" value="${n.trafficLimitBytes ? +(n.trafficLimitBytes / GB).toFixed(2) : ''}" placeholder="0 — без лимита"></div>
-                    <div class="field"><label>День сброса</label><input class="input" name="trafficResetDay" type="number" min="1" max="31" value="${esc(n.trafficResetDay ?? '')}" placeholder="1–31"></div>
-                    <div class="field"><label>Уведомить при, %</label><input class="input" name="notifyPercent" type="number" min="0" max="100" value="${esc(n.notifyPercent ?? '')}" placeholder="например 80"></div>
-                    <div class="field"><label>Множитель потребления</label><input class="input" name="consumptionMultiplier" type="number" min="0" max="100" step="0.1" value="${esc(n.consumptionMultiplier ?? 1)}"></div>
-                </div>
-            </div>
-
-            <div class="field full"><label>Теги</label>
-                <div class="desc">Через запятую. Только A–Z, 0–9, _ и :</div>
-                <input class="input mono" name="tags" value="${esc((n.tags || []).join(', '))}" placeholder="EU, PREMIUM"></div>
-            <div class="field full"><label>Заметка</label>
-                <textarea class="textarea" name="note" maxlength="255" rows="2">${esc(n.note || '')}</textarea></div>
-        </form>
-        ${!isNew ? `<div class="xs dimmed">UUID: <span class="mono">${esc(n.uuid)}</span> · создана ${esc(fmtDate(n.createdAt))}</div>` : ''}`;
+        <div class="nm-grid">
+            <div class="nm-col">${detailsCard}${mainCard}</div>
+            <div class="nm-col">${systemCard}${coreCard}</div>
+        </div>`;
 
     return {
         body,
-        foot: `${!isNew ? '<button class="btn btn-red-light left" id="del"><i class="ph ph-trash"></i>Удалить</button>' : ''}
-               <button class="btn btn-default" data-cancel>Отмена</button>
-               <button class="btn" id="save"><i class="ph ph-floppy-disk"></i>${isNew ? 'Создать' : 'Сохранить'}</button>`,
+        foot: `${!isNew ? '<button class="btn btn-default" id="more"><i class="ph ph-dots-three"></i>Ещё действия</button>' : '<button class="btn btn-default" data-cancel>Отмена</button>'}
+               <button class="btn" id="save" ${isNew ? '' : 'disabled'}><i class="ph ph-floppy-disk"></i>${isNew ? 'Создать' : 'Сохранить'}</button>`,
         onMount: (m, close) => {
             const form = $('#node-form', m);
             const f = (name) => form.elements[name];
-            $('[data-cancel]', m).onclick = close;
-
+            const saveBtn = $('#save', m);
             bindCountrySelect(m);
+            if ($('[data-cancel]', m)) $('[data-cancel]', m).onclick = close;
+            const link = $('[data-copy-uuid]', m);
+            if (link) link.onclick = () => copyText(link.dataset.copyUuid);
+            if ($('#copy-secret', m)) $('#copy-secret', m).onclick = () => copyText(secret);
+            if ($('#copy-compose', m)) $('#copy-compose', m).onclick = () => copyText(dockerCompose(secret, f('port').value));
 
-            if (isNew && secret) {
-                const updateCompose = () => {
-                    const block = $('#compose', m);
-                    block.firstChild.textContent = dockerCompose(secret, f('port').value);
-                };
-                f('port').addEventListener('input', updateCompose);
-                $('#copy-compose', m).onclick = () => copyText(dockerCompose(secret, f('port').value));
-            }
+            // ---- кнопка Сохранить активна только при изменениях ----
+            const snapshot = () => JSON.stringify([
+                f('countryCode').value, f('name').value, f('address').value, f('port').value,
+                f('plugin') ? f('plugin').value : '', JSON.stringify(core),
+            ]);
+            const initial = snapshot();
+            const markDirty = () => { if (!isNew) saveBtn.disabled = snapshot() === initial; };
+            form.addEventListener('input', markDirty);
+            form.addEventListener('change', markDirty);
+            // скрытое поле страны меняется программно — следим через выбор в списке
+            $('.combo-drop', m).addEventListener('mousedown', () => setTimeout(markDirty, 0));
+            $('.combo-input', m).addEventListener('keydown', () => setTimeout(markDirty, 0));
 
-            const drawInbounds = () => {
-                const list = $('#inb-list', m);
-                if (!list) return;
-                const p = profiles.find((x) => x.uuid === f('profile').value);
-                const inb = (p && p.inbounds) || [];
-                const firstTime = !list.dataset.drawn;
-                list.dataset.drawn = '1';
-                list.innerHTML = inb.length
-                    ? inb.map((i) => `<label class="check"><input type="checkbox" value="${esc(i.uuid)}" ${
-                        (firstTime && !isNew && p.uuid === activeProfile ? activeInbounds.has(i.uuid) : true) ? 'checked' : ''}>
-                        <span class="tag mono sm fw6">${esc(i.tag)}</span><span class="spacer"></span>
-                        <span class="badge gray lower">${esc(i.type)}</span>${i.port ? `<span class="badge lower">${esc(i.port)}</span>` : ''}</label>`).join('')
-                    : '<div class="sm dimmed" style="padding:6px 10px">В профиле нет инбаундов</div>';
+            // ---- конфигурация ядра ----
+            const drawCore = () => {
+                const p = profiles.find((x) => x.uuid === core.profileUuid);
+                const active = p ? (p.inbounds || []).filter((i) => core.inbounds.includes(i.uuid)) : [];
+                $('#nm-core', m).innerHTML = p
+                    ? `<div class="nm-block">
+                        <div class="row" style="gap:12px">
+                            <span class="nm-ico sm cyan"><i class="ph-fill ph-star-four"></i></span>
+                            <span class="mono fw6 ellipsis" style="flex:1;font-size:15px">${esc(p.name)}</span>
+                            <span class="nm-pill cyan" title="Активных инбаундов"><i class="ph ph-tag"></i>${active.length}</span>
+                            <button type="button" class="icon-btn" id="core-edit" title="Изменить"><i class="ph ph-pencil-simple-line"></i></button>
+                        </div>
+                        <div class="row wrap" style="gap:6px;margin-top:10px">
+                            ${active.length ? active.map((i) => `<span class="badge gray lower mono" title="${esc(i.tag)}">${esc(i.port || i.tag)}</span>`).join('') : '<span class="xs" style="color:var(--red-5)">Нет активных инбаундов</span>'}
+                        </div>
+                    </div>`
+                    : `<div class="nm-block row between"><span class="sm dimmed">Профиль не выбран</span>
+                        <button type="button" class="btn btn-light btn-sm" id="core-edit"><i class="ph ph-plus"></i>Выбрать</button></div>`;
+                $('#core-edit', m).onclick = () => coreEditModal(profiles, core, () => { drawCore(); markDirty(); });
             };
-            if (profiles.length) {
-                drawInbounds();
-                f('profile').addEventListener('change', drawInbounds);
-                $('#inb-all', m).onclick = () => {
-                    const boxes = $$('#inb-list input', m);
-                    const all = boxes.every((b) => b.checked);
-                    boxes.forEach((b) => { b.checked = !all; });
+            drawCore();
+
+            // ---- включить/выключить ----
+            const drawPower = () => {
+                const wrap = $('#nm-power-wrap', m);
+                if (!wrap) return;
+                wrap.innerHTML = n.isDisabled
+                    ? '<button type="button" class="nm-power on" id="nm-power" title="Включить ноду"><i class="ph ph-power"></i></button>'
+                    : '<button type="button" class="nm-power" id="nm-power" title="Выключить ноду"><i class="ph ph-power"></i></button>';
+                $('#nm-power', m).onclick = togglePower;
+            };
+            const togglePower = async () => {
+                const action = n.isDisabled ? 'enable' : 'disable';
+                if (action === 'disable' && !(await confirmDialog({ title: 'Выключить ноду?', text: `Нода <b>${esc(n.name)}</b> перестанет обслуживать пользователей.`, confirmText: 'Выключить', danger: true }))) return;
+                const r = await run(() => api('POST', `/api/nodes/${n.uuid}/actions/${action}`), { success: action === 'enable' ? 'Нода включена' : 'Нода выключена' });
+                if (r !== undefined) { n.isDisabled = action === 'disable'; drawPower(); onDone(); }
+            };
+            drawPower();
+
+            if ($('#nm-json', m)) {
+                $('#nm-json', m).onclick = () => {
+                    const json = JSON.stringify(n, null, 2);
+                    openModal({
+                        title: 'JSON ноды', icon: 'ph-brackets-curly', size: 'lg',
+                        body: `<pre class="codeblock" style="max-height:60vh;overflow:auto">${esc(json)}</pre>`,
+                        foot: '<button class="btn btn-default" id="cj"><i class="ph ph-copy"></i>Копировать</button>',
+                        onMount: (mm) => { $('#cj', mm).onclick = () => copyText(json); },
+                    });
                 };
             }
 
+            // ---- ещё действия ----
             if (!isNew) {
-                $('#del', m).onclick = async () => {
-                    if (await confirmDialog({ title: 'Удалить ноду?', text: `Нода <b>${esc(n.name)}</b> будет удалена. Это действие необратимо.`, confirmText: 'Удалить', danger: true })) {
-                        const ok = await run(() => api('DELETE', `/api/nodes/${n.uuid}`), { success: 'Нода удалена' });
-                        if (ok !== undefined) { close(); onDone(); }
-                    }
+                $('#more', m).onclick = (e) => {
+                    e.stopPropagation();
+                    openMenu($('#more', m), [
+                        {
+                            text: 'Удалить', icon: 'ph-trash', red: true, onClick: async () => {
+                                if (await confirmDialog({ title: 'Удалить ноду?', text: `Нода <b>${esc(n.name)}</b> будет удалена. Это действие необратимо.`, confirmText: 'Удалить', danger: true })) {
+                                    const r = await run(() => api('DELETE', `/api/nodes/${n.uuid}`), { success: 'Нода удалена' });
+                                    if (r !== undefined) { close(); onDone(); }
+                                }
+                            },
+                        },
+                        { divider: true },
+                        { label: 'Управление' },
+                        { text: 'Копировать UUID', icon: 'ph-copy', onClick: () => copyText(n.uuid) },
+                        { text: 'Перезапустить', icon: 'ph-arrow-clockwise', green: true, onClick: () => run(() => api('POST', `/api/nodes/${n.uuid}/actions/restart`, { forceRestart: false }), { success: 'Перезапуск отправлен' }) },
+                        n.isDisabled
+                            ? { text: 'Включить', icon: 'ph-power', green: true, onClick: togglePower }
+                            : { text: 'Выключить', icon: 'ph-plugs', red: true, onClick: togglePower },
+                    ]);
                 };
             }
 
-            $('#save', m).onclick = async () => {
+            // ---- сохранение ----
+            saveBtn.onclick = async () => {
                 if (!form.reportValidity()) return;
-                if (!profiles.length) { toast('error', 'Выберите профиль конфигурации'); return; }
-                const num = (name) => (f(name).value === '' ? undefined : Number(f(name).value));
-                const limitGb = num('limit');
+                if (!core.profileUuid) { toast('error', 'Выберите профиль конфигурации', 'Блок «Конфигурация ядра» → «Выбрать»'); return; }
                 const payload = {
                     name: f('name').value.trim(),
                     address: f('address').value.trim(),
-                    port: num('port'),
+                    port: Number(f('port').value),
                     countryCode: f('countryCode').value || 'XX',
-                    isTrafficTrackingActive: f('isTrafficTrackingActive').checked,
-                    trafficLimitBytes: limitGb !== undefined ? Math.round(limitGb * GB) : 0,
-                    trafficResetDay: num('trafficResetDay'),
-                    notifyPercent: num('notifyPercent'),
-                    consumptionMultiplier: num('consumptionMultiplier'),
-                    tags: parseTags(f('tags').value),
-                    configProfile: {
-                        activeConfigProfileUuid: f('profile').value,
-                        activeInbounds: $$('#inb-list input:checked', m).map((b) => b.value),
-                    },
+                    configProfile: { activeConfigProfileUuid: core.profileUuid, activeInbounds: core.inbounds },
                 };
-                const note = f('note').value.trim();
-                if (isNew) { if (note) payload.note = note; } else { payload.note = note || null; }
-                Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
-
-                const btn = $('#save', m);
-                setBusy(btn, true);
+                if (f('plugin')) {
+                    const v = f('plugin').value || null;
+                    if (!isNew || v) payload.activePluginUuid = v;
+                }
+                setBusy(saveBtn, true);
                 const r = await run(
                     () => (isNew ? api('POST', '/api/nodes', payload) : api('PATCH', '/api/nodes', { uuid: n.uuid, ...payload })),
                     { success: isNew ? 'Нода создана' : 'Нода сохранена' },
                 );
-                setBusy(btn, false);
+                setBusy(saveBtn, false);
                 if (r !== undefined) { close(); onDone(); }
+                else markDirty();
             };
         },
     };
+}
+
+// Выбор профиля и активных инбаундов ноды
+function coreEditModal(profiles, core, onApply) {
+    openModal({
+        title: 'Конфигурация ядра',
+        icon: 'ph-atom',
+        body: profiles.length ? `
+            <div class="field"><label>Профиль конфигурации</label>
+                <select class="select" id="ce-profile">${profiles.map((p) => `<option value="${esc(p.uuid)}" ${p.uuid === core.profileUuid ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+            <div class="row between"><span class="sm dimmed">Активные инбаунды</span><button type="button" class="btn btn-subtle btn-sm" id="ce-all">Выбрать все</button></div>
+            <div id="ce-list" class="stack" style="gap:2px"></div>`
+            : '<div class="alert warn"><i class="ph ph-warning"></i><div class="sm">Нет профилей. Сначала создайте профиль конфигурации.</div></div>',
+        foot: `<button class="btn btn-default" data-cancel>Отмена</button>${profiles.length ? '<button class="btn" id="ce-ok"><i class="ph ph-check"></i>Применить</button>' : ''}`,
+        onMount: (m, close) => {
+            $('[data-cancel]', m).onclick = close;
+            if (!profiles.length) return;
+            const sel = $('#ce-profile', m);
+            if (!core.profileUuid) sel.value = profiles[0].uuid;
+            const draw = () => {
+                const p = profiles.find((x) => x.uuid === sel.value);
+                const keep = p.uuid === core.profileUuid;
+                $('#ce-list', m).innerHTML = (p.inbounds || []).map((i) => `
+                    <label class="check"><input type="checkbox" value="${esc(i.uuid)}" ${keep ? (core.inbounds.includes(i.uuid) ? 'checked' : '') : 'checked'}>
+                        <span class="mono sm fw6">${esc(i.tag)}</span><span class="spacer"></span>
+                        <span class="badge gray lower">${esc(i.type)}</span>${i.port ? `<span class="badge lower">${esc(i.port)}</span>` : ''}</label>`).join('')
+                    || '<div class="sm dimmed" style="padding:6px 10px">В профиле нет инбаундов</div>';
+            };
+            draw();
+            sel.onchange = draw;
+            $('#ce-all', m).onclick = () => {
+                const boxes = $$('#ce-list input', m);
+                const all = boxes.every((b) => b.checked);
+                boxes.forEach((b) => { b.checked = !all; });
+            };
+            $('#ce-ok', m).onclick = () => {
+                core.profileUuid = sel.value;
+                core.inbounds = $$('#ce-list input:checked', m).map((b) => b.value);
+                close();
+                onApply();
+            };
+        },
+    });
 }
 
 /* =========================================================================
@@ -1684,7 +1952,6 @@ function pageHosts(root, _param, page) {
                 ${allHidden
                     ? '<button class="btn btn-soft-violet btn-block" data-b="show"><i class="ph ph-eye"></i>Показать в подписке</button>'
                     : '<button class="btn btn-soft-violet btn-block" data-b="hide"><i class="ph ph-eye-slash"></i>Скрыть из подписки</button>'}
-                <button class="btn btn-soft-cyan btn-block" data-b="update"><i class="ph ph-squares-four"></i>Обновить</button>
                 <button class="btn btn-soft-indigo btn-block" data-b="clone"><i class="ph ph-copy"></i>Клонировать</button>
                 <button class="btn btn-red-light btn-block" data-b="delete"><i class="ph ph-trash"></i>Удалить</button>
             </div>`;
@@ -1700,7 +1967,6 @@ function pageHosts(root, _param, page) {
             disable: () => bulk('POST', '/api/hosts/bulk/disable', { uuids: ids }, `Выключено: ${ids.length}`),
             hide: () => bulk('PATCH', '/api/hosts/bulk/update', { uuids: ids, isHidden: true }, `Скрыто из подписки: ${ids.length}`),
             show: () => bulk('PATCH', '/api/hosts/bulk/update', { uuids: ids, isHidden: false }, `Возвращено в подписку: ${ids.length}`),
-            update: () => bulkUpdateModal(ids, profiles, () => { selected.clear(); load(); }),
             clone: async () => {
                 const src = hosts.filter((h) => selected.has(h.uuid) && h.inbound && h.inbound.configProfileInboundUuid);
                 if (!src.length) { toast('error', 'Нечего клонировать', 'У выбранных хостов нет инбаунда'); return; }
@@ -1818,64 +2084,6 @@ function hostModal(host, profiles, onDone) {
                     () => (isNew ? api('POST', '/api/hosts', payload) : api('PATCH', '/api/hosts', { uuid: h.uuid, ...payload })),
                     { success: isNew ? 'Хост создан' : 'Хост сохранён' },
                 );
-                setBusy(btn, false);
-                if (r !== undefined) { close(); onDone(); }
-            };
-        },
-    });
-}
-
-// Массовое изменение: применяются только заполненные поля
-function bulkUpdateModal(ids, profiles, onDone) {
-    const keep = '— не менять —';
-    const opt = (v, label) => `<option value="${esc(v)}">${esc(label ?? v)}</option>`;
-    openModal({
-        title: `Обновить хосты (${ids.length})`,
-        icon: 'ph-squares-four',
-        size: 'lg',
-        body: `
-            <div class="alert info"><i class="ph ph-info"></i><div class="sm">Изменятся только заполненные поля. Пустые останутся как есть у каждого хоста.</div></div>
-            <form class="fgrid" id="bf" autocomplete="off">
-                <div class="field full"><label>Инбаунд</label>
-                    <select class="select" name="inbound">${hostInboundOptions(profiles, '', keep)}</select></div>
-                <div class="field"><label>Адрес</label><input class="input mono" name="address" placeholder="${keep}"></div>
-                <div class="field"><label>Порт</label><input class="input mono" name="port" type="number" min="1" max="65535" placeholder="${keep}"></div>
-                <div class="field"><label>SNI</label><input class="input mono" name="sni" placeholder="${keep}"></div>
-                <div class="field"><label>Path</label><input class="input mono" name="path" placeholder="${keep}"></div>
-                <div class="field"><label>Security layer</label>
-                    <select class="select" name="securityLayer">${opt('', keep)}${['DEFAULT', 'TLS', 'NONE'].map((v) => opt(v)).join('')}</select></div>
-                <div class="field"><label>ALPN</label>
-                    <select class="select" name="alpn">${opt('', keep)}${ALPNS.map((v) => opt(v)).join('')}</select></div>
-                <div class="field"><label>Fingerprint</label>
-                    <select class="select" name="fingerprint">${opt('', keep)}${FINGERPRINTS.map((v) => opt(v)).join('')}</select></div>
-                <div class="field"><label>Описание сервера</label><input class="input" name="serverDescription" maxlength="30" placeholder="${keep}"></div>
-                <div class="field full"><label>Теги</label>
-                    <div class="desc">Заменят текущие теги выбранных хостов. Через запятую.</div>
-                    <input class="input mono" name="tags" placeholder="${keep}"></div>
-            </form>`,
-        foot: `<button class="btn btn-default" data-cancel>Отмена</button>
-               <button class="btn" id="save"><i class="ph ph-floppy-disk"></i>Применить</button>`,
-        onMount: (m, close) => {
-            const form = $('#bf', m);
-            const f = (n) => form.elements[n];
-            $('[data-cancel]', m).onclick = close;
-            $('#save', m).onclick = async () => {
-                if (!form.reportValidity()) return;
-                const payload = { uuids: ids };
-                if (f('inbound').value) {
-                    const [configProfileUuid, configProfileInboundUuid] = f('inbound').value.split('|');
-                    payload.inbound = { configProfileUuid, configProfileInboundUuid };
-                }
-                ['address', 'sni', 'path', 'serverDescription', 'securityLayer', 'alpn', 'fingerprint'].forEach((n) => {
-                    const v = f(n).value.trim();
-                    if (v) payload[n] = v;
-                });
-                if (f('port').value) payload.port = Number(f('port').value);
-                if (f('tags').value.trim()) payload.tags = parseTags(f('tags').value);
-                if (Object.keys(payload).length === 1) { toast('info', 'Нет изменений', 'Заполните хотя бы одно поле'); return; }
-                const btn = $('#save', m);
-                setBusy(btn, true);
-                const r = await run(() => api('PATCH', '/api/hosts/bulk/update', payload), { success: `Обновлено хостов: ${ids.length}` });
                 setBusy(btn, false);
                 if (r !== undefined) { close(); onDone(); }
             };
