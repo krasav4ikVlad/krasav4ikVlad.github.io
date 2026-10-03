@@ -1953,7 +1953,7 @@ function viewStats() {
   const breakdownHtml = (r, data) => {
     const p = data.points;
     const a = data.settings || {};
-    const replyPts = r.replies * p.reply;
+    const replyPts = (r.answers ?? 0) * p.reply;
     const fastPts = r.fast * p.fast;
     const ratingPts = r.score - replyPts - fastPts; // остаток — ровно вклад оценок
     const sign = v => (v > 0 ? '+' : '') + fmtNum(v);
@@ -1962,7 +1962,8 @@ function viewStats() {
 
     const lines = [];
     lines.push(`<b>Баллы — ${fmtNum(r.score)}</b>`);
-    lines.push(`ответы: ${r.replies} × ${p.reply} = ${fmtNum(replyPts)}`);
+    lines.push(`отвеченные обращения: ${r.answers ?? 0} × ${p.reply} = ${fmtNum(replyPts)} `
+      + `<span class="muted">(сообщений отправлено ${r.replies} — за количество сообщений баллы не даются)</span>`);
     lines.push(`быстрые первые ответы (≤${p.fast_threshold_min} мин): ${r.fast} × ${p.fast} = ${fmtNum(fastPts)}`);
     lines.push(r.rating_count
       ? `оценки: ${r.rating_count} шт., средняя ★${r.rating_avg} → ${sign(ratingPts)} (каждая даёт ±${p.rating_step}×(звёзды−3))`
@@ -2031,7 +2032,7 @@ function viewStats() {
     const showPay = rows.some(r => 'salary_base' in r);
     $t.innerHTML = rows.length ? `<div class="table-wrap"><table>
       <tr><th>#</th><th>Оператор</th><th>Баллы</th><th>Коэфф.</th>${showPay ? '<th>К выплате</th>' : ''}
-        <th>Ответы</th><th>Тикетов</th><th>Закрыто</th>
+        <th title="Обращения, получившие ответ оператора — за них идут баллы">Отвечено</th><th title="Сообщений отправлено — справочно, баллов не даёт">Сообщ.</th><th>Тикетов</th><th>Закрыто</th>
         <th>Скорость (медиана)</th><th>Быстрых ≤${data.points.fast_threshold_min} мин</th><th>Оценка</th>
         ${showPay ? '<th>Раб. день (ср.)</th>' : ''}<th>График</th></tr>
       ${rows.map((r, i) => `
@@ -2041,7 +2042,8 @@ function viewStats() {
           <td><b>${fmtNum(r.score)}</b>${r.norm_points ? `<span class="muted" style="font-size:11px"> / ${fmtNum(r.norm_points)}</span>` : ''}</td>
           <td>${r.coeff != null ? `<b>×${r.coeff.toFixed(2)}</b>` : '<span class="muted" title="Задайте часы в неделю в карточке оператора">—</span>'}</td>
           ${showPay ? `<td>${'payout' in r && r.payout != null ? `<b>${fmtNum(r.payout)} ₽</b>` : ('salary_base' in r ? '<span class="muted">—</span>' : '')}</td>` : ''}
-          <td>${r.replies}</td>
+          <td><b>${r.answers ?? 0}</b></td>
+          <td class="muted">${r.replies}</td>
           <td>${r.tickets}</td>
           <td>${r.closes}</td>
           <td>${fmtDur(r.median_wait_sec)}${r.avg_wait_sec != null ? ` <span class="muted">(ср. ${fmtDur(r.avg_wait_sec)})</span>` : ''}</td>
@@ -2085,7 +2087,8 @@ function viewStats() {
     const a = data.settings || {};
     const workWin = a.work_start === a.work_end ? 'круглосуточно' : `${a.work_start}–${a.work_end} (UTC+${a.tz_offset_hours})`;
     document.getElementById('st-formula').innerHTML =
-      `Баллы: ответ +${p.reply} · быстрый первый ответ (≤${p.fast_threshold_min} мин) ещё +${p.fast} · ` +
+      `Баллы: ответ на обращение +${p.reply} (за количество сообщений баллы не даются — пишите по делу) · ` +
+      `быстрый первый ответ (≤${p.fast_threshold_min} мин) ещё +${p.fast} · ` +
       `оценка пользователя ±${p.rating_step}×(звёзды−3), т.е. 5★ = +${p.rating_step * 2}, 1★ = −${p.rating_step * 2}.<br>` +
       `Коэффициент = баллы ÷ норма, в пределах ×${a.coeff_min}–×${a.coeff_max}. ` +
       (a.norm_mode === 'manual'
@@ -2151,7 +2154,7 @@ function viewStats() {
         <div class="field" id="norm-manual"><label>Норма баллов за час (для ручного режима)</label>
           <input name="norm" type="number" step="0.5" min="0" value="${esc(cfg.norm_points_per_hour)}">
           <div class="muted" style="font-size:12px; margin-top:4px">
-            Норма оператора за период = это число × его часы. Пример: 10 баллов/час ≈ 5 ответов (или 2 быстрых) в час.</div></div>
+            Норма оператора за период = это число × его часы. Пример: 10 баллов/час ≈ 5 отвеченных обращений (или 2 быстрых) в час.</div></div>
         <div class="row">
           <div class="field"><label>Коэфф. минимум</label>
             <input name="cmin" type="number" step="0.05" min="0" value="${esc(cfg.coeff_min)}"></div>
@@ -2240,12 +2243,12 @@ function viewStats() {
     const d = S.stData;
     if (!d || !d.rows.length) { toast('Нет данных для выгрузки', 'err'); return; }
     const head = ['Логин', 'Имя', 'Баллы', 'Норма', 'Коэффициент', 'Оклад, ₽/мес', 'К выплате, ₽',
-      'Часов/нед', 'Ответы', 'Тикетов', 'Закрыто',
+      'Часов/нед', 'Отвечено обращений', 'Сообщений', 'Тикетов', 'Закрыто',
       'Медиана ответа, сек', 'Среднее, сек', 'Быстрых', 'Замерено', 'Оценка', 'Кол-во оценок',
       'Начинает (ср.)', 'Заканчивает (ср.)', 'Активных дней'];
     const lines = [head.join(';')].concat(d.rows.map(r => [
       r.login, r.name, r.score, r.norm_points ?? '', r.coeff ?? '', r.salary_base ?? '', r.payout ?? '',
-      r.hours_per_week ?? '', r.replies, r.tickets, r.closes,
+      r.hours_per_week ?? '', r.answers ?? 0, r.replies, r.tickets, r.closes,
       r.median_wait_sec ?? '', r.avg_wait_sec ?? '', r.fast, r.measured,
       r.rating_avg ?? '', r.rating_count,
       r.work_rhythm?.avg_start ?? '', r.work_rhythm?.avg_end ?? '', r.work_rhythm?.days ?? '',
@@ -3098,7 +3101,9 @@ function viewHelp() {
       <h2>Баллы, норма и коэффициент</h2>
       <p>Страница «Активность» считает работу каждого оператора за период. Баллы:</p>
       <ul class="help-list">
-        <li><b>+2</b> — за каждый ответ пользователю (с сайта или из треда);</li>
+        <li><b>+2</b> — за ответ на обращение (цепочку сообщений пользователя, ждущую
+          ответа). За количество собственных сообщений баллы НЕ даются — выгодно
+          отвечать одним сообщением по делу, а не десятью;</li>
         <li><b>+3 сверху</b> — если это первый ответ на обращение и он дан за ≤10 минут
           (ожидание считается только внутри рабочего окна поддержки — ночь никому
           ничего не портит);</li>

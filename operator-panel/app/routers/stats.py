@@ -14,7 +14,10 @@
     оператору, который последним вёл тикет).
 
 Баллы (формула фиксированная, показана операторам в интерфейсе):
-  ответ +2 · быстрый ответ (≤10 мин) ещё +3
+  ответ на обращение +2 · быстрый ответ (≤10 мин) ещё +3
+  (обращение = цепочка сообщений пользователя, ждущая ответа; баллы даются
+   за факт ответа на обращение, а НЕ за каждое сообщение — писать больше
+   сообщений невыгодно, выгодно отвечать по делу и быстро)
   оценка: +2×(N−3) → 5★=+4, 4★=+2, 3★=0, 2★=−2, 1★=−4
 
 Зарплата по коэффициенту (настройки владельца — «Настройки расчёта»).
@@ -330,7 +333,7 @@ async def operator_stats(
 
     def bucket(login: str) -> dict:
         return per_op.setdefault(login, {
-            "replies": 0, "tickets": set(), "closes": 0,
+            "replies": 0, "answers": 0, "tickets": set(), "closes": 0,
             "waits": [], "fast": 0, "ratings": [],
         })
 
@@ -367,6 +370,7 @@ async def operator_stats(
             dialog_had_op = True
             if pending_since is not None and ts is not None:
                 answered_waits += 1
+                b["answers"] += 1  # баллы — за отвеченное обращение, не за сообщение
                 demand_ts.append(pending_since)
                 raw = (ts - pending_since).total_seconds()
                 if 0 <= raw <= 7 * 86400:  # брошенные на неделю тикеты не замеряем
@@ -463,9 +467,10 @@ async def operator_stats(
         avg_wait = sum(waits) / len(waits) if waits else None
         median_wait = waits[len(waits) // 2] if waits else None
         ratings = b["ratings"]
-        # закрытия в баллы не входят: тикеты закрываются автоматически,
+        # баллы — за отвеченные ОБРАЩЕНИЯ, не за сообщения: спамить ответами
+        # невыгодно. Закрытия в баллы не входят: тикеты закрываются автоматически,
         # b["closes"] остаётся справочной колонкой
-        score = (b["replies"] * POINTS_REPLY
+        score = (b["answers"] * POINTS_REPLY
                  + b["fast"] * POINTS_FAST
                  + sum((r - 3) * POINTS_PER_RATING_STEP for r in ratings))
         info = op_info.get(login, {})
@@ -474,6 +479,7 @@ async def operator_stats(
             "login": login,
             "name": info.get("name") or login,
             "replies": b["replies"],
+            "answers": b["answers"],
             "tickets": len(b["tickets"]),
             "closes": b["closes"],
             "avg_wait_sec": round(avg_wait) if avg_wait is not None else None,
