@@ -24,6 +24,7 @@ from app.admin import bypass_report as admin_bypass
 from app.admin import freebies as admin_freebies
 from app.admin import outage as admin_outage
 from app.admin import raffle as admin_raffle
+from app.admin import raffle_gifts as admin_raffle_gifts
 from app.admin import rich as admin_rich
 from app.admin import ref_fix as admin_ref_fix
 from app.admin import ref_tags as admin_ref_tags
@@ -472,6 +473,7 @@ def create_router(admin_ids) -> Router:
     admin_ref_tags.register(router)
     admin_ref_fix.register(router)
     admin_raffle.register(router)
+    admin_raffle_gifts.register(router)
     admin_outage.register(router)
     admin_freebies.register(router)
     admin_bypass.register(router)
