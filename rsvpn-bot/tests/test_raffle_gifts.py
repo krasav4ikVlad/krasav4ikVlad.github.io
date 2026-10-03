@@ -346,6 +346,15 @@ def test_the_letter_says_how_to_claim_the_prize():
     assert '@RSConnectHelp_bot' in letter and 'скриншот' in letter
 
 
+def test_the_letter_links_to_the_results_post():
+    """Человек хочет убедиться, что это не розыгрыш мошенников, — пусть
+    увидит свой билет в общем посте."""
+    letter = gifts.letter({'prize': 'iPhone 18 Pro', 'ticket': 42},
+                          month_prize=False)
+
+    assert 'https://t.me/rsconnect_vpn/175' in letter
+
+
 def test_the_month_letter_speaks_of_days_not_prizes():
     letter = gifts.letter({'prize': gifts.MONTH_PRIZE, 'ticket': 3},
                           month_prize=True)
