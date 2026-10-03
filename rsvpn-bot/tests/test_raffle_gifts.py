@@ -112,6 +112,99 @@ def test_after_the_award_the_list_points_to_the_letters():
     assert 'начислены' in text and '/rafflenote месяц' in text
 
 
+# ── список победителей со стороны ───────────────────────────────────────────
+#
+# Числа тянут генератором на видео, а итог ведут в таблице — боту её
+# присылают копией. Разбор должен пережить и табы из Excel, и цифры в
+# названии приза, и закрытые id, которые из таблицы обычно не убирают.
+PASTE = (
+    '📱 iPhone 18 Pro\t347****14\t5389\t347223714\n'
+    '🍏 AirPods 5\t834*****13\t1260\t8347392713\n'
+    '💰 5 000 ₽ #9\t698****02\t4362\t698569602'
+)
+
+
+def test_a_table_from_excel_is_understood():
+    rows, broken = gifts.parse_winners(PASTE)
+
+    assert not broken
+    assert [row['user_id'] for row in rows] == [347223714, 8347392713,
+                                                698569602]
+    assert [row['ticket'] for row in rows] == [5389, 1260, 4362]
+    assert rows[0]['prize'] == '📱 iPhone 18 Pro'
+
+
+def test_digits_inside_a_prize_name_are_not_a_ticket():
+    """«iPhone 18 Pro» — приз, а не билет №18."""
+    rows, _ = gifts.parse_winners('iPhone 18 Pro 5389 347223714')
+
+    assert rows[0]['prize'] == 'iPhone 18 Pro' and rows[0]['ticket'] == 5389
+
+
+def test_a_hidden_id_is_ignored_not_taken_for_a_number():
+    rows, _ = gifts.parse_winners('Приз\t347****14\t347223714')
+
+    assert rows[0]['user_id'] == 347223714 and rows[0]['ticket'] == 0
+
+
+def test_a_line_without_an_id_is_named_not_skipped():
+    """Пропущенная строка — чей-то приз: о ней должно быть сказано."""
+    rows, broken = gifts.parse_winners('iPhone 18 Pro 5389\nAirPods\t1\t347223714')
+
+    assert broken == ['iPhone 18 Pro 5389'] and len(rows) == 1
+
+
+async def test_the_winners_are_remembered_for_the_letters(dates):
+    dp, bot, session, c = dates
+    await c.users.create({'user_data': {'user_id': 347223714,
+                                        'username': 'vasya'}})
+
+    await dp.feed_update(bot, message('/rafflewinners ' + PASTE))
+
+    assert 'Записано победителей: 3' in session.last_text
+    assert '@vasya' in session.last_text
+    row = await c.db['raffle_draws'].find_one({'_id': '20261001-20261022'})
+    assert [w['user_id'] for w in row['winners']] == [347223714, 8347392713,
+                                                      698569602]
+
+
+async def test_unknown_ids_are_called_out(dates):
+    """Опечатка в id — это письмо, которое не уйдёт, и узнать об этом надо
+    сейчас, а не из вопроса «а мне ничего не пришло»."""
+    dp, bot, session, c = dates
+
+    await dp.feed_update(bot, message('/rafflewinners ' + PASTE))
+
+    assert 'Нет в базе: 3' in session.last_text
+
+
+async def test_an_existing_list_is_not_overwritten_by_accident(dates):
+    dp, bot, session, c = dates
+    await dp.feed_update(bot, message('/rafflewinners ' + PASTE))
+
+    await dp.feed_update(bot, message('/rafflewinners Другой приз 1 347223714'))
+
+    assert 'уже записан' in session.last_text
+    row = await c.db['raffle_draws'].find_one({'_id': '20261001-20261022'})
+    assert len(row['winners']) == 3
+
+    await dp.feed_update(bot, message(
+        '/rafflewinners заменить\nДругой приз 1 347223714'))
+
+    row = await c.db['raffle_draws'].find_one({'_id': '20261001-20261022'})
+    assert len(row['winners']) == 1
+
+
+async def test_the_hand_written_list_feeds_the_letters(dates, monkeypatch):
+    dp, bot, session, c = dates
+    await dp.feed_update(bot, message('/rafflewinners ' + PASTE))
+
+    await dp.feed_update(bot, message('/rafflenote'))
+
+    assert 'Будет отправлено: 3' in session.last_text
+    assert 'iPhone 18 Pro' in session.last_text
+
+
 # ── письма ──────────────────────────────────────────────────────────────────
 def test_the_preview_shows_the_letter_itself():
     """Не «будет отправлено письмо», а ровно тот текст, что уйдёт."""
@@ -134,6 +227,14 @@ def test_the_letter_names_the_prize_and_the_ticket():
                           month_prize=False)
 
     assert 'iPhone 18 Pro' in letter and '42' in letter
+
+
+def test_the_letter_says_how_to_claim_the_prize():
+    """Иначе человек отвечает в бота, а там его никто не читает."""
+    letter = gifts.letter({'prize': 'iPhone 18 Pro', 'ticket': 42},
+                          month_prize=False)
+
+    assert '@RSConnectHelp_bot' in letter and 'скриншот' in letter
 
 
 def test_the_month_letter_speaks_of_days_not_prizes():

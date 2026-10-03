@@ -9,6 +9,9 @@
   * `/rafflemonth` — раздать месяц подписки случайным участникам. Тянется
     так же, как призы: шанс пропорционален билетам, один человек получает
     не больше одного месяца;
+  * `/rafflewinners` — записать победителей, определённых не ботом: числа
+    чаще тянут генератором на видео, а итог ведут в таблице. Боту он
+    нужен, чтобы знать, кому писать;
   * `/rafflenote` — письмо победителям. Сначала показывает, что уйдёт, и
     кому, и только по второй команде отправляет.
 
@@ -366,6 +369,168 @@ async def _award_month(message, c, settings, key: str, row: dict) -> None:
     await message.answer('\n'.join(lines))
 
 
+# ── список победителей со стороны ───────────────────────────────────────────
+#
+# Жребий бот умеет бросать сам (`/raffledraw`), но куда чаще числа тянут
+# на видео генератором, а итог ведут в таблице: так зритель видит и
+# бросок, и список. Боту этот итог всё равно нужен — иначе он не знает,
+# кому писать письма. Команда принимает таблицу как есть: строку на
+# человека, числа в любом порядке.
+
+WINNERS_USAGE = (
+    f'{e("trophy")} <b>Список победителей</b>\n\n'
+    f'Пришлите таблицу — по строке на человека. Можно прямо копией из '
+    f'Excel:\n\n'
+    f'<code>iPhone 18 Pro\t347****14\t5389\t347223714\n'
+    f'AirPods 5\t834*****13\t1260\t8347392713</code>\n\n'
+    f'<blockquote>Приз — текст в начале строки, дальше числа в любом '
+    f'порядке: длинное считается идентификатором, короткое — номером '
+    f'билета. Закрытые id со звёздочками пропускаются, их можно не '
+    f'убирать.\n\nНичего никому не отправляется и не начисляется: список '
+    f'просто запоминается, чтобы по нему работал '
+    f'<code>/rafflenote</code>.</blockquote>'
+)
+
+# Короче — номер билета, длиннее — идентификатор Telegram. Границу в семь
+# цифр выбрали по жизни: билетов у акции тысячи, а id начинаются с сотен
+# миллионов. Совпасть они могут только если билетов станет миллион.
+ID_DIGITS = 7
+
+
+def _number(token: str) -> int | None:
+    """«5389», «№5389», «#1» → число. Не число — None."""
+    digits = (token or '').replace('№', '').replace('#', '').replace(' ', '')
+    return int(digits) if digits.isdigit() else None
+
+
+# Слово-подтверждение можно написать и отдельной строкой, и в начале
+# первой: таблицу копируют целиком, а слово дописывают сверху.
+REPLACE = ('заменить', 'replace', 'перезаписать')
+
+
+def without_words(raw: str) -> str:
+    """Убрать слова управления, оставив таблицу как есть."""
+    kept = []
+    for line in (raw or '').splitlines():
+        text = line.strip()
+        if text.lower() in REPLACE:
+            continue
+        for word in REPLACE:
+            low = text.lower()
+            if low.startswith(f'{word} ') or low.startswith(f'{word}\t'):
+                text = text[len(word):].strip()
+                break
+        if text:
+            kept.append(text)
+    return '\n'.join(kept)
+
+
+def parse_winners(text: str) -> tuple[list[dict], list[str]]:
+    """Разобрать таблицу победителей. Возвращает (строки, непонятое).
+
+    Молча пропускать строку нельзя: это чей-то приз, и пропажу заметят
+    позже всех — когда человек не получит письма.
+    """
+    found, broken = [], []
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+
+        # Закрытые id из таблицы выбрасываем сразу: они не числа и не приз.
+        cells = [cell.strip().strip('«»"')
+                 for cell in (line.split('\t') if '\t' in line else line.split())]
+        cells = [cell for cell in cells if cell and '*' not in cell]
+
+        # Числа читаются с конца строки, а не с начала: в названии приза
+        # цифры живут на законных основаниях — «iPhone 18 Pro», «5 000 ₽».
+        numbers = []
+        while cells and _number(cells[-1]) is not None:
+            numbers.insert(0, _number(cells.pop()))
+
+        user_id = next((n for n in numbers if len(str(n)) >= ID_DIGITS), 0)
+        shorter = [n for n in numbers if len(str(n)) < ID_DIGITS]
+        if not user_id:
+            broken.append(line)
+            continue
+        found.append({'prize': ' '.join(cells).strip(' .—-:') or 'Приз',
+                      # Номер приза («#1») стоит в начале, а билет — рядом с
+                      # идентификатором: берём ближайшее к нему число.
+                      'ticket': shorter[-1] if shorter else 0,
+                      'user_id': user_id})
+    return found, broken
+
+
+async def winners(message: types.Message, command, c, settings) -> None:
+    """`/rafflewinners` со списком — записать победителей в бота."""
+    raw = command.args or ''
+    replace = 'заменить' in raw.lower()
+    if not raw.strip() or raw.strip().lower() in ('help', '?'):
+        await message.answer(WINNERS_USAGE)
+        return
+
+    rows, broken = parse_winners(without_words(raw))
+    if broken:
+        await message.answer(
+            f'{e("cross")} Не понял строки — в них нет идентификатора:\n'
+            + '\n'.join(f'<code>{line[:80]}</code>' for line in broken[:10]))
+        return
+    if not rows:
+        await message.answer(WINNERS_USAGE)
+        return
+
+    start, end = await period(_no_args(command), settings)
+    if not start or not end:
+        await message.answer(NO_DATES + USAGE)
+        return
+
+    key = f'{fmt(start, "%Y%m%d")}-{fmt(end, "%Y%m%d")}'
+    old = await saved(c, key)
+    if old and not replace:
+        await message.answer(
+            f'{e("warning")} Список победителей уже записан '
+            f'({len(old.get("winners") or [])} чел., {fmt(old["at"])}).\n\n'
+            f'Если он неверный — пришлите заново со словом '
+            f'<code>заменить</code> в первой строке.')
+        return
+
+    # Юзернейм берётся из карточки, а не из таблицы: в отчёте о рассылке по
+    # нему ищут человека руками, и устаревший ник хуже пустого.
+    unknown = []
+    for item in rows:
+        user = await c.users.get(item['user_id'])
+        item['username'] = str((user or {}).get('user_data', {}).get('username')
+                               or '') if user else ''
+        if not user:
+            unknown.append(item)
+
+    row = {'_id': key, 'at': now(), 'admin_id': message.from_user.id,
+           'source': 'hand', 'tickets_total': 0, 'participants': len(rows),
+           'winners': rows}
+    await c.db[names.RAFFLE_DRAWS].delete_one({'_id': key})
+    await c.db[names.RAFFLE_DRAWS].insert_one(row)
+    log.info('победители %s записаны вручную: %s', key, len(rows))
+
+    lines = [f'{e("trophy")} <b>Записано победителей: {len(rows)}</b>', '']
+    for place, item in enumerate(rows, start=1):
+        who = f'@{item["username"]}' if item['username'] else 'без ника'
+        ticket = f', билет №{item["ticket"]}' if item['ticket'] else ''
+        lines.append(f'{place}. <b>{item["prize"]}</b> — '
+                     f'<code>{ids.show(item["user_id"])}</code> '
+                     f'({who}){ticket}')
+    if unknown:
+        lines.append('')
+        lines.append(f'{e("warning")} <b>Нет в базе: {len(unknown)}</b> — '
+                     f'письмо им не уйдёт, проверьте идентификаторы:')
+        for item in unknown[:10]:
+            lines.append(f'   <code>{item["user_id"]}</code>')
+    lines.append('')
+    lines.append(f'<blockquote>Ничего не начислено и никому не отправлено. '
+                 f'Письма — <code>/rafflenote</code>: сначала покажет текст '
+                 f'и список, отправит только по второй команде.</blockquote>')
+    await message.answer('\n'.join(lines))
+
+
 # ── письма победителям ──────────────────────────────────────────────────────
 def letter(winner: dict, *, month_prize: bool) -> str:
     """Текст письма одному победителю — ровно то, что он увидит."""
@@ -484,6 +649,7 @@ def _no_args(command):
 
 
 def register(router: Router) -> None:
+    router.message.register(winners, Command('rafflewinners'))
     router.message.register(public, Command('rafflepublic'))
     router.message.register(month, Command('rafflemonth'))
     router.message.register(note, Command('rafflenote'))
