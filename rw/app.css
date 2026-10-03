@@ -573,3 +573,45 @@ h1, h2, h3, h4 { font-weight: 600; margin: 0; line-height: 1.3; }
 .nm-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-width: 0; }
 .nm-2 > * { min-width: 0; }
 .input-wrap > .select { padding-left: 36px; }
+
+/* компактный вид окна ноды */
+.modal.xl { max-width: 880px; }
+.modal.xl .modal-head { padding: 10px 14px; }
+.modal.xl .modal-title { font-size: 15px; }
+.modal.xl .modal-body { padding: 12px; }
+.modal.xl .modal-foot { padding: 10px 14px; }
+.modal.xl .modal-foot .btn { height: 32px; font-size: 13px; padding: 0 12px; }
+.modal-title .flag { font-size: 18px; }
+.nm-link { width: 26px; height: 26px; }
+.nm-grid, .nm-col { gap: 12px; }
+.nm-card { padding: 12px 14px; border-radius: 10px; }
+.nm-head { gap: 8px; }
+.nm-title { font-size: 15px; }
+.nm-sep { margin: 10px 0; }
+.nm-ico { width: 30px; height: 30px; font-size: 17px; }
+.nm-ico.sm { width: 26px; height: 26px; font-size: 14px; }
+.nm-pill { height: 24px; padding: 0 8px; font-size: 11px; gap: 4px; }
+.nm-pill.outline.violet { height: 20px; font-size: 10px; }
+.nm-power { width: 26px; height: 26px; font-size: 14px; box-shadow: none; }
+.nm-tool { height: 24px; min-width: 0; padding: 0 8px; font-size: 11px; }
+.nm-traffic { gap: 6px; }
+.nm-traffic .mono { font-size: 13px; }
+.nm-traffic .progress { height: 5px; }
+.nm-tiles { gap: 8px; }
+.nm-tile { height: 34px; font-size: 13px; gap: 6px; }
+.nm-tile i { font-size: 14px; }
+.nm-block { padding: 8px 10px; font-size: 12px; }
+.nm-block + .nm-block { margin-top: 8px; }
+.nm-block .mono.fw6 { font-size: 12px; }
+.nm-block .sm { font-size: 11px; }
+.nm-block .progress { height: 4px; margin-top: 6px !important; }
+.nm-label { font-size: 10px; }
+.nm-card #node-form { gap: 10px !important; }
+.nm-card .field > label { font-size: 13px; }
+.nm-card .input, .nm-card .select { min-height: 32px; padding-top: 4px; padding-bottom: 4px; font-size: 13px; }
+.nm-card .input-wrap > i { font-size: 15px; left: 10px; }
+.nm-card .input-wrap > .input, .nm-card .input-wrap > .select { padding-left: 32px; }
+.nm-card .icon-btn { width: 28px; height: 28px; }
+.nm-card .icon-btn i { font-size: 15px; }
+.nm-card .btn-block { height: 32px; font-size: 13px; }
+.nm-card .badge { height: 18px; font-size: 10px; }

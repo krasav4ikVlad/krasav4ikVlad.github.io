@@ -1013,10 +1013,8 @@ function nodeModalContent(node, profiles, secret, plugins, onDone) {
                 <span class="nm-title">Подробности</span>
                 <span class="spacer"></span>
                 ${isOnline ? `<span class="nm-pill teal" title="Аптайм Xray"><i class="ph-fill ph-star-four"></i>${fmtUptimeShort(n.xrayUptime).toUpperCase()}</span>` : ''}
-                <span id="nm-power-wrap"></span>
-            </div>
-            <div class="nm-tools">
                 <button type="button" class="nm-tool" id="nm-json" title="Посмотреть JSON ноды">JSON</button>
+                <span id="nm-power-wrap"></span>
             </div>
             <div class="nm-sep"></div>
             <div class="nm-traffic">
@@ -1169,7 +1167,7 @@ function nodeModalContent(node, profiles, secret, plugins, onDone) {
                     ? `<div class="nm-block">
                         <div class="row" style="gap:12px">
                             <span class="nm-ico sm cyan"><i class="ph-fill ph-star-four"></i></span>
-                            <span class="mono fw6 ellipsis" style="flex:1;font-size:15px">${esc(p.name)}</span>
+                            <span class="mono fw6 ellipsis" style="flex:1;font-size:13px">${esc(p.name)}</span>
                             <span class="nm-pill cyan" title="Активных инбаундов"><i class="ph ph-tag"></i>${active.length}</span>
                             <button type="button" class="icon-btn" id="core-edit" title="Изменить"><i class="ph ph-pencil-simple-line"></i></button>
                         </div>
