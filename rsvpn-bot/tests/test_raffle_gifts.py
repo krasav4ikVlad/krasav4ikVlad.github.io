@@ -300,6 +300,30 @@ def test_the_preview_shows_the_letter_itself():
     assert '@vasya' in text
 
 
+def test_the_preview_says_the_letter_is_personal():
+    """Пример стоит один, а приз у каждого свой — и это должно быть видно."""
+    row = saved_row(awarded_at=now())
+    row['winners'][0]['prize'] = 'iPhone 18 Pro'
+    row['winners'][1]['prize'] = 'AirPods 5'
+
+    text = gifts.preview(row, month_prize=False, key='x')
+
+    assert 'пример для @vasya' in text
+    assert 'свой приз' in text
+    assert 'iPhone 18 Pro' in text and 'AirPods 5' in text
+
+
+def test_every_recipient_gets_their_own_prize():
+    """Письмо собирается на каждого отдельно, а не один текст на всех."""
+    one = gifts.letter({'prize': 'iPhone 18 Pro', 'ticket': 5389},
+                       month_prize=False)
+    two = gifts.letter({'prize': 'AirPods 5', 'ticket': 1260},
+                       month_prize=False)
+
+    assert 'iPhone 18 Pro' in one and 'AirPods 5' not in one
+    assert 'AirPods 5' in two and '1260' in two
+
+
 def test_the_preview_warns_about_a_second_round():
     text = gifts.preview(saved_row(noted_at=now()), month_prize=True,
                          key='month-x')
@@ -466,6 +490,26 @@ async def test_the_public_file_stops_at_the_given_number(dates):
 
     assert 'Билетов в файле: <b>1</b>' in session.last_text
     assert 'Последний билет: <b>№1</b>' in session.last_text
+
+
+async def test_each_letter_carries_its_own_prize(dates, monkeypatch):
+    """Самое дорогое в рассылке — отправить всем приз первого в списке."""
+    dp, bot, session, c = dates
+    await dp.feed_update(bot, message('/rafflewinners ' + PASTE))
+    sent = []
+
+    async def send(self, bot, user_id, text, markup=None):
+        sent.append((user_id, text))
+        return True
+
+    monkeypatch.setattr('app.campaigns.sender.Sender.send', send)
+
+    await dp.feed_update(bot, message('/rafflenote отправить'))
+
+    by_user = dict(sent)
+    assert 'iPhone 18 Pro' in by_user[347223714]
+    assert 'AirPods 5' in by_user[8347392713]
+    assert '№5389' in by_user[347223714] and '№1260' in by_user[8347392713]
 
 
 async def test_the_public_file_counts_tickets_afresh(dates):

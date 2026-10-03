@@ -650,15 +650,24 @@ def preview(row: dict, *, month_prize: bool, key: str) -> str:
     winners = row['winners']
     sample = letter(winners[0], month_prize=month_prize) if winners else ''
 
+    # Письмо собирается для каждого своё, а в примере стоит первый из
+    # списка — и по нему кажется, что всем уйдёт один и тот же приз.
+    # Поэтому под примером сказано, чей он и что подставляется у остальных.
+    first = (f'@{winners[0]["username"]}' if winners and winners[0].get('username')
+             else f'№1') if winners else ''
     lines = [f'{e("envelope")} <b>Будет отправлено: {len(winners)}</b>', '',
-             '<b>Текст письма</b>', '']
+             f'<b>Текст письма</b> — пример для {first}', '']
     lines.append(f'<blockquote>{sample}</blockquote>')
+    lines.append(f'<i>У каждого подставляется свой приз и свой номер '
+                 f'билета — те, что ниже.</i>')
     lines.append('')
     lines.append('<b>Кому</b>')
     for place, winner in enumerate(winners[:60], start=1):
         who = f'@{winner["username"]}' if winner['username'] else 'без ника'
+        prize = f' — <b>{winner["prize"]}</b>' if winner.get('prize') else ''
+        ticket = f', билет №{winner["ticket"]}' if winner.get('ticket') else ''
         lines.append(f'{place}. {who} — <code>'
-                     f'{ids.show(winner["user_id"])}</code>')
+                     f'{ids.show(winner["user_id"])}</code>{prize}{ticket}')
     if len(winners) > 60:
         lines.append(f'…и ещё {len(winners) - 60}')
     lines.append('')
