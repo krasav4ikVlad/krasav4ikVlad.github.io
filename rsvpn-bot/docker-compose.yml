@@ -1,0 +1,25 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes: [mongo-data:/data/db]
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment: [MONGO_URI=mongodb://mongo:27017]
+    depends_on: [mongo]
+    volumes: ["./media:/srv/media:ro"]
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment: [MONGO_URI=mongodb://mongo:27017]
+    command: uvicorn app.main_api:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    depends_on: [mongo]
+
+volumes:
+  mongo-data:

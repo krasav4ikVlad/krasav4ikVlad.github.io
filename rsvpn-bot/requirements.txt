@@ -1,0 +1,12 @@
+# Зависимости для запуска. Установка: pip install -r requirements.txt
+# 3.31 — ради Rich Messages (Bot API 10.3): send_rich_message
+aiogram>=3.31
+motor>=3.5
+httpx>=0.27
+apscheduler>=3.10
+fastapi>=0.115
+uvicorn[standard]>=0.30
+# копии базы наружу, в S3-совместимое хранилище
+boto3>=1.34
+# выгрузки для Excel: списки участников и билетов розыгрыша
+openpyxl>=3.1

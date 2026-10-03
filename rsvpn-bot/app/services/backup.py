@@ -1,0 +1,675 @@
+"""Снимок базы: сам, каждый день, с проверкой и уборкой старых.
+
+Зачем внутри бота, а не `mongodump` по крону. Бот уже знает адрес базы,
+уже к ней подключён и уже умеет писать админам, когда что-то сломалось.
+Крон на сервере — это ещё одно место, которое настраивают один раз и
+забывают; молчащий крон неотличим от работающего, и выясняется это в
+единственный неподходящий день.
+
+Формат — построчный JSON (bson.json_util, то есть с сохранением типов:
+даты остаются датами, ObjectId — ObjectId), сжатый gzip. Каждая строка:
+
+    {"c": "users", "d": {...документ...}}
+
+Почему не `mongodump`: его может не быть на машине, он требует отдельной
+установки инструментов Mongo и своей версии под версию сервера. Здесь
+восстановление — это `python -m scripts.dbrestore файл`, и работает оно
+везде, где работает сам бот.
+
+Снимок сразу после записи прочитывается обратно: архив, который не
+открывается, — это не архив, а ложное спокойствие. Несовпадение числа
+документов считается провалом.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import gzip
+import logging
+import os
+import time
+from dataclasses import dataclass, field
+from datetime import timedelta
+from pathlib import Path
+
+from app.core.time import now
+
+log = logging.getLogger(__name__)
+
+SYSTEM_PREFIX = 'system.'
+SUFFIX = '.jsonl.gz'
+BATCH = 500
+# Сколько документов драйвер держит в памяти за раз. Меньше пачка —
+# ровнее память процесса: снимок не должен упираться в лимит pm2.
+CURSOR_BATCH = 200
+
+# Куда класть, если не указано иначе. Нарочно вне каталога бота: `git pull`
+# в обновлении не должен даже теоретически соседствовать со снимками.
+DEFAULT_DIR = '~/rsvpn-backups'
+PART = '.part'
+# Как отличить идущую копию от брошенной. Не по возрасту файла, а по тому,
+# растёт ли он: живой снимок дописывает пачку каждые несколько секунд, и
+# время изменения файла всё время сдвигается. Если файл не трогали
+# ALIVE_MIN минут — писать в него уже некому, чей бы процесс его ни начал.
+#
+# Час, стоявший здесь раньше, означал вот что: бота обновили посреди ночной
+# копии — и следующий час бот отказывался делать снимок, потому что «копия
+# уже делается». Её в этот момент уже никто не делал.
+ALIVE_MIN = 5
+BROKEN = '.broken'
+STATE = 'attempts.json'
+
+# После обрыва не бросаемся повторять сразу: если бота перезапускает
+# что-то внешнее (кончилась память, падает контейнер), мгновенный повтор
+# превращается в бесконечный круг из недоделанных копий.
+RETRY_MIN = 30
+# Три обрыва подряд — дело не в случайности. Ждём следующего срока по
+# расписанию и говорим об этом вслух: чинить надо причину, а не копию.
+GIVE_UP_AFTER = 3
+# Как часто заглядывать в файл состояния, следя за чужим процессом.
+WATCH_SEC = 2
+# Корень проекта: отдельный процесс должен запускаться там, где лежит .env,
+# а рабочий каталог у pm2 может быть каким угодно.
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_KEEP = 14
+DEFAULT_HOUR = 0        # полночь
+
+
+@dataclass
+class BackupReport:
+    ok: bool = False
+    busy: bool = False          # копия уже делается, этот запуск лишний
+    after_break: bool = False   # нашли обрывок от прошлой, оборванной
+    stored: str = ''            # ключ в хранилище, если копия уехала наружу
+    stored_removed: int = 0     # сколько старых копий там убрали
+    store_error: str = ''       # почему не уехала
+    path: str = ''
+    size: int = 0
+    docs: int = 0
+    checked: int = 0
+    seconds: float = 0.0
+    collections: dict = field(default_factory=dict)
+    removed: int = 0
+    error: str = ''
+
+
+def human_size(size: int) -> str:
+    for unit in ('Б', 'КБ', 'МБ', 'ГБ'):
+        if size < 1024 or unit == 'ГБ':
+            return f'{size:.0f} {unit}' if unit == 'Б' else f'{size:.1f} {unit}'
+        size /= 1024
+    return f'{size:.1f} ГБ'
+
+
+class BackupService:
+    def __init__(self, db, settings, name: str = '', storage=None):
+        self.db = db
+        self.settings = settings
+        self.name = name or getattr(db, 'name', 'db')
+        # Куда везти копию наружу. Без него снимок остаётся только на том
+        # сервере, вместе с которым может исчезнуть.
+        self.storage = storage
+        # Второй запуск в этом же процессе дальше замка не пройдёт. Замок
+        # в памяти дополняет метку на диске, а не заменяет её: пережить
+        # перезапуск он не может, зато не зависит от файловой системы.
+        self._lock = asyncio.Lock()
+
+    # ── куда и сколько хранить ──────────────────────────────────────────────
+    async def directory(self) -> Path:
+        raw = str(await self.settings.get('backup.dir') or '').strip()
+        path = Path(os.path.expanduser(raw or DEFAULT_DIR))
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    async def keep(self) -> int:
+        value = await self.settings.int('backup.keep')
+        return int(DEFAULT_KEEP if value is None else value)
+
+    async def hour(self) -> int:
+        value = await self.settings.int('backup.hour')
+        return int(DEFAULT_HOUR if value is None else value) % 24
+
+    @staticmethod
+    def scheduled_before(hour: int, moment=None):
+        """Последний наступивший срок снимка: сегодня в HH:00 или вчера.
+
+        Считаем от «когда должен был быть», а не «сколько прошло часов»:
+        так снимок привязан к полуночи, а не к моменту последнего запуска
+        бота. Иначе расписание уползало бы: перезапустили днём — и снимок
+        навсегда переехал на середину дня.
+        """
+        moment = moment or now()
+        today = moment.replace(hour=hour % 24, minute=0, second=0, microsecond=0)
+        return today if moment >= today else today - timedelta(days=1)
+
+    async def files(self) -> list[Path]:
+        """Снимки от свежего к старому."""
+        folder = await self.directory()
+        found = [item for item in folder.glob(f'*{SUFFIX}') if item.is_file()]
+        return sorted(found, key=lambda item: item.stat().st_mtime, reverse=True)
+
+    async def last(self) -> Path | None:
+        found = await self.files()
+        return found[0] if found else None
+
+    async def total_docs(self) -> tuple[int, list[str]]:
+        """Сколько всего документов и в каких коллекциях.
+
+        Нужно ради полоски: без общего числа она превращается в «что-то
+        происходит». Считаем оценкой (estimated_document_count) — это
+        метаданные коллекции, а не перебор, и на большой базе разница
+        между «мгновенно» и «ещё полминуты ожидания».
+        """
+        names = [name for name in await self.db.list_collection_names()
+                 if not name.startswith(SYSTEM_PREFIX)]
+        total = 0
+        for name in sorted(names):
+            col = self.db[name]
+            counter = getattr(col, 'estimated_document_count', None)
+            try:
+                total += int(await counter() if counter
+                             else await col.count_documents({}))
+            except Exception as exc:      # noqa: BLE001 — оценка не критична
+                log.debug('не посчитал %s: %s', name, exc)
+        return total, sorted(names)
+
+    # ── идёт ли копия прямо сейчас ──────────────────────────────────────────
+    #
+    # Снимок большой базы идёт минутами, а задача просыпается каждые пять.
+    # Без этой проверки второй запуск начинался поверх первого: два снимка
+    # разом, два сообщения, и первое навсегда застывало на шести процентах.
+
+    def running(self) -> bool:
+        return self._lock.locked()
+
+    async def in_progress(self) -> Path | None:
+        """Растущий недописанный файл — значит копия делается прямо сейчас.
+
+        По файлу, а не по флагу в памяти: процесс могли перезапустить,
+        и новый о начатой копии ничего не знает. И по росту файла, а не по
+        его возрасту: иначе брошенный обрывок часами выглядит работой.
+        """
+        for item in (await self.directory()).glob(f'*{PART}'):
+            if self.alive(item):
+                return item
+        return None
+
+    @staticmethod
+    def alive(item: Path) -> bool:
+        try:
+            return time.time() - item.stat().st_mtime < ALIVE_MIN * 60
+        except OSError:
+            return False
+
+    @staticmethod
+    def idle_minutes(item: Path) -> float:
+        try:
+            return (time.time() - item.stat().st_mtime) / 60
+        except OSError:
+            return 0.0
+
+    async def broken_leftovers(self) -> list[Path]:
+        """Недописанные файлы, которые уже некому дописать."""
+        folder = await self.directory()
+        return ([item for item in folder.glob(f'*{PART}')
+                 if not self.alive(item)]
+                + list(folder.glob(f'*{BROKEN}')))
+
+    # ── память о прерванных попытках ────────────────────────────────────────
+    #
+    # Файлом, а не отметкой в базе: он переживает перезапуск процесса и не
+    # зависит от того, доступна ли база — а копию как раз и делают на
+    # случай, когда с базой что-то не так.
+
+    async def state(self) -> dict:
+        import json
+
+        try:
+            path = (await self.directory()) / STATE
+            return json.loads(path.read_text(encoding='utf-8'))
+        except Exception:      # noqa: BLE001 — нет файла или он испорчен
+            return {}
+
+    async def _save_state(self, data: dict) -> None:
+        import json
+
+        try:
+            path = (await self.directory()) / STATE
+            path.write_text(json.dumps(data, ensure_ascii=False),
+                            encoding='utf-8')
+        except OSError as exc:
+            log.warning('состояние копий не записано: %s', exc)
+
+    async def note_progress(self, done: int, total: int, note: str,
+                            cards=None) -> None:
+        """Запомнить, где копия сейчас и куда писать о её судьбе.
+
+        Пишется в тот же файл состояния: если процесс убьют, следующий
+        запуск сможет дописать в застывшую полоску, чем всё кончилось.
+        Без этого она остаётся на экране навсегда и выглядит работой.
+        """
+        data = await self.state()
+        data.update({'done': int(done), 'total': int(total),
+                     'note': str(note)[:200], 'at': now().isoformat()})
+        if cards is not None:
+            data['cards'] = list(cards)
+        await self._save_state(data)
+
+    async def remember_break(self) -> int:
+        """Записать обрыв, сохранив всё, что известно о прерванной копии."""
+        data = await self.state()
+        data['breaks'] = int(data.get('breaks') or 0) + 1
+        data['broken_at'] = now().isoformat()
+        await self._save_state(data)
+        return data['breaks']
+
+    async def forget_breaks(self) -> None:
+        await self._save_state({'breaks': 0, 'at': now().isoformat(),
+                                'told': False})
+
+    async def save_result(self, report: BackupReport) -> None:
+        """Чем кончилось — в файл состояния. Снимок может делать другой
+        процесс, и это единственный способ узнать его судьбу."""
+        data = await self.state()
+        data['result'] = {'ok': report.ok, 'path': report.path,
+                          'stored': report.stored,
+                          'store_error': report.store_error,
+                          'size': report.size, 'docs': report.docs,
+                          'checked': report.checked, 'removed': report.removed,
+                          'seconds': round(report.seconds, 1),
+                          'after_break': report.after_break,
+                          'error': report.error, 'at': now().isoformat()}
+        await self._save_state(data)
+
+    async def take_result(self) -> BackupReport | None:
+        """Забрать результат чужого снимка и убрать его из состояния."""
+        data = await self.state()
+        raw = data.pop('result', None)
+        if not raw:
+            return None
+        await self._save_state(data)
+        return BackupReport(
+            ok=bool(raw.get('ok')), path=str(raw.get('path') or ''),
+            size=int(raw.get('size') or 0), docs=int(raw.get('docs') or 0),
+            checked=int(raw.get('checked') or 0),
+            removed=int(raw.get('removed') or 0),
+            seconds=float(raw.get('seconds') or 0),
+            after_break=bool(raw.get('after_break')),
+            stored=str(raw.get('stored') or ''),
+            store_error=str(raw.get('store_error') or ''),
+            error=str(raw.get('error') or ''))
+
+    # ── снимок отдельным процессом ──────────────────────────────────────────
+    #
+    # Ради этого всё и затевалось. Снимок большой базы съедает память, а у
+    # бота она ограничена (pm2 max_memory_restart): процесс убивали на 86%,
+    # он поднимался, начинал заново — и так 418 раз. Отдельный процесс
+    # решает это целиком: бот остаётся лёгким, а его перезапуск больше не
+    # обрывает копию — она доживает сама и доделывает файл.
+
+    async def run_external(self, on_progress=None,
+                           force: bool = False) -> BackupReport:
+        import sys
+
+        data = await self.state()
+        data.pop('result', None)
+        await self._save_state(data)
+
+        command = [sys.executable, '-m', 'scripts.dbbackup']
+        if force:
+            command.append('--force')
+        try:
+            child = await asyncio.create_subprocess_exec(
+                *command, cwd=str(ROOT),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                # Своя сессия: когда pm2 прибивает бота, он бьёт по всей
+                # группе процессов — и снимок умирал вместе с ним, хотя
+                # ради того и выносился, чтобы выживать.
+                start_new_session=True)
+        except Exception as exc:      # noqa: BLE001 — не вышло, делаем сами
+            log.warning('отдельный процесс не запустился (%s) — '
+                        'делаю снимок в себе', exc)
+            return await self.run(on_progress, force=force)
+
+        log.warning('снимок базы делает отдельный процесс, pid %s', child.pid)
+        waiting = asyncio.create_task(child.communicate())
+        last = ''
+        try:
+            while not waiting.done():
+                await asyncio.sleep(WATCH_SEC)
+                state = await self.state()
+                note = str(state.get('note') or '')
+                if on_progress and note and note != last:
+                    last = note
+                    await on_progress(note, int(state.get('done') or 0),
+                                      int(state.get('total') or 0))
+            _, errors = await waiting
+        except asyncio.CancelledError:
+            # Нас останавливают, а снимок — нет: он в своём процессе и
+            # доживёт до конца сам. Именно это и чинит круг из
+            # недоделанных копий при каждом обновлении бота.
+            log.warning('перестаю следить за снимком: его делает pid %s',
+                        child.pid)
+            raise
+
+        result = await self.take_result()
+        if result is not None:
+            return result
+
+        # Процесс умер, ничего о себе не сказав — самое важное сообщение
+        # из всех, и раньше оно пропадало молча.
+        tail = (errors or b'').decode('utf-8', 'replace').strip()[-400:]
+        await self.remember_break()
+        return BackupReport(error=f'процесс снимка оборвался '
+                                  f'(код {child.returncode}). {tail}')
+
+    async def pending_cards(self) -> list:
+        """Карточки полоски, оставшиеся от прерванной копии."""
+        data = await self.state()
+        return list(data.get('cards') or []) if data.get('breaks') else []
+
+    async def drop_cards(self) -> None:
+        data = await self.state()
+        data['cards'] = []
+        await self._save_state(data)
+
+    async def breaks(self) -> int:
+        return int((await self.state()).get('breaks') or 0)
+
+    async def retry_after(self):
+        """Когда можно пробовать снова после обрыва. None — можно сейчас."""
+        from datetime import datetime, timedelta
+
+        data = await self.state()
+        breaks = int(data.get('breaks') or 0)
+        if not breaks:
+            return None
+        try:
+            # Именно момент обрыва: `at` сдвигается на каждом шаге полоски
+            # и после обрыва означал бы «когда в последний раз шла работа».
+            at = datetime.fromisoformat(str(data.get('broken_at')
+                                            or data.get('at')))
+        except (TypeError, ValueError):
+            return None
+
+        if breaks >= GIVE_UP_AFTER:
+            # Ждём следующего срока по расписанию: круг из недоделанных
+            # копий не чинится повторами, он чинится причиной.
+            return self.scheduled_before(await self.hour()) + timedelta(days=1)
+        return at + timedelta(minutes=RETRY_MIN)
+
+    # ── снимок ──────────────────────────────────────────────────────────────
+    async def make(self, on_progress=None, force: bool = False) -> BackupReport:
+        """Снять копию — так, как настроено: своими силами или отдельным
+        процессом. Всё, что снаружи, зовёт именно это."""
+        if await self.settings.flag('backup.separate_process'):
+            return await self.run_external(on_progress, force=force)
+        return await self.run(on_progress, force=force)
+
+    async def run(self, on_progress=None, force: bool = False) -> BackupReport:
+        if self._lock.locked():
+            log.info('копия уже делается — второй запуск пропущен')
+            return BackupReport(busy=True, error='копия уже делается')
+        async with self._lock:
+            return await self._run(on_progress, force=force)
+
+    async def _run(self, on_progress=None, force: bool = False) -> BackupReport:
+        started = time.monotonic()
+        report = BackupReport()
+        try:
+            folder = await self.directory()
+        except Exception as exc:      # noqa: BLE001 — нет каталога, нет снимка
+            report.error = f'каталог недоступен: {exc}'
+            log.error('бекап: %s', report.error)
+            return report
+
+        busy = None if force else await self.in_progress()
+        if busy is not None:
+            log.info('копия уже делается (%s) — второй запуск пропущен',
+                     busy.name)
+            return BackupReport(busy=True, error='копия уже делается')
+
+        # Обрывки от убитого процесса: их сообщение о ходе дела так и
+        # висит недоделанным, и сказать об этом можно только здесь.
+        stale = await self.broken_leftovers()
+        for junk in stale:
+            junk.unlink(missing_ok=True)
+        report.after_break = bool(stale)
+
+        stamp = now().strftime('%Y-%m-%d-%H%M')
+        target = folder / f'{self.name}-{stamp}{SUFFIX}'
+        # Пишем во временный файл и переименовываем в конце: прерванный на
+        # середине снимок не должен выглядеть как готовый.
+        temp = target.with_suffix(PART)
+        # Метку ставим сразу, до подсчёта документов: пока её нет, соседний
+        # запуск считает, что копию никто не делает.
+        temp.touch()
+
+        async def tell(note: str, done: int = 0, total: int = 0) -> None:
+            # Сначала в файл состояния: по нему за ходом дела следит тот,
+            # кто запустил снимок, — возможно, другой процесс.
+            await self.note_progress(done, total, note)
+            if on_progress is None:
+                return
+            try:
+                await on_progress(note, done, total)
+            except Exception as exc:      # noqa: BLE001 — полоска не важнее
+                log.debug('полоска не обновилась: %s', exc)
+
+        try:
+            expected, names = await self.total_docs()
+            await tell(f'Коллекций: {len(names)}, документов ~{expected}', 0,
+                       expected)
+            report.docs, report.collections = await self._dump(temp, tell,
+                                                               expected)
+            await tell('Проверяю архив', expected, expected)
+            report.checked = await self._verify(temp)
+            if report.checked != report.docs:
+                raise RuntimeError(f'записано {report.docs}, '
+                                   f'читается {report.checked}')
+            temp.rename(target)
+        except asyncio.CancelledError:
+            # Процесс останавливают посреди копии. Файл НЕ удаляем, а
+            # переименовываем в обрывок и считаем попытку прерванной.
+            #
+            # Удаление отсюда однажды уже устроило беду: перезапущенный бот
+            # не видел никаких следов, через две минуты начинал копию
+            # заново, снова умирал — и так по кругу, каждые семь минут, ни
+            # одной доведённой копии. Следы нужны именно затем, чтобы
+            # следующий запуск знал: предыдущий не дошёл.
+            temp.replace(temp.with_suffix(BROKEN))
+            await self.remember_break()
+            log.warning('копия базы прервана остановкой бота')
+            raise
+        except Exception as exc:      # noqa: BLE001 — причина уходит наверх
+            temp.unlink(missing_ok=True)
+            report.error = str(exc)[:300]
+            report.seconds = time.monotonic() - started
+            log.error('бекап не сделан: %s', report.error)
+            await self.save_result(report)
+            return report
+
+        await self.forget_breaks()
+        report.ok = True
+        report.path = str(target)
+        report.size = target.stat().st_size
+        report.seconds = time.monotonic() - started
+        report.removed = await self.rotate()
+        await self._send_away(target, tell, report)
+        log.warning('бекап готов: %s, %s, документов %s, за %.1f с',
+                    target.name, human_size(report.size), report.docs,
+                    report.seconds)
+        await self.save_result(report)
+        return report
+
+    async def _send_away(self, target: Path, tell, report) -> None:
+        """Отправить копию в хранилище. Неудача не отменяет снимок.
+
+        Файл уже лежит на диске и уже проверен — это копия. Не уехала
+        наружу — скажем об этом словами, но называть снимок несделанным
+        нельзя: он сделан.
+        """
+        if self.storage is None or not self.storage.ready:
+            return
+        if not await self.settings.flag('backup.to_storage'):
+            return
+
+        await tell('Отправляю копию в хранилище', 1, 1)
+        try:
+            report.stored = await asyncio.to_thread(self.storage.upload, target)
+            report.stored_removed = await asyncio.to_thread(
+                self.storage.rotate, await self.keep())
+        except Exception as exc:      # noqa: BLE001 — снимок уже готов
+            report.store_error = str(exc)[:300]
+            log.error('копия не уехала наружу: %s', report.store_error)
+
+    async def _dump(self, target: Path, tell=None,
+                    expected: int = 0) -> tuple[int, dict]:
+        """Записать всю базу в файл, не останавливая бота.
+
+        Сжатие — работа процессора, и на большой базе её достаточно, чтобы
+        бот заметно «задумался»: пока цикл событий занят gzip, он не
+        отвечает никому. Поэтому строки копятся пачкой, а пишутся и
+        сжимаются в отдельном потоке — цикл в это время свободен.
+        """
+        from bson.json_util import dumps
+
+        names = [name for name in await self.db.list_collection_names()
+                 if not name.startswith(SYSTEM_PREFIX)]
+
+        total = 0
+        counts: dict[str, int] = {}
+        # Уровень сжатия 6, а не 9: разница в размере единицы процентов,
+        # а памяти и процессора уровень 9 просит заметно больше.
+        with gzip.open(target, 'wt', encoding='utf-8', compresslevel=6) as handle:
+            for name in sorted(names):
+                written = 0
+                batch: list[str] = []
+                async for doc in self.db[name].find({}, batch_size=CURSOR_BATCH):
+                    batch.append(dumps({'c': name, 'd': doc}) + '\n')
+                    written += 1
+                    if len(batch) >= BATCH:
+                        await asyncio.to_thread(handle.write, ''.join(batch))
+                        batch = []
+                        if tell is not None:
+                            await tell(f'Выгружаю {name}: {written}',
+                                       total + written, expected)
+                if batch:
+                    await asyncio.to_thread(handle.write, ''.join(batch))
+                counts[name] = written
+                total += written
+        return total, counts
+
+    @staticmethod
+    async def _verify(target: Path) -> int:
+        """Прочитать снимок обратно. Архив, который не открывается, — это
+        не архив, а ложное спокойствие.
+
+        Тоже в потоке: на сотнях мегабайт это секунды сплошного чтения и
+        распаковки, и держать на них бота незачем.
+        """
+        def read_all() -> int:
+            read = 0
+            with gzip.open(target, 'rt', encoding='utf-8') as handle:
+                for line in handle:
+                    if line.strip():
+                        read += 1
+            return read
+
+        return await asyncio.to_thread(read_all)
+
+    async def rotate(self) -> int:
+        """Убрать лишние снимки. Возвращает, сколько удалили."""
+        keep = await self.keep()
+        if keep <= 0:
+            return 0
+
+        removed = 0
+        # Недописанные куски от убитого процесса: unlink в run() до них не
+        # дошёл, а сами они не исчезнут и будут занимать место молча.
+        # Только старые: свежий — это копия, которую кто-то делает прямо
+        # сейчас, и удалять её посреди работы нельзя.
+        for junk in await self.broken_leftovers():
+            try:
+                junk.unlink()
+            except OSError:
+                pass
+        for item in (await self.files())[keep:]:
+            try:
+                item.unlink()
+                removed += 1
+            except OSError as exc:
+                log.warning('бекап %s не удалён: %s', item.name, exc)
+        return removed
+
+    # ── пора ли ─────────────────────────────────────────────────────────────
+    async def due(self) -> bool:
+        """Наступил ли очередной срок и не сделан ли снимок уже после него.
+
+        По файлам, а не по отметке в базе: снимок — это файл на диске, и
+        именно его наличие отвечает на вопрос «есть ли у нас копия».
+        Заодно переживает перезапуск бота и потерю базы.
+
+        Пропущенный срок не теряется: если бот в полночь лежал, снимок
+        сделается при первом же запуске — иначе день остался бы без копии
+        и никто бы об этом не узнал.
+        """
+        if await self.in_progress() is not None:
+            return False        # копия уже делается — второй незачем
+
+        wait_until = await self.retry_after()
+        if wait_until is not None and now() < wait_until:
+            return False        # прошлая оборвалась, даём паузу
+
+        last = await self.last()
+        if last is None:
+            return True
+        from datetime import datetime
+
+        made = datetime.fromtimestamp(last.stat().st_mtime,
+                                      tz=now().tzinfo)
+        return made < self.scheduled_before(await self.hour())
+
+    # ── дорога в Telegram ───────────────────────────────────────────────────
+    #
+    # Бот не принимает документы больше 50 МБ. База, ради которой всё это
+    # затевалось, однажды станет больше — и «файл слишком большой» означало
+    # бы, что копии в телефоне нет именно тогда, когда сервера уже нет.
+    # Поэтому режем на части; собираются они обратно одной командой cat.
+
+    @staticmethod
+    async def split(path: Path, limit: int) -> list[Path]:
+        """Разрезать файл на куски не больше `limit` байт.
+
+        Куски лежат рядом с исходником и называются <имя>.001, .002 —
+        ровно то, что соберёт `cat файл.* > файл`. Читаем и пишем в потоке:
+        это сотни мегабайт, и бот в это время должен отвечать людям.
+        """
+        def cut() -> list[Path]:
+            parts: list[Path] = []
+            with open(path, 'rb') as source:
+                while True:
+                    chunk = source.read(limit)
+                    if not chunk:
+                        break
+                    part = path.with_name(f'{path.name}.{len(parts) + 1:03d}')
+                    part.write_bytes(chunk)
+                    parts.append(part)
+            return parts
+
+        return await asyncio.to_thread(cut)
+
+    @staticmethod
+    def drop_parts(parts: list[Path]) -> None:
+        for part in parts:
+            try:
+                part.unlink()
+            except OSError:
+                pass
+
+    async def age_hours(self) -> float | None:
+        last = await self.last()
+        if last is None:
+            return None
+        return (time.time() - last.stat().st_mtime) / 3600

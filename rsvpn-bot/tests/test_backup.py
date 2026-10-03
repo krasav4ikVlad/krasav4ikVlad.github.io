@@ -1,0 +1,1369 @@
+"""Копии базы: снимок, проверка, уборка старых и обратная дорога.
+
+Главное здесь — последнее. Снимок, из которого нельзя восстановиться, это
+не копия, а ложное спокойствие: выясняется это в единственный день, когда
+копия нужна. Поэтому проверяется не «файл создался», а «данные вернулись
+такими же, включая даты и вложенные документы».
+"""
+
+import asyncio
+import gzip
+import json
+import time
+from datetime import datetime, timedelta
+
+import pytest
+
+from app.core.time import now
+from app.services.backup import BackupService, human_size
+from app.settings.service import SettingsService
+
+
+@pytest.fixture
+def settings(db):
+    return SettingsService(db['bot_settings'])
+
+
+@pytest.fixture
+def folder(tmp_path):
+    return tmp_path / 'backups'
+
+
+@pytest.fixture
+async def service(db, settings, folder):
+    await settings.set('backup.dir', str(folder))
+    # В тестах снимок делаем в себе: отдельный процесс — это настоящий
+    # python и настоящая база, ему здесь неоткуда взяться. Сам запуск
+    # отдельного процесса проверяется ниже, с подставным процессом.
+    await settings.set('backup.separate_process', False)
+    return BackupService(db, settings, name='RS_TEST')
+
+
+async def fill(db, users: int = 3) -> None:
+    for number in range(1, users + 1):
+        await db['users'].insert_one({
+            'user_data': {'user_id': number, 'username': f'u{number}',
+                          'date_joined': now() - timedelta(days=number)},
+            'info': {'balance': number * 100,
+                     'ref_stats': {'referrals': [number + 100]}}})
+    await db['bot_settings'].insert_one({'_id': 'price.month', 'value': 199})
+
+
+def lines(path) -> list[dict]:
+    with gzip.open(path, 'rt', encoding='utf-8') as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+# ── снимок ──────────────────────────────────────────────────────────────────
+async def test_a_snapshot_holds_every_collection(service, db, folder):
+    await fill(db)
+
+    report = await service.run()
+
+    assert report.ok
+    assert report.collections['users'] == 3
+    assert 'bot_settings' in report.collections      # настройки тоже данные
+    assert list(folder.glob('*.jsonl.gz'))
+
+
+async def test_the_snapshot_is_read_back_before_it_counts(service, db):
+    """Архив, который не открывается, — не архив. Считаем строки обратно."""
+    await fill(db)
+
+    report = await service.run()
+
+    assert report.checked == report.docs
+
+
+async def test_a_half_written_snapshot_does_not_look_ready(service, db, folder):
+    """Прерванный снимок не должен остаться в каталоге — ни как готовый,
+    ни как мусор. Поэтому ломаемся ПОСЛЕ того, как файл уже начали писать."""
+    await fill(db)
+    original = service._dump
+
+    async def broken(target, *args, **kwargs):
+        await original(target)
+        raise RuntimeError('диск кончился')
+
+    service._dump = broken
+    report = await service.run()
+
+    assert not report.ok and 'диск' in report.error
+    assert not list(folder.glob('*.jsonl.gz'))
+    assert not list(folder.glob('*.part'))
+
+
+async def stale_part(folder, name='RS_TEST-2020-01-01-0000.jsonl.part'):
+    """Обрывок от убитого процесса: недописанный файл и давняя дата."""
+    import os
+
+    folder.mkdir(parents=True, exist_ok=True)
+    junk = folder / name
+    junk.write_bytes(b'x')
+    long_ago = time.time() - 3 * 3600
+    os.utime(junk, (long_ago, long_ago))
+    return junk
+
+
+async def test_leftovers_from_a_killed_process_are_swept(service, db, folder):
+    """Процесс могли убить посреди записи — тогда unlink не отработал."""
+    await fill(db)
+    junk = await stale_part(folder)
+
+    report = await service.run()
+
+    assert not junk.exists()
+    assert report.ok and report.after_break
+
+
+async def test_a_mismatch_is_a_failure(service, db, folder):
+    """Записали одно, прочиталось другое — это не «почти получилось»."""
+    await fill(db)
+    async def wrong(path):
+        return 1
+
+    service._verify = wrong
+
+    report = await service.run()
+
+    assert not report.ok and 'читается' in report.error
+    assert not list(folder.glob('*.jsonl.gz'))
+
+
+async def test_the_name_says_what_and_when(service, db):
+    await fill(db)
+
+    report = await service.run()
+
+    assert report.path.split('/')[-1].startswith('RS_TEST-')
+    assert now().strftime('%Y-%m-%d') in report.path
+
+
+# ── уборка ──────────────────────────────────────────────────────────────────
+async def test_old_snapshots_are_removed(service, db, settings, folder):
+    await fill(db)
+    await settings.set('backup.keep', 2)
+    for number in range(4):
+        old = folder / f'RS_TEST-2020-01-0{number + 1}-0000.jsonl.gz'
+        folder.mkdir(parents=True, exist_ok=True)
+        old.write_bytes(b'x')
+
+    report = await service.run()
+
+    assert report.removed == 3
+    assert len(list(folder.glob('*.jsonl.gz'))) == 2
+
+
+async def test_the_newest_are_the_ones_kept(service, db, settings, folder):
+    await fill(db)
+    await settings.set('backup.keep', 1)
+    await service.run()
+    fresh = (await service.files())[0]
+
+    await service.rotate()
+
+    assert fresh.exists()
+
+
+# ── пора ли ─────────────────────────────────────────────────────────────────
+async def test_without_a_single_copy_it_is_always_time(service, db):
+    assert await service.due() is True
+
+
+async def test_right_after_a_copy_it_is_not_time(service, db, settings):
+    await fill(db)
+    await service.run()
+
+    assert await service.due() is False
+
+
+async def test_a_day_later_it_is_time_again(service, db, settings, folder):
+    import os
+
+    await fill(db)
+    await service.run()
+    stale = (await service.files())[0]
+    long_ago = (datetime.now() - timedelta(days=2)).timestamp()
+    os.utime(stale, (long_ago, long_ago))
+
+    assert await service.due() is True
+    assert (await service.age_hours()) > 24
+
+
+async def test_the_hour_is_a_setting(service, db, settings):
+    """Час по времени бота: ночь — когда никто не пользуется."""
+    await settings.set('backup.hour', 3)
+
+    assert await service.hour() == 3
+
+
+# ── обратная дорога ─────────────────────────────────────────────────────────
+#
+# Ради этого всё и делается. Проверяем не «файл создался», а что данные
+# вернулись такими же: даты датами, вложенные документы на месте.
+
+async def test_the_data_comes_back(service, db, folder):
+    from scripts.dbrestore import read_lines
+
+    await fill(db)
+    report = await service.run()
+
+    restored = {}
+    for collection, doc in read_lines(folder / report.path.split('/')[-1]):
+        restored.setdefault(collection, []).append(doc)
+
+    users = sorted(restored['users'], key=lambda doc: doc['user_data']['user_id'])
+    assert len(users) == 3
+    assert users[0]['info']['balance'] == 100
+    assert users[0]['info']['ref_stats']['referrals'] == [101]
+
+
+async def test_the_dates_stay_dates(service, db, folder):
+    """Если сохранить дату строкой, после восстановления сломается всё, что
+    считает сроки, — и заметить это можно будет очень нескоро."""
+    from scripts.dbrestore import read_lines
+
+    await fill(db)
+    report = await service.run()
+
+    doc = next(doc for name, doc in read_lines(folder / report.path.split('/')[-1])
+               if name == 'users')
+    assert isinstance(doc['user_data']['date_joined'], datetime)
+
+
+async def test_a_broken_line_is_named_not_swallowed(folder):
+    from scripts.dbrestore import read_lines
+
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / 'broken.jsonl.gz'
+    with gzip.open(path, 'wt', encoding='utf-8') as handle:
+        handle.write('{"c": "users", "d": {"_id": 1}}\n')
+        handle.write('это не json\n')
+
+    with pytest.raises(RuntimeError, match='строка 2'):
+        list(read_lines(path))
+
+
+async def test_a_foreign_file_is_refused(folder):
+    """Чужой gz-файл не должен молча «восстановиться» ничем."""
+    from scripts.dbrestore import read_lines
+
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / 'alien.jsonl.gz'
+    with gzip.open(path, 'wt', encoding='utf-8') as handle:
+        handle.write('{"что-то": "чужое"}\n')
+
+    with pytest.raises(RuntimeError, match='не похожа на снимок'):
+        list(read_lines(path))
+
+
+async def test_the_archive_can_be_inspected_without_touching_anything(service, db,
+                                                                      folder):
+    """Команда восстановления сначала показывает, что внутри."""
+    from scripts.dbrestore import inspect
+
+    await fill(db)
+    report = await service.run()
+
+    counts = inspect(folder / report.path.split('/')[-1])
+
+    assert counts['users'] == 3 and counts['bot_settings'] >= 1
+
+
+# ── мелочи, которые видно человеку ──────────────────────────────────────────
+def test_the_size_is_readable():
+    assert human_size(512) == '512 Б'
+    assert human_size(1536) == '1.5 КБ'
+    assert human_size(5 * 1024 * 1024) == '5.0 МБ'
+
+
+# ── по расписанию, само ─────────────────────────────────────────────────────
+#
+# Смысл всей затеи в том, что никто ничего не запускает руками. Значит
+# проверять надо задачу планировщика, а не только сервис.
+
+class Container:
+    """Ровно то, что нужно задаче."""
+
+    def __init__(self, backup, settings, notifier=None):
+        self.backup = backup
+        self.settings = settings
+        self.notifier = notifier
+        self.config = type('C', (), {'admin_ids': (777,)})()
+
+        class Health:
+            def __init__(self):
+                self.marks = []
+
+            async def mark(self, key, **info):
+                self.marks.append((key, info))
+
+        self.health = Health()
+
+
+class Told:
+    """Notifier глазами задачи: карточка в личке, которую потом правят."""
+
+    def __init__(self):
+        self.done: list[dict] = []
+        self.failed: list[str] = []
+        self.files: list[str] = []
+        self.dms: list[str] = []        # отдельные личные сообщения
+        self.cards: list[str] = []      # что отправили в личку
+        self.edits: list[str] = []      # как правили
+
+    async def dm(self, text, markup=None):
+        self.dms.append(text)
+        return 1
+
+    async def send(self, topic, text, markup=None):
+        return True
+
+    async def dm_progress(self, text):
+        self.cards.append(text)
+        return ['card']
+
+    async def edit_all(self, cards, text):
+        if cards:
+            self.edits.append(text)
+
+    async def backup_done(self, name, size, docs, seconds=0, removed=0):
+        self.done.append({'name': name, 'size': size, 'docs': docs})
+        return True
+
+    async def backup_failed(self, error):
+        self.failed.append(error)
+        return True
+
+    async def backup_file(self, path, limit_mb=45, chat_ids=None, backup=None):
+        self.files.append({'path': path, 'to': list(chat_ids or [])})
+        return len(chat_ids or [1])
+
+
+async def test_the_job_makes_a_copy_when_it_is_time(service, db, settings, folder):
+    from app.scheduler import jobs
+
+    await fill(db)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert list(folder.glob('*.jsonl.gz'))
+    assert told.edits and 'готова' in told.edits[-1]
+
+
+async def test_the_job_does_nothing_right_after_a_copy(service, db, settings):
+    from app.scheduler import jobs
+
+    await fill(db)
+    await service.run()
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert not told.done
+
+
+async def test_the_job_obeys_the_switch(service, db, settings, folder):
+    from app.scheduler import jobs
+
+    await fill(db)
+    await settings.set('backup.enabled', False)
+
+    await jobs.backup_database(Container(service, settings, Told()), bot=None)
+
+    assert not list(folder.glob('*.jsonl.gz'))
+
+
+async def test_a_failure_is_shouted_about(service, db, settings):
+    """Молчащий бекап неотличим от работающего ровно до того дня, когда он
+    понадобится."""
+    from app.scheduler import jobs
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError('диск кончился')
+
+    await fill(db)
+    service._dump = broken
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.failed and not told.done
+
+
+async def test_the_file_goes_to_the_admins_personally(service, db, settings):
+    """В снимке вся база: почты, платежи, переписка. Адресаты — только
+    админы из .env, и никогда не «кому-то ещё»."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.files and told.files[0]['to'] == [777]
+
+
+async def test_sending_the_file_can_be_switched_off(service, db, settings):
+    from app.scheduler import jobs
+
+    await fill(db)
+    await settings.set('backup.to_telegram', False)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.done and not told.files
+
+
+# ── полный круг: снять и залить обратно ─────────────────────────────────────
+#
+# Единственная проверка, ради которой всё это писалось. Остальные меряют
+# части; эта — что из копии действительно можно восстановиться.
+
+class Replace:
+    """Замена ReplaceOne из pymongo — с теми же полями, которые читает
+    драйвер. Нужна потому, что сам pymongo в тестовом окружении не
+    поднимается (ему нужны бинарные библиотеки), а проверять здесь надо
+    не драйвер, а то, что пачки и очистка собираются правильно."""
+
+    def __init__(self, doc):
+        self._filter = {'_id': doc['_id']}
+        self._doc = doc
+
+
+@pytest.fixture(autouse=True)
+def _no_driver(monkeypatch):
+    from scripts import dbrestore
+
+    monkeypatch.setattr(dbrestore, 'replace_op', Replace)
+
+
+async def snapshot(service, db, folder):
+    report = await service.run()
+    assert report.ok
+    return folder / report.path.split('/')[-1]
+
+
+async def test_a_wiped_database_comes_back(service, db, folder):
+    from scripts.dbrestore import write_docs
+
+    await fill(db)
+    archive = await snapshot(service, db, folder)
+    before = sorted(doc['user_data']['user_id'] for doc in db['users'].docs)
+
+    db['users'].docs.clear()                      # «базу снесли»
+    written = await write_docs(db, archive, drop=False)
+
+    assert written['users'] == 3
+    assert sorted(doc['user_data']['user_id']
+                  for doc in db['users'].docs) == before
+
+
+async def test_restoring_twice_does_not_double_anything(service, db, folder):
+    """Команду наберут дважды — «а вдруг не прошло»."""
+    from scripts.dbrestore import write_docs
+
+    await fill(db)
+    archive = await snapshot(service, db, folder)
+    db['users'].docs.clear()
+
+    await write_docs(db, archive, drop=False)
+    await write_docs(db, archive, drop=False)
+
+    assert len(db['users'].docs) == 3
+
+
+async def test_a_deleted_user_returns_without_touching_the_rest(service, db,
+                                                                folder):
+    """Так чинят случайное удаление: вернуть пропавшее, не потеряв нового."""
+    from scripts.dbrestore import write_docs
+
+    await fill(db)
+    archive = await snapshot(service, db, folder)
+    await db['users'].delete_one({'user_data.user_id': 2})
+    await db['users'].insert_one({'user_data': {'user_id': 99}, 'info': {}})
+
+    await write_docs(db, archive, drop=False)
+
+    ids = sorted(doc['user_data']['user_id'] for doc in db['users'].docs)
+    assert ids == [1, 2, 3, 99]
+
+
+async def test_drop_returns_the_base_exactly_to_the_snapshot(service, db, folder):
+    """А так — «откатить всё как было», вместе с удалением лишнего."""
+    from scripts.dbrestore import write_docs
+
+    await fill(db)
+    archive = await snapshot(service, db, folder)
+    await db['users'].insert_one({'user_data': {'user_id': 99}, 'info': {}})
+
+    await write_docs(db, archive, drop=True)
+
+    ids = sorted(doc['user_data']['user_id'] for doc in db['users'].docs)
+    assert ids == [1, 2, 3]
+
+
+async def test_a_changed_document_is_replaced_not_merged(service, db, folder):
+    """Заливка должна вернуть документ целиком: поле, которого в снимке
+    нет, не должно пережить восстановление."""
+    from scripts.dbrestore import write_docs
+
+    await fill(db)
+    archive = await snapshot(service, db, folder)
+    await db['users'].update_one({'user_data.user_id': 1},
+                                 {'$set': {'info.balance': 999999,
+                                           'info.мусор': 'откуда-то'}})
+
+    await write_docs(db, archive, drop=False)
+
+    doc = next(d for d in db['users'].docs if d['user_data']['user_id'] == 1)
+    assert doc['info']['balance'] == 100 and 'мусор' not in doc['info']
+
+
+# ── каждый день в полночь ───────────────────────────────────────────────────
+#
+# Не «раз в 24 часа от прошлого раза»: так расписание уползает. Перезапустили
+# бота днём — и снимок навсегда переехал на середину дня, на самое людное
+# время.
+
+def at(hour: int, minute: int = 0, day_shift: int = 0):
+    return (now() + timedelta(days=day_shift)).replace(
+        hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def test_the_deadline_is_the_last_midnight(service):
+    from app.services.backup import BackupService as B
+
+    assert B.scheduled_before(0, at(10, 30)) == at(0)
+    assert B.scheduled_before(0, at(0, 1)) == at(0)
+    # до полуночи ещё не дожили — считается вчерашняя
+    assert B.scheduled_before(3, at(1, 0)) == at(3, day_shift=-1)
+
+
+async def test_a_copy_made_today_is_enough(service, db, settings):
+    await fill(db)
+    await service.run()
+
+    assert await service.due() is False
+
+
+async def test_after_midnight_a_new_one_is_due(service, db, settings, folder):
+    import os
+
+    await fill(db)
+    await service.run()
+    stale = (await service.files())[0]
+    # снимок вчерашний — полночь с тех пор наступала
+    yesterday = (datetime.now() - timedelta(days=1)).timestamp()
+    os.utime(stale, (yesterday, yesterday))
+
+    assert await service.due() is True
+
+
+async def test_an_evening_copy_does_not_cancel_the_midnight_one(service, db,
+                                                                settings,
+                                                                folder):
+    """Сняли руками вечером — в полночь всё равно нужен снимок за новый
+    день. «Раз в 24 часа» ответил бы «ещё рано» и пропустил бы сутки."""
+    import os
+
+    await fill(db)
+    await service.run()
+    made = (await service.files())[0]
+    # вчера в 23:00 ПО ВРЕМЕНИ БОТА: меньше суток назад, но до полуночи.
+    # Время берём из now(), а не из системного: часовой пояс бота может
+    # не совпадать с часовым поясом машины, и тогда проверка мерила бы
+    # не то, что думает.
+    evening = (now().replace(hour=23, minute=0, second=0, microsecond=0)
+               - timedelta(days=1)).timestamp()
+    os.utime(made, (evening, evening))
+
+    assert await service.due() is True
+
+
+async def test_a_missed_midnight_is_not_lost(service, db, settings, folder):
+    """Бот в полночь лежал — снимок делается при первом же запуске, а не
+    через сутки. Иначе день остался бы без копии, и никто бы не узнал."""
+    import os
+
+    await fill(db)
+    await settings.set('backup.hour', 0)
+    await service.run()
+    stale = (await service.files())[0]
+    long_ago = (datetime.now() - timedelta(days=3)).timestamp()
+    os.utime(stale, (long_ago, long_ago))
+
+    assert await service.due() is True
+
+
+# ── файл, который не влезает в Telegram ─────────────────────────────────────
+#
+# Бот не принимает документы больше 50 МБ. «Файл слишком большой» означало бы,
+# что копии в телефоне нет именно тогда, когда нет и сервера.
+
+async def test_a_big_file_is_cut_into_parts(service, db, folder):
+    await fill(db)
+    report = await service.run()
+    archive = folder / report.path.split('/')[-1]
+
+    parts = await service.split(archive, limit=100)
+
+    assert len(parts) > 1
+    assert all(part.stat().st_size <= 100 for part in parts)
+    assert [part.name for part in parts][:2] == [f'{archive.name}.001',
+                                                 f'{archive.name}.002']
+
+
+async def test_the_parts_glue_back_into_the_same_file(service, db, folder):
+    """Смысл всей нарезки: cat файл.* > файл должен дать ровно исходник."""
+    await fill(db)
+    report = await service.run()
+    archive = folder / report.path.split('/')[-1]
+    original = archive.read_bytes()
+
+    parts = await service.split(archive, limit=100)
+    glued = b''.join(part.read_bytes() for part in parts)
+
+    assert glued == original
+
+
+async def test_the_parts_are_cleaned_up(service, db, folder):
+    await fill(db)
+    report = await service.run()
+    archive = folder / report.path.split('/')[-1]
+    parts = await service.split(archive, limit=100)
+
+    service.drop_parts(parts)
+
+    assert not any(part.exists() for part in parts)
+    assert archive.exists()
+
+
+# ── бот продолжает работать ─────────────────────────────────────────────────
+#
+# Снимок большой базы — это секунды сплошного сжатия. Если делать их в
+# цикле событий, бот на это время перестаёт отвечать кому бы то ни было:
+# человек нажимает кнопку и не получает ничего.
+
+async def test_the_loop_stays_free_while_the_copy_is_made(service, db):
+    import asyncio
+
+    await fill(db, users=200)
+
+    ticks = 0
+    alive = True
+
+    async def heartbeat():
+        nonlocal ticks
+        while alive:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    beat = asyncio.create_task(heartbeat())
+    report = await service.run()
+    alive = False
+    await beat
+
+    assert report.ok
+    # если бы запись и проверка шли в цикле событий, соседняя задача не
+    # получила бы управление ни разу
+    assert ticks > 10, f'цикл событий был занят: тиков {ticks}'
+
+
+# ── полоска ─────────────────────────────────────────────────────────────────
+#
+# Минута молчащего «снимаю…» неотличима от зависшего бота. Полоска отвечает
+# сразу на два вопроса: идёт ли дело и сколько ещё ждать.
+
+def test_the_bar_fills_up():
+    from app.content.progress import bar
+
+    assert bar(0, 100, width=10) == '░' * 10
+    assert bar(50, 100, width=10) == '█' * 5 + '░' * 5
+    assert bar(100, 100, width=10) == '█' * 10
+
+
+def test_the_bar_survives_nonsense():
+    """Оценка числа документов может разойтись с правдой — полоска от
+    этого не должна ни падать, ни рисовать 300%."""
+    from app.content.progress import bar, percent
+
+    assert bar(5, 0, width=10) == '░' * 10
+    assert percent(500, 100) == 100
+    assert percent(0, 0) == 0
+
+
+def test_the_screen_has_a_bar_and_a_line_under_it():
+    from app.content.progress import screen
+
+    text = screen('Копия базы', 'Выгружаю users', 30, 100)
+
+    assert '30%' in text and 'Выгружаю users' in text
+
+
+def test_the_screen_says_when_it_was_updated():
+    """Без времени застывшее сообщение неотличимо от идущей работы."""
+    from datetime import timedelta
+
+    from app.content.progress import screen
+
+    text = screen('Копия базы', 'Выгружаю users', 30, 100,
+                  at=now() - timedelta(hours=1))
+
+    assert (now() - timedelta(hours=1)).strftime('%H:%M') in text
+
+
+def test_updates_are_not_sent_more_often_than_allowed():
+    """Telegram отвечает ошибкой и на частые правки, и на правку тем же
+    текстом — значит, пропускаем и то, и другое."""
+    from app.content.progress import Ticker
+
+    ticker = Ticker(every=100)
+
+    assert ticker.should(10, force=True) is True
+    assert ticker.should(10) is False        # то же число
+    assert ticker.should(20) is False        # слишком рано
+
+
+async def test_the_copy_reports_its_progress(service, db):
+    steps = []
+
+    async def remember(note, done, total):
+        steps.append((note, done, total))
+
+    await fill(db, users=1200)
+    report = await service.run(on_progress=remember)
+
+    assert report.ok
+    assert len(steps) > 2
+    assert any('Выгружаю' in note for note, _, _ in steps)
+    assert any('Проверяю' in note for note, _, _ in steps)
+    # общее число известно заранее — иначе полоска не полоска
+    assert steps[0][2] > 0
+
+
+async def test_a_broken_progress_does_not_break_the_copy(service, db):
+    """Полоска — украшение. Отвалившийся Telegram не должен стоить копии."""
+    async def broken(note, done, total):
+        raise RuntimeError('чат недоступен')
+
+    await fill(db)
+
+    assert (await service.run(on_progress=broken)).ok
+
+
+async def test_the_automatic_copy_starts_with_a_word(service, db, settings):
+    """«Начинаю» должно появиться раньше, чем первый документ."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.cards and 'Начинаю' in told.cards[0]
+
+
+async def test_everything_lives_in_one_message(service, db, settings):
+    """Отдельные сообщения на каждый шаг превратили бы ночную копию в
+    ночную рассылку."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert len(told.cards) == 1        # одно сообщение в личку
+    assert not told.done               # и никакой отдельной строчки в чат
+
+
+async def test_a_failure_is_written_into_the_same_message(service, db, settings):
+    from app.scheduler import jobs
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError('диск кончился')
+
+    await fill(db)
+    service._dump = broken
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.edits and 'Не получилось' in told.edits[-1]
+    assert told.failed          # и громко, отдельно
+
+
+# ── две копии разом ─────────────────────────────────────────────────────────
+#
+# Снимок большой базы идёт минутами, а задача просыпается каждые пять. Без
+# защиты второй запуск начинался поверх первого: две копии, два сообщения,
+# и первое навсегда застывало на шести процентах. Так и случилось в бою.
+
+async def test_a_second_run_does_not_start_on_top_of_the_first(service, db):
+    import asyncio
+
+    await fill(db, users=50)
+    original = service._dump
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return await original(*args, **kwargs)
+
+    service._dump = slow
+
+    first, second = await asyncio.gather(service.run(), service.run())
+
+    assert {first.ok, second.ok} == {True, False}
+    assert (first.busy or second.busy) is True
+
+
+async def test_the_schedule_waits_for_the_copy_in_progress(service, db, folder):
+    """Пять минут прошло, а копия ещё идёт — новый запуск не нужен."""
+    await fill(db)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / 'RS_TEST-2026-01-01-0000.jsonl.part').write_bytes(b'x')
+
+    assert await service.due() is False
+
+
+async def test_a_dead_copy_does_not_block_the_next_one(service, db, folder):
+    """Процесс убили — обрывок остался. Через час он уже не «идёт», а мусор,
+    и новый снимок должен состояться."""
+    await fill(db)
+    await stale_part(folder)
+
+    assert await service.due() is True
+
+
+async def test_a_live_copy_is_not_swept_by_rotation(service, db, folder,
+                                                    settings):
+    """Уборка не должна удалять файл, который прямо сейчас пишут."""
+    await fill(db)
+    folder.mkdir(parents=True, exist_ok=True)
+    live = folder / 'RS_TEST-2026-01-01-0000.jsonl.part'
+    live.write_bytes(b'x')
+
+    await service.rotate()
+
+    assert live.exists()
+
+
+async def test_the_job_says_nothing_when_a_copy_is_running(service, db,
+                                                           settings, folder):
+    """Главное: второе «начинаю» не должно прийти вовсе."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / 'RS_TEST-2026-01-01-0000.jsonl.part').write_bytes(b'x')
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert not told.cards and not told.edits
+
+
+async def test_a_broken_previous_copy_is_explained(service, db, settings,
+                                                   folder):
+    """Сообщение, застывшее на шести процентах, должно получить объяснение
+    в следующем — больше его объяснить негде."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    await stale_part(folder)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert 'оборвалась' in told.edits[-1]
+
+
+# ── бота останавливают посреди копии ────────────────────────────────────────
+#
+# Обычное обновление (`update.sh` → pm2 restart) обрывает копию на полуслове.
+# Само по себе это не беда — снимок сделается заново. Бедой это становится,
+# если после себя он оставляет метку: час она выглядит как «копия уже
+# делается», и снимок после планового обновления не состоится.
+
+async def test_a_stopped_copy_cleans_up_after_itself(service, db, folder):
+    import asyncio
+
+    await fill(db, users=50)
+    original = service._dump
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(5)
+        return await original(*args, **kwargs)
+
+    service._dump = slow
+    task = asyncio.create_task(service.run())
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not list(folder.glob('*.part'))
+    assert not list(folder.glob('*.jsonl.gz'))
+
+
+async def test_a_stopped_copy_is_not_retried_at_once(service, db, folder):
+    """Обратное тому, что стояло здесь раньше, и это исправление ошибки.
+
+    «Повторить сразу» выглядит разумно ровно до тех пор, пока бота не
+    начинает убивать что-то внешнее. Тогда мгновенный повтор превращается
+    в круг: копия — смерть — копия, каждые семь минут, и ни одной
+    доведённой до конца. Пауза разрывает круг; человеку остаётся
+    /backup force.
+    """
+    import asyncio
+
+    await fill(db)
+    original = service._dump
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(5)
+        return await original(*args, **kwargs)
+
+    service._dump = slow
+    task = asyncio.create_task(service.run())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    service._dump = original
+    assert await service.breaks() == 1
+    assert await service.due() is False          # не лезем сразу
+    assert (await service.run(force=True)).ok    # но человеку не мешаем
+
+
+async def test_a_stop_is_one_line_in_the_log_not_a_traceback(service, db,
+                                                             settings, caplog):
+    """CancelledError со стектрейсом в логе выглядит как падение и в первый
+    раз отнимает полчаса на поиск несуществующей ошибки."""
+    import asyncio
+
+    from app.scheduler import jobs
+
+    async def cancelled(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    await fill(db)
+    service.run = cancelled
+    told = Told()
+
+    # задача не должна пропустить отмену наверх
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert any('прервана остановкой' in record.message
+               for record in caplog.records)
+
+
+# ── «оно точно идёт или зависло?» ───────────────────────────────────────────
+#
+# Файл сам по себе не отвечает на этот вопрос. Отвечает его рост: живой
+# снимок дописывает пачку каждые несколько секунд. Брошенный обрывок не
+# должен часами выглядеть работой — из-за этого бот отказывался делать
+# копию после обновления посреди ночной.
+
+async def idle_part(folder, minutes: float,
+                    name='RS_TEST-2026-01-01-0055.jsonl.part'):
+    import os
+
+    folder.mkdir(parents=True, exist_ok=True)
+    item = folder / name
+    item.write_bytes(b'x')
+    quiet = time.time() - minutes * 60
+    os.utime(item, (quiet, quiet))
+    return item
+
+
+async def test_a_growing_file_means_the_copy_is_running(service, folder):
+    await idle_part(folder, minutes=0.1)
+
+    assert await service.in_progress() is not None
+
+
+async def test_a_file_nobody_writes_to_is_not_a_copy(service, db, folder):
+    """Главное следствие: после обновления посреди копии бот не должен
+    отказываться делать снимок следующий час."""
+    await fill(db)
+    await idle_part(folder, minutes=10)
+
+    assert await service.in_progress() is None
+    assert await service.due() is True
+    assert (await service.run()).ok
+
+
+async def test_the_screen_says_how_long_ago_it_was_written(service, folder):
+    item = await idle_part(folder, minutes=7)
+
+    assert 6 < service.idle_minutes(item) < 8
+
+
+async def test_a_manual_copy_can_be_forced(service, db, folder):
+    """Человек смотрит на застывшую полоску и хочет копию сейчас. Метка на
+    диске не должна быть дверью без ручки."""
+    await fill(db)
+    await idle_part(folder, minutes=0.1)      # «идёт прямо сейчас»
+
+    refused = await service.run()
+    forced = await service.run(force=True)
+
+    assert refused.busy and not refused.ok
+    assert forced.ok
+
+
+# ── круг из недоделанных копий ──────────────────────────────────────────────
+#
+# Настоящий случай: процесс бота умирал посреди копии, через две минуты
+# после перезапуска задача начинала её заново, и так каждые семь минут — ни
+# одной доведённой копии за сутки. Лечится не повтором, а паузой и внятным
+# сообщением о том, что чинить надо причину.
+
+async def stopped_copy(service, db) -> None:
+    """Копия, которую убили на середине."""
+    import asyncio
+
+    original = service._dump
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(5)
+        return await original(*args, **kwargs)
+
+    service._dump = slow
+    task = asyncio.create_task(service.run())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    service._dump = original
+
+
+async def test_a_stopped_copy_leaves_a_trace(service, db, folder):
+    """След нужен затем, чтобы следующий запуск знал: прошлый не дошёл.
+    Удаление следа и устроило тот самый круг."""
+    await fill(db)
+
+    await stopped_copy(service, db)
+
+    assert list(folder.glob('*.broken'))
+    assert await service.breaks() == 1
+
+
+async def test_three_breaks_stop_the_retries(service, db, settings):
+    await fill(db)
+    for _ in range(3):
+        await stopped_copy(service, db)
+
+    assert await service.breaks() == 3
+    assert await service.due() is False
+
+
+async def test_a_finished_copy_forgets_the_breaks(service, db):
+    await fill(db)
+    await stopped_copy(service, db)
+
+    assert (await service.run(force=True)).ok
+    assert await service.breaks() == 0
+
+
+async def test_the_circle_is_explained_out_loud(service, db, settings):
+    """Человек должен узнать, что чинить, а не смотреть неделю на
+    недоделанные полоски."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    for _ in range(3):
+        await stopped_copy(service, db)
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.dms and 'не доходит до конца' in told.dms[0]
+    assert 'max_memory_restart' in told.dms[0]
+
+
+async def test_the_warning_is_said_once_not_every_five_minutes(service, db,
+                                                               settings):
+    from app.scheduler import jobs
+
+    await fill(db)
+    for _ in range(3):
+        await stopped_copy(service, db)
+    told = Told()
+    container = Container(service, settings, told)
+
+    for _ in range(4):
+        await jobs.backup_database(container, bot=None)
+
+    assert len(told.dms) == 1
+
+
+# ── застывшая полоска должна сама себя объяснить ────────────────────────────
+#
+# Её оборвали вместе с процессом, сказать об этом она не могла — и осталась
+# на экране навсегда, выглядя работой. Дописать в неё судьбу может только
+# следующий запуск бота, и для этого ему нужны две вещи: ссылка на
+# сообщение и место, на котором всё остановилось.
+
+async def test_the_place_where_it_stopped_is_remembered(service, db):
+    await fill(db)
+    await service.note_progress(1657000, 1900000, 'Выгружаю transactions_flat',
+                                cards=[{'chat_id': 1, 'message_id': 2}])
+    await service.remember_break()
+
+    state = await service.state()
+    assert state['done'] == 1657000 and 'transactions_flat' in state['note']
+    assert await service.pending_cards() == [{'chat_id': 1, 'message_id': 2}]
+
+
+async def test_cards_are_forgotten_after_a_good_copy(service, db):
+    await fill(db)
+    await service.note_progress(1, 2, 'идёт', cards=[{'chat_id': 1,
+                                                      'message_id': 2}])
+    await service.remember_break()
+
+    await service.run(force=True)
+
+    assert await service.pending_cards() == []
+
+
+async def test_the_next_run_finishes_the_frozen_bar(service, db, settings):
+    from app.scheduler import jobs
+
+    await fill(db)
+    await service.note_progress(86, 100, 'Выгружаю transactions_flat',
+                                cards=[{'chat_id': 1, 'message_id': 2}])
+    await service.remember_break()
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.edits and 'прервана' in told.edits[0]
+    assert '86%' in told.edits[0]
+    assert 'Следующая попытка' in told.edits[0]
+
+
+async def test_the_frozen_bar_is_explained_once(service, db, settings):
+    from app.scheduler import jobs
+
+    await fill(db)
+    await service.note_progress(86, 100, 'на середине',
+                                cards=[{'chat_id': 1, 'message_id': 2}])
+    await service.remember_break()
+    told = Told()
+    container = Container(service, settings, told)
+
+    await jobs.backup_database(container, bot=None)
+    first = len(told.edits)
+    await jobs.backup_database(container, bot=None)
+
+    assert len(told.edits) == first
+
+
+async def test_an_unexpected_error_is_shown_not_just_logged(service, db,
+                                                            settings):
+    """Молча упавшая задача копий не делает, а выглядит так же, как
+    работающая."""
+    from app.scheduler import jobs
+
+    async def explodes(*args, **kwargs):
+        raise RuntimeError('нет места на диске')
+
+    await fill(db)
+    service.due = explodes
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.dms and 'нет места на диске' in told.dms[0]
+
+
+# ── снимок отдельным процессом ──────────────────────────────────────────────
+#
+# Настоящая причина всех бед: снимок большой базы ест память, у бота она
+# ограничена (pm2 max_memory_restart), и процесс убивали на 86% — четыреста
+# восемнадцать раз подряд, ни одной доведённой копии. Отдельный процесс
+# снимает это целиком: бот остаётся лёгким, а его перезапуск копию больше
+# не обрывает.
+
+class FakeChild:
+    """Процесс снимка: что-то делает, потом заканчивается."""
+
+    def __init__(self, service=None, code: int = 0, errors: bytes = b'',
+                 steps=(), report=None):
+        self.pid = 4242
+        self.returncode = None
+        self._service = service
+        self._code = code
+        self._errors = errors
+        self._steps = list(steps)
+        self._report = report
+
+    async def communicate(self):
+        for done, total, note in self._steps:
+            await self._service.note_progress(done, total, note)
+            await asyncio.sleep(0.01)
+        if self._report is not None:
+            await self._service.save_result(self._report)
+        self.returncode = self._code
+        return b'', self._errors
+
+
+def spawns(child):
+    async def fake(*args, **kwargs):
+        return child
+    return fake
+
+
+async def test_the_copy_is_made_by_another_process(service, db, settings,
+                                                   monkeypatch):
+    import asyncio as aio
+
+    from app.services.backup import BackupReport
+
+    await settings.set('backup.separate_process', True)
+    done = BackupReport(ok=True, path='/tmp/x.jsonl.gz', size=10, docs=7)
+    child = FakeChild(service, report=done)
+    monkeypatch.setattr(aio, 'create_subprocess_exec', spawns(child))
+
+    report = await service.make()
+
+    assert report.ok and report.docs == 7
+
+
+async def test_the_bot_watches_the_progress_of_the_other_process(service, db,
+                                                                 settings,
+                                                                 monkeypatch):
+    """Полоска должна двигаться, хотя работу делает не бот."""
+    import asyncio as aio
+
+    from app.services.backup import BackupReport
+
+    await settings.set('backup.separate_process', True)
+    child = FakeChild(service, steps=[(10, 100, 'Выгружаю users'),
+                                      (90, 100, 'Выгружаю transactions_flat')],
+                      report=BackupReport(ok=True, docs=1))
+    monkeypatch.setattr(aio, 'create_subprocess_exec', spawns(child))
+    seen = []
+
+    async def watch(note, done, total):
+        seen.append((note, done, total))
+
+    await service.make(on_progress=watch)
+
+    assert any('transactions_flat' in note for note, _, _ in seen)
+
+
+async def test_a_killed_process_is_reported_not_swallowed(service, db,
+                                                          settings,
+                                                          monkeypatch):
+    """Процесс умер молча — это самое важное сообщение из всех, и раньше
+    оно пропадало."""
+    import asyncio as aio
+
+    await settings.set('backup.separate_process', True)
+    child = FakeChild(service, code=-9, errors=b'Killed')
+    monkeypatch.setattr(aio, 'create_subprocess_exec', spawns(child))
+
+    report = await service.make()
+
+    assert not report.ok
+    assert 'оборвался' in report.error and 'Killed' in report.error
+    assert await service.breaks() == 1
+
+
+async def test_stopping_the_bot_does_not_stop_the_copy(service, db, settings,
+                                                       monkeypatch):
+    """Главное следствие: обновление бота посреди ночной копии больше не
+    отправляет её в мусор."""
+    import asyncio as aio
+
+    await settings.set('backup.separate_process', True)
+    child = FakeChild(service, steps=[(1, 100, 'иду')] * 50)
+    monkeypatch.setattr(aio, 'create_subprocess_exec', spawns(child))
+
+    task = asyncio.create_task(service.make())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # ребёнка не трогали: он сам доживёт и допишет файл
+    assert child.returncode is None
+
+
+async def test_when_the_process_cannot_start_we_do_it_ourselves(service, db,
+                                                                settings,
+                                                                monkeypatch):
+    """Отдельный процесс — способ, а не самоцель: не вышло запустить —
+    копия всё равно должна появиться."""
+    import asyncio as aio
+
+    await settings.set('backup.separate_process', True)
+    await fill(db)
+
+    async def broken(*args, **kwargs):
+        raise FileNotFoundError('нет python')
+
+    monkeypatch.setattr(aio, 'create_subprocess_exec', broken)
+
+    assert (await service.make()).ok
+
+
+# ── снимок пережил бота ─────────────────────────────────────────────────────
+#
+# Из жизни: снимок шёл час с лишним в своём процессе, а бота за это время
+# убивали каждые четверть часа. Полоска замирала, и бот объявлял копию
+# прерванной — хотя она спокойно продолжалась.
+
+async def test_a_running_copy_is_followed_not_buried(service, db, settings,
+                                                     folder):
+    from app.scheduler import jobs
+
+    await fill(db)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / 'RS_TEST-2026-01-01-0000.jsonl.part').write_bytes(b'x')
+    await service.note_progress(87, 100, 'Выгружаю users: 30500',
+                                cards=[{'chat_id': 1, 'message_id': 2}])
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.edits and 'прервана' not in told.edits[-1]
+    assert '87%' in told.edits[-1] and 'отдельный процесс' in told.edits[-1]
+
+
+async def test_a_running_copy_blocks_a_second_one(service, db, settings,
+                                                  folder):
+    from app.scheduler import jobs
+
+    await fill(db)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / 'RS_TEST-2026-01-01-0000.jsonl.part').write_bytes(b'x')
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert not told.cards          # никакого второго «начинаю»
+
+
+async def test_a_stale_copy_is_still_buried(service, db, settings, folder):
+    """Обратная сторона: если в файл давно не писали, это всё-таки обрыв."""
+    from app.scheduler import jobs
+
+    await fill(db)
+    await stale_part(folder)
+    await service.note_progress(87, 100, 'Выгружаю users',
+                                cards=[{'chat_id': 1, 'message_id': 2}])
+    await service.remember_break()
+    told = Told()
+
+    await jobs.backup_database(Container(service, settings, told), bot=None)
+
+    assert told.edits and 'прервана' in told.edits[0]

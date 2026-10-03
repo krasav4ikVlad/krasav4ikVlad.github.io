@@ -1,0 +1,292 @@
+"""Один движок для всех кампаний.
+
+Сейчас campaigns.py, campaigns_expired.py и сampaigns_trial.py содержат по
+своей копии: safe_send, _is_good_hour, _notify_admin, _days_since, цикл по
+курсору, установка флага, счётчики. Отличаются они только запросом, окном
+времени и текстом — то есть данными.
+
+Здесь: шаг кампании описывается объектом CampaignStep (см. definitions.py),
+а движок один. Добавить касание = добавить строку в таблицу.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass, field
+from typing import Callable
+
+from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup
+
+from app.core.time import days_since, hours_since, now
+from app.repositories.users import UsersRepository
+from app.content.emoji import e
+
+log = logging.getLogger(__name__)
+
+# Функция текста получает документ пользователя и контекст расчётов
+TextFn = Callable[[dict, 'StepContext'], str]
+
+
+@dataclass(frozen=True)
+class StepContext:
+    """Что известно движку о конкретной отправке."""
+    name: str | None
+    balance: int
+    credited: int
+    topups_count: int
+    # Цена суточного тарифа на момент отправки. В текстах кампаний стояли
+    # «4₽ в день» и «хватит на 10 дней» строкой — после смены прайса такие
+    # письма врут, а править их надо в пяти местах. Берём из тарифов.
+    daily_price: int = 0
+    # Суммарная доля бонуса к пополнению для этого получателя: обычный бонус
+    # плюс A/B-надбавка новичкам. Тексты D2 обещают конкретные суммы, и
+    # обещание считается из тех же настроек, по которым потом начисляется, —
+    # иначе после правки процента в админке письмо начинает врать.
+    bonus_rate: float = 0.0
+
+    @property
+    def is_multi(self) -> bool:
+        return self.topups_count >= 2
+
+    @property
+    def total_balance(self) -> int:
+        return self.balance + self.credited
+
+    @property
+    def days_on_balance(self) -> int:
+        """На сколько суток хватит баланса после начисления."""
+        return self.total_balance // self.daily_price if self.daily_price else 0
+
+
+@dataclass(frozen=True)
+class CampaignStep:
+    code: str                       # уникальный ключ, он же флаг в campaigns.*
+    title: str                      # для отчёта админам
+    query: dict                     # фильтр по пользователям
+    text: TextFn                    # функция текста
+    keyboard: str = 'topup'         # ключ клавиатуры из KEYBOARDS
+    settings_key: str | None = None  # тумблер в админке; None — всегда включено
+
+    # окно отправки относительно поля с датой
+    since_field: str = 'growth.joined_at'
+    min_hours: float | None = None
+    max_hours: float | None = None
+    respect_night: bool = True      # False для HOT-касаний: шлём в любое время
+
+    # цепочка касаний
+    after_step: str | None = None   # код предыдущего шага
+    delay_days: float = 0           # минимальная пауза после него
+
+    # деньги
+    credit_to: int = 0              # добить баланс до суммы (если баланс < 4)
+    bonus: int = 0                  # фиксированное начисление
+
+    # Перевести на суточный тариф вместе с начислением.
+    # Без этого бонус в 15–40₽ лежит мёртвым грузом: автопродление считает цену
+    # по vpn.period, а у вернувшегося там остался месяц или полгода — денег не
+    # хватает, продления нет, бонус выплачен впустую. Старый бот ставил
+    # vpn.period = 1 в том же запросе, что и начисление.
+    daily_period: bool = False
+
+    def flag(self) -> str:
+        return f'{self.code}_sent'
+
+
+@dataclass
+class StepReport:
+    step: str
+    matched: int = 0
+    sent: int = 0
+    failed: int = 0
+    credited: int = 0
+    skipped_window: int = 0
+    skipped_claimed: int = 0
+
+    def as_text(self) -> str:
+        return (f'{e("envelope")} <b>{self.step}</b>\n'
+                f'{e("ok")} Отправлено: <code>{self.sent}</code>\n'
+                f'{e("hardban")} Не доставлено: <code>{self.failed}</code>\n'
+                f'{e("money")} Начислено: <code>{self.credited}₽</code>')
+
+
+@dataclass
+class CampaignReport:
+    steps: list[StepReport] = field(default_factory=list)
+
+    @property
+    def sent(self) -> int:
+        return sum(s.sent for s in self.steps)
+
+    @property
+    def credited(self) -> int:
+        return sum(s.credited for s in self.steps)
+
+
+class CampaignEngine:
+    """Прогоняет шаги кампаний. Ничего не знает про конкретные тексты и сегменты."""
+
+    def __init__(self, bot: Bot, users: UsersRepository, settings, sender,
+                 keyboards: dict[str, Callable[[], InlineKeyboardMarkup]],
+                 runs_collection=None, pause_between: float = 0.05, plans=None):
+        self.bot = bot
+        self.users = users
+        self.settings = settings
+        self.sender = sender
+        self.keyboards = keyboards
+        self.runs = runs_collection
+        self.pause = pause_between
+        self.plans = plans
+        self.daily_price = 0
+        self.bonus_rate = 0.0
+
+    async def run(self, steps: list[CampaignStep]) -> CampaignReport:
+        await self._load_prices()
+        report = CampaignReport()
+        for step in steps:
+            if step.settings_key and not await self.settings.flag(step.settings_key):
+                log.info('[%s] пропущен: выключен в админке', step.code)
+                continue
+            report.steps.append(await self.run_step(step))
+        return report
+
+    async def run_step(self, step: CampaignStep) -> StepReport:
+        report = StepReport(step=step.title)
+        query = dict(step.query)
+        query[f'campaigns.{step.flag()}'] = {'$exists': False}
+        if step.after_step:
+            query[f'campaigns.{step.after_step}_sent'] = {'$exists': True}
+
+        night = step.respect_night and not await self._is_good_hour()
+
+        async for user in self.users.iterate(query):
+            report.matched += 1
+
+            if not self._in_window(user, step, night):
+                report.skipped_window += 1
+                continue
+
+            user_id = self.users.pick(user, 'user_data.user_id')
+            if not user_id:
+                continue
+
+            balance = int(self.users.pick(user, 'growth.balance', 0) or 0)
+            credited = self._credit_amount(step, balance)
+
+            # Слот занимаем ДО отправки и вместе с начислением — одним запросом.
+            # Иначе при падении между отправкой и записью флага пользователь
+            # получит сообщение и бонус повторно на следующем прогоне.
+            if not await self.users.claim_campaign_slot(
+                user['_id'], step.flag(), self._slot_update(step, credited)
+            ):
+                report.skipped_claimed += 1
+                continue
+
+            report.credited += credited
+            if credited > 0:
+                # Начисление идёт тем же запросом, что и флаг касания, мимо
+                # users.credit(): журналим здесь, иначе бонус кампании —
+                # единственные деньги, которых нет в истории операторов.
+                await self.users.record_money(
+                    user_id, credited, 'Бонус за возвращение', kind='campaign',
+                    auto=True, balance_after=await self.users.balance_of(user_id),
+                    meta={'campaign': step.flag()})
+
+            context = StepContext(
+                name=self.users.pick(user, 'user_data.first_name'),
+                balance=balance,
+                credited=credited,
+                topups_count=int(self.users.pick(user, 'growth.topups_count', 0) or 0),
+                daily_price=self.daily_price,
+                bonus_rate=self.bonus_rate,
+            )
+
+            markup = self.keyboards.get(step.keyboard)
+            ok = await self.sender.send(
+                self.bot, user_id, step.text(user, context),
+                markup() if markup else None,
+            )
+            if ok:
+                report.sent += 1
+            else:
+                report.failed += 1
+
+            await asyncio.sleep(self.pause)
+
+        if self.runs is not None and report.matched:
+            await self.runs.insert_one({
+                'step': step.code, 'created_at': now(),
+                'matched': report.matched, 'sent': report.sent,
+                'failed': report.failed, 'credited': report.credited,
+            })
+
+        log.info('[%s] найдено=%s отправлено=%s ошибок=%s начислено=%s₽',
+                 step.code, report.matched, report.sent, report.failed, report.credited)
+        return report
+
+    # ── внутреннее ──────────────────────────────────────────────────────────
+    async def _load_prices(self) -> None:
+        """Цена суток и проценты бонуса — раз на прогон, а не на получателя."""
+        try:
+            if self.plans:
+                plan = await self.plans.by_days(1)
+                self.daily_price = int(plan['price']) if plan else 0
+            rate = 0.0
+            if await self.settings.flag('bonus.topup_enabled'):
+                rate += await self.settings.rate('bonus.topup_rate')
+            rate += await self.settings.rate('bonus.ab_new_trial_rate')
+            self.bonus_rate = rate
+        except Exception:
+            log.exception('цены для текстов кампаний не получены')
+
+    def _in_window(self, user: dict, step: CampaignStep, night: bool) -> bool:
+        if step.after_step and step.delay_days:
+            previous = self.users.pick(user, f'campaigns.{step.after_step}_sent')
+            if previous and days_since(previous) < step.delay_days:
+                return False
+
+        if step.min_hours is None and step.max_hours is None:
+            return not night
+
+        since = self.users.pick(user, step.since_field)
+        if not since:
+            return False
+
+        passed = hours_since(since)
+        if step.min_hours is not None and passed < step.min_hours:
+            return False
+        if step.max_hours is not None and passed > step.max_hours:
+            return False
+        return not night
+
+    @staticmethod
+    def _credit_amount(step: CampaignStep, balance: int) -> int:
+        if step.bonus:
+            return step.bonus
+        # добиваем до целевой суммы только тем, у кого баланса реально нет
+        if step.credit_to and balance < 4:
+            return max(0, step.credit_to - balance)
+        return 0
+
+    @staticmethod
+    def _slot_update(step: CampaignStep, credited: int) -> dict | None:
+        """Что записать в том же запросе, что и флаг касания.
+
+        Одним апдейтом — чтобы падение между «начислили» и «отметили» не
+        привело к повторному начислению на следующем прогоне.
+        """
+        update: dict = {}
+        if step.daily_period:
+            update['$set'] = {'vpn.period': 1}
+        if credited > 0:
+            update['$inc'] = {'info.balance': credited}
+            update['$push'] = {'info.transactions': {
+                'amount': credited, 'dt': now(), 'description': 'Бонус за возвращение',
+            }}
+        return update or None
+
+    async def _is_good_hour(self) -> bool:
+        start = await self.settings.int('campaign.hour_from')
+        end = await self.settings.int('campaign.hour_to')
+        return start <= now().hour <= end

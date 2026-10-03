@@ -1,0 +1,16 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="api" type="PythonConfigurationType" factoryName="Python">
+    <option name="ENV_FILES" value="" />
+    <envs>
+      <env name="PYTHONUNBUFFERED" value="1" />
+    </envs>
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="IS_MODULE_SDK" value="true" />
+    <option name="ADD_CONTENT_ROOTS" value="true" />
+    <option name="ADD_SOURCE_ROOTS" value="true" />
+    <option name="SCRIPT_NAME" value="uvicorn" />
+    <option name="PARAMETERS" value="app.main_api:app --reload --port 8000" />
+    <option name="MODULE_MODE" value="true" />
+    <method v="2" />
+  </configuration>
+</component>
