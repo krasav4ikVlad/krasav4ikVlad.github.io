@@ -725,16 +725,58 @@ function pageNodes(root, _param, page) {
         actions: `
             <button class="icon-btn" id="refresh" title="Обновить"><i class="ph ph-arrows-clockwise"></i></button>
             <button class="btn" id="create"><i class="ph ph-plus"></i>Создать</button>`,
-    }) + `<div id="list">${loaderHtml()}</div>`;
+    }) + `<div id="filters"></div><div id="list">${loaderHtml()}</div>`;
 
     let nodes = [];
     let plugins = [];
+    let squads = null; // null — нет доступа к сквадам
     let dragging = false;
     const list = $('#list', root);
+    const filtersEl = $('#filters', root);
+
+    // фильтр по странам и сквадам; запоминаем в браузере
+    const FILTER_KEY = 'rw_nodes_filter';
+    const filter = { countries: new Set(), squads: new Set() };
+    try {
+        const saved = JSON.parse(localStorage.getItem(FILTER_KEY) || '{}');
+        (saved.countries || []).forEach((c) => filter.countries.add(c));
+        (saved.squads || []).forEach((q) => filter.squads.add(q));
+    } catch { /* нет хранилища */ }
+    const saveFilter = () => {
+        try { localStorage.setItem(FILTER_KEY, JSON.stringify({ countries: [...filter.countries], squads: [...filter.squads] })); } catch { /* ignore */ }
+    };
+    const isFiltered = () => filter.countries.size > 0 || filter.squads.size > 0;
+
+    const nodeInSquad = (n, sq) => {
+        const inb = new Set((sq.inbounds || []).map((i) => i.uuid));
+        return ((n.configProfile && n.configProfile.activeInbounds) || []).some((i) => inb.has(i.uuid));
+    };
+    const matches = (n) => {
+        if (filter.countries.size && !filter.countries.has(n.countryCode || 'XX')) return false;
+        if (filter.squads.size && squads) {
+            const chosen = squads.filter((q) => filter.squads.has(q.uuid));
+            if (!chosen.some((q) => nodeInSquad(n, q))) return false;
+        }
+        return true;
+    };
+
+    const loadSquads = async () => {
+        try {
+            const r = await api('GET', '/api/internal-squads');
+            return r.internalSquads || [];
+        } catch (e) {
+            if (e instanceof ApiError && e.status === 401) throw e;
+            return null;
+        }
+    };
 
     const load = async (silent) => {
         try {
-            [nodes, plugins] = await Promise.all([api('GET', '/api/nodes'), loadPlugins()]);
+            [nodes, plugins, squads] = await Promise.all([api('GET', '/api/nodes'), loadPlugins(), loadSquads()]);
+            // убираем из фильтра то, чего больше нет
+            const codes = new Set(nodes.map((n) => n.countryCode || 'XX'));
+            [...filter.countries].forEach((c) => { if (!codes.has(c)) filter.countries.delete(c); });
+            if (squads) [...filter.squads].forEach((q) => { if (!squads.some((x) => x.uuid === q)) filter.squads.delete(q); });
             if (!dragging) draw();
         } catch (e) {
             if (e instanceof ApiError && e.status === 401) return handleError(e);
@@ -747,12 +789,63 @@ function pageNodes(root, _param, page) {
         return p ? p.name : '';
     };
 
+    const drawFilters = () => {
+        if (!nodes.length) { filtersEl.innerHTML = ''; return; }
+        const byCountry = new Map();
+        nodes.forEach((n) => { const c = n.countryCode || 'XX'; byCountry.set(c, (byCountry.get(c) || 0) + 1); });
+        const countries = [...byCountry.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+        const cName = (c) => { const x = COUNTRIES.find((k) => k[0] === c); return x ? x[1] : c; };
+        const shown = nodes.filter(matches).length;
+
+        filtersEl.innerHTML = `
+            <div class="nf">
+                <div class="nf-row">
+                    <span class="nf-label"><i class="ph ph-map-pin"></i>Страны</span>
+                    <button class="nf-chip ${filter.countries.size ? '' : 'active'}" data-fc="">Все<span class="nf-n">${nodes.length}</span></button>
+                    ${countries.map(([c, cnt]) => `
+                        <button class="nf-chip ${filter.countries.has(c) ? 'active' : ''}" data-fc="${esc(c)}" title="${esc(cName(c))}">
+                            <span class="flag">${c === 'XX' ? '🏴‍☠️' : flag(c)}</span>${esc(cName(c))}<span class="nf-n">${cnt}</span></button>`).join('')}
+                </div>
+                ${squads && squads.length ? `
+                <div class="nf-row">
+                    <span class="nf-label"><i class="ph ph-circles-three-plus"></i>Сквады</span>
+                    <button class="nf-chip ${filter.squads.size ? '' : 'active'}" data-fs="">Все</button>
+                    ${squads.map((q) => `
+                        <button class="nf-chip ${filter.squads.has(q.uuid) ? 'active' : ''}" data-fs="${esc(q.uuid)}">
+                            ${esc(q.name)}<span class="nf-n">${nodes.filter((n) => nodeInSquad(n, q)).length}</span></button>`).join('')}
+                </div>` : ''}
+                ${isFiltered() ? `
+                <div class="nf-row nf-status">
+                    <span>Показано <b>${shown}</b> из ${nodes.length}</span>
+                    <button class="btn btn-subtle btn-sm" data-freset><i class="ph ph-x"></i>Сбросить фильтр</button>
+                </div>` : ''}
+            </div>`;
+
+        const toggle = (set, v) => {
+            if (!v) set.clear();
+            else if (set.has(v)) set.delete(v);
+            else set.add(v);
+            saveFilter();
+            draw();
+        };
+        $$('[data-fc]', filtersEl).forEach((b) => { b.onclick = () => toggle(filter.countries, b.dataset.fc); });
+        $$('[data-fs]', filtersEl).forEach((b) => { b.onclick = () => toggle(filter.squads, b.dataset.fs); });
+        const reset = $('[data-freset]', filtersEl);
+        if (reset) reset.onclick = () => { filter.countries.clear(); filter.squads.clear(); saveFilter(); draw(); };
+    };
+
     const draw = () => {
+        drawFilters();
         if (!nodes.length) {
             list.innerHTML = `<div class="card empty"><i class="ph-duotone ph-cpu"></i>Нод пока нет<div class="sm" style="margin-top:6px">Нажмите «Создать», чтобы добавить первую ноду</div></div>`;
             return;
         }
-        list.innerHTML = `<div class="node-list">${nodes.map((n) => nodeCardHtml(n, pluginName(n))).join('')}</div>`;
+        const visible = nodes.filter(matches);
+        if (!visible.length) {
+            list.innerHTML = '<div class="card empty"><i class="ph-duotone ph-funnel"></i>Нет нод под выбранный фильтр</div>';
+            return;
+        }
+        list.innerHTML = `<div class="node-list ${isFiltered() ? 'filtered' : ''}">${visible.map((n) => nodeCardHtml(n, pluginName(n))).join('')}</div>`;
 
         $$('.node-card', list).forEach((row) => row.addEventListener('click', () => {
             const n = nodes.find((x) => x.uuid === row.dataset.id);
@@ -764,7 +857,14 @@ function pageNodes(root, _param, page) {
         }));
         $$('[data-drag]', list).forEach((h) => {
             h.addEventListener('click', (e) => e.stopPropagation());
-            h.addEventListener('pointerdown', (e) => startDrag(e, h));
+            h.addEventListener('pointerdown', (e) => {
+                if (isFiltered()) {
+                    e.stopPropagation();
+                    toast('info', 'Сбросьте фильтр', 'Порядок нод можно менять только в полном списке');
+                    return;
+                }
+                startDrag(e, h);
+            });
         });
     };
 
