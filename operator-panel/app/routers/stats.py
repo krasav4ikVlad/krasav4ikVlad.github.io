@@ -19,20 +19,18 @@
 
 Зарплата по коэффициенту (настройки владельца — «Настройки расчёта»).
 Режимы нормы:
-  auto (по нагрузке, рекомендуется) — норма привязана к реальной работе
-    периода (workload-based quota, стандарт контакт-центров):
-      potential = отвеченные_обращения×(2+3) + очередь×(2+3)
-    Отвеченное обращение — цепочка сообщений пользователя, получившая ответ
-    оператора; очередь — только РЕАЛЬНО брошенные тикеты: статус pending,
-    либо open, где оператор за период не написал ни разу. «Хвосты» вида
-    «спасибо» после ответа в вечно-открытых тикетах и сообщения, обработанные
-    ботом, очередью не считаются. Персональная норма = potential × (часы оператора
-    / часы команды). Игнорируете тикеты — очередь растёт и тянет норму вверх
-    с тем же весом, что отвеченное обращение; нет нагрузки — коэффициент 1.0.
+  auto (по загруженности смены, рекомендуется) — норма персональная и
+    считается от обращений, пришедших В СМЕНУ оператора (по его графику):
+    каждое обращение даёт (2+3) баллов нормы тем, кто в момент его прихода
+    был на смене (делится поровну между ними). Ответил на всё своё и
+    быстро — коэффициент 1.0; отвечал медленно — дебаф (нет бонуса за
+    скорость); игнорировал — брошенные обращения его смены тоже в норме.
+    Обращения вне чьих-либо смен (ночь, пересменок) в норму никому не идут.
+    Нет обращений в смены оператора — коэффициент 1.0 (простой не по его вине).
   team_avg — средний темп команды (баллы команды / часы команды);
   manual — число баллов/час задаёт владелец.
-Далее одинаково: норма_баллов = ставка × часы_оператора_за_период,
-коэффициент = баллы/норма в пределах [мин; макс],
+Для team_avg/manual: норма_баллов = ставка × часы_оператора_за_период.
+Далее одинаково: коэффициент = баллы/норма в пределах [мин; макс],
 к выплате = оклад × коэффициент × дней/30.44.
 Операторы с графиком, но без единого ответа за период, попадают в таблицу
 с нулевыми баллами — простой виден, а не прячется.
@@ -341,14 +339,15 @@ async def operator_stats(
     last_op_login: str | None = None       # последний ответивший оператор
     rating_owner: str | None = None        # чьей сессии достанутся оценки (снимок на закрытии)
     answered_waits = 0                     # обращения, на которые операторы ответили
-    backlog_cand: dict = {}                # uid -> оператор участвовал в диалоге?
+    demand_ts: list[datetime] = []         # моменты прихода обращений (для нормы по сменам)
+    backlog_cand: dict = {}                # uid -> (оператор участвовал?, когда пришло)
     dialog_had_op = False
 
     async for m in cursor:
         uid = m.get("user_id")
         if uid != current_uid:
             if pending_since is not None and current_uid is not None:
-                backlog_cand[current_uid] = dialog_had_op  # кончился без ответа
+                backlog_cand[current_uid] = (dialog_had_op, pending_since)  # кончился без ответа
             current_uid, pending_since, last_op_login = uid, None, None
             rating_owner = None
             dialog_had_op = False
@@ -368,6 +367,7 @@ async def operator_stats(
             dialog_had_op = True
             if pending_since is not None and ts is not None:
                 answered_waits += 1
+                demand_ts.append(pending_since)
                 raw = (ts - pending_since).total_seconds()
                 if 0 <= raw <= 7 * 86400:  # брошенные на неделю тикеты не замеряем
                     eff_pending = pending_since
@@ -400,7 +400,7 @@ async def operator_stats(
                 rating_owner = last_op_login or closer
                 pending_since = None
     if pending_since is not None and current_uid is not None:
-        backlog_cand[current_uid] = dialog_had_op  # хвост последнего диалога
+        backlog_cand[current_uid] = (dialog_had_op, pending_since)  # хвост последнего диалога
 
     # Очередь = только РЕАЛЬНО брошенные тикеты:
     #  * статус pending (никто не подключился), или
@@ -414,9 +414,12 @@ async def operator_stats(
                 {"user_data.user_id": {"$in": list(backlog_cand)}},
                 {"user_data.user_id": 1, "info.support.status": 1}):
             st = ((((u.get("info") or {}).get("support")) or {}).get("status") or "").lower()
-            had_op = backlog_cand.get((u.get("user_data") or {}).get("user_id"), False)
+            had_op, arrived = backlog_cand.get(
+                (u.get("user_data") or {}).get("user_id"), (False, None))
             if st == "pending" or (st == "open" and not had_op):
                 backlog += 1
+                if arrived is not None:
+                    demand_ts.append(arrived)  # брошенное — тоже нагрузка той смены
 
     is_owner = op.get("role") == "owner"
     my_login = op.get("login")
@@ -485,31 +488,79 @@ async def operator_stats(
             "schedule": info.get("schedule"),
         })
 
-    # фаза 2: ставка нормы (баллов/час)
+    # фаза 2: норма и коэффициент
     mode = act.get("norm_mode", "auto")
-    # «доступные» баллы = реальная работа периода: отвеченные обращения и
-    # висящая очередь (тот же вес — игнорировать тикеты невыгодно).
-    # Закрытия в норму не входят: тикеты закрываются автоматически.
-    potential = ((answered_waits + backlog)
-                 * (POINTS_REPLY + POINTS_FAST))
+    unit = POINTS_REPLY + POINTS_FAST
+    # «доступные» баллы периода (справочно): отвеченные обращения + очередь
+    potential = (answered_waits + backlog) * unit
     tot_hours = sum(r["hours_period"] for r in rows if r["hours_period"])
+
+    def shift_logins(ts: datetime) -> list[str]:
+        """Кто по графику был на смене в момент ts. Без графика, но с часами
+        в неделю — считается на смене в общее рабочее окно поддержки."""
+        lt = ts.astimezone(tzinfo)
+        minute = lt.hour * 60 + lt.minute
+        out = []
+        for lg, o in op_info.items():
+            if not o.get("active", True):
+                continue
+            cfgs = sched_cfgs.get(lg)
+            if cfgs is None:
+                if not o.get("hours_per_week"):
+                    continue
+                s, e = ws_min, we_min
+                if s == e or (s < e and s <= minute < e) \
+                        or (s > e and (minute >= s or minute < e)):
+                    out.append(lg)
+                continue
+            cfg = cfgs.get(lt.weekday())
+            hit = False
+            if cfg:
+                s, e, _grace = cfg
+                # e <= s — смена до конца суток (конец 00:00/24:00) или через полночь
+                hit = (s < e and s <= minute < e) or (s >= e and minute >= s)
+            if not hit:  # хвост ночной смены, начатой накануне
+                prev = cfgs.get((lt.weekday() - 1) % 7)
+                hit = bool(prev) and prev[0] >= prev[1] > 0 and minute < prev[1]
+            if hit:
+                out.append(lg)
+        return out
+
+    # auto: норма персональная — по загруженности СМЕН оператора. Каждое
+    # обращение даёт unit баллов нормы тем, кто был на смене в момент его
+    # прихода (делится поровну). Обращения вне чьих-либо смен — ничьи.
+    personal_norm: dict[str, float] = {}
+    shift_demand: dict[str, float] = {}
+    if mode == "auto":
+        for ts in demand_ts:
+            logins = shift_logins(ts)
+            if not logins:
+                continue
+            for lg in logins:
+                personal_norm[lg] = personal_norm.get(lg, 0.0) + unit / len(logins)
+                shift_demand[lg] = shift_demand.get(lg, 0.0) + 1.0 / len(logins)
+
+    rate = None
     if mode == "manual":
         rate = act["norm_points_per_hour"] or None
     elif mode == "team_avg":
         tot_score = sum(r["score"] for r in rows if r["hours_period"])
         rate = (tot_score / tot_hours) if tot_hours and tot_score > 0 else None
-    else:  # auto: по нагрузке — норма не зависит от стараний команды
-        rate = (potential / tot_hours) if tot_hours and potential > 0 else None
 
     clamp = lambda v: round(max(act["coeff_min"], min(act["coeff_max"], v)), 2)
     for r in rows:
         norm_points = coeff = None
-        if rate and r["hours_period"]:
+        if mode == "auto":
+            norm_points = personal_norm.get(r["login"]) or None
+            if norm_points:
+                coeff = clamp(r["score"] / norm_points)
+            elif r["hours_period"]:
+                coeff = clamp(1.0)  # в его смены обращений не было — не его вина
+            r["shift_demand"] = round(shift_demand.get(r["login"], 0.0), 1)
+        elif rate and r["hours_period"]:
             norm_points = rate * r["hours_period"]
             coeff = clamp(r["score"] / norm_points)
-        elif mode == "auto" and r["hours_period"] and potential == 0:
-            coeff = clamp(1.0)  # нагрузки не было — простой не по вине оператора
-        r["norm_points"] = round(norm_points) if norm_points else None
+        r["norm_points"] = round(norm_points, 1) if norm_points else None
         r["coeff"] = coeff
         # оклад, выплата и рабочий ритм (когда начинает/заканчивает) — ТОЛЬКО владельцу
         if is_owner:
