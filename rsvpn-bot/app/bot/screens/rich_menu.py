@@ -48,11 +48,23 @@ PHOTO = 'menu'
 PHOTO_LINK = f'tg://photo?id={PHOTO}'
 
 
+def action(text: str, data: str, style: str = '') -> str:
+    """Кнопка с любым callback-данными: Menu, Payment и прочие фабрики."""
+    styled = f' style="{style}"' if style else ''
+    return (f'<tg-button type="callback_data"{styled} '
+            f'data="{escape(data, quote=True)}">{text}</tg-button>')
+
+
 def button(text: str, screen: str, style: str = '') -> str:
     """Кнопка, ведущая в тот же раздел, что и обычная клавиатура."""
-    data = escape(Menu(screen=screen).pack(), quote=True)
+    return action(text, Menu(screen=screen).pack(), style)
+
+
+def link(text: str, url: str, style: str = '') -> str:
+    """Кнопка наружу: мини-апп оплаты, страница подключения."""
     styled = f' style="{style}"' if style else ''
-    return f'<tg-button type="callback_data"{styled} data="{data}">{text}</tg-button>'
+    return (f'<tg-button type="url"{styled} '
+            f'url="{escape(url, quote=True)}">{text}</tg-button>')
 
 
 def row(*buttons: str, align: str = 'center') -> str:
@@ -181,16 +193,156 @@ def main_menu(user: dict, *, balance: int = 0, friends: int = 0,
               align='left')
         + '</details>')
 
-    parts.append('<hr/>')
-    footer = f'RS VPN · обновлено {fmt(now(), "%H:%M")}'
-    if support_url:
-        parts.append(f'<footer>{footer} · '
-                     f'<a href="{escape(support_url, quote=True)}">'
-                     f'поддержка</a></footer>')
-    else:
-        parts.append(f'<footer>{footer}</footer>')
-
+    parts.append(tail(support_url))
     return ''.join(parts)
+
+
+def tail(support_url: str = '') -> str:
+    """Подвал, одинаковый на всех экранах примерки."""
+    line = f'RS VPN · обновлено {fmt(now(), "%H:%M")}'
+    if support_url:
+        line += (f' · <a href="{escape(support_url, quote=True)}">'
+                 f'поддержка</a>')
+    return f'<hr/><footer>{line}</footer>'
+
+
+# Инструкция в сворачиваемом блоке: на обычном экране её нет вовсе — она
+# не влезала, и человек уходил за ней на страницу подключения. Текст
+# короткий нарочно: подробности всё равно живут на той странице, а здесь
+# нужно снять первый страх «а что дальше-то делать».
+SETUP = (
+    ('iPhone и iPad', 'Установите <b>Happ</b> из App Store, откройте ссылку '
+                      'выше — приложение подхватит подписку само.'),
+    ('Android', 'Установите <b>Happ</b> из Google Play и откройте ссылку '
+                'выше. Если спросит «чем открыть» — выберите Happ.'),
+    ('Компьютер', 'Happ есть для Windows и macOS. Скопируйте ссылку выше '
+                  'и вставьте её в приложении: «Добавить подписку».'),
+)
+
+
+def my_subscription(user: dict, *, devices: int = 0, price: str = '',
+                    devices_fee: str = '', connect: str = '',
+                    support_url: str = '', photo: str = '',
+                    boxed: bool = True) -> str:
+    """Экран действующей подписки.
+
+    Отличий от обычного три, и все три — про то, чего в обычном не хватало:
+    даты, устройства и цены стоят таблицей, ссылка подключения — отдельной
+    строкой моноширинным (её копируют в один тап, а не выделяют пальцем из
+    переносов), инструкция убрана в сворачиваемый блок.
+    """
+    vpn = (user or {}).get('vpn') or {}
+    expires = parse_dt(vpn.get('expireAt'))
+    left = _days_left(expires)
+
+    parts = [image(photo), f'<h3>{e("shield")} Моя подписка</h3>']
+
+    rows = []
+    if expires:
+        rows.append((f'{e("calendar")} Истекла' if left == 'истекла'
+                     else f'{e("calendar")} Действует до',
+                     f'<b>{fmt(expires, "%d.%m.%Y")}</b>',
+                     button('Изменить длительность', 'period')))
+        if left and left != 'истекла':
+            rows.append((f'{e("hourglass")} Осталось', f'<b>{left}</b>', ''))
+    rows.append((f'{e("devices")} Лимит устройств', f'<b>{int(devices or 0)}</b>',
+                 button('Менеджер устройств', 'devices')))
+    if price:
+        rows.append((f'{e("payout")} Плата за подписку', price, ''))
+    if devices_fee:
+        rows.append((f'{e("devices")} Плата за устройства', devices_fee, ''))
+    parts.append(fields(rows, boxed=boxed))
+
+    if connect:
+        # Моноширинным и отдельным абзацем: в Telegram такой текст
+        # копируется одним нажатием, а ссылка в тексте — выделением.
+        parts.append(f'<p>{e("link")} Ссылка на подключение — нажмите, '
+                     f'чтобы скопировать:</p>'
+                     f'<p><code>{escape(connect)}</code></p>')
+        parts.append(row(link(f'{e("shield")} Настроить VPN', connect, 'primary'),
+                         button(f'{e("renew")} Продлить', 'extend', 'success')))
+    else:
+        parts.append(row(button(f'{e("plus")} Подключить', 'subscription',
+                                'primary')))
+
+    parts.append(
+        '<details><summary>Как подключить: iPhone, Android, ПК</summary>'
+        + ''.join(f'<p><b>{title}</b><br>{text}</p>' for title, text in SETUP)
+        + '</details>')
+
+    parts.append(row(button(f'{e("back")} В профиль', 'profile')))
+    parts.append(tail(support_url))
+    return ''.join(parts)
+
+
+FAQ = (
+    ('Не пришли деньги?',
+     'Зачисление идёт по уведомлению банка: обычно это секунды, но в час '
+     'пик бывает до получаса. Если прошло больше — напишите в поддержку '
+     'и приложите чек, деньги найдутся по нему.'),
+    ('Как оплатить криптой?',
+     'Выберите «Криптовалюта»: бот выдаст адрес и сумму. Баланс пополнится '
+     'после подтверждения перевода сетью — это не мгновенно, зависит от '
+     'монеты и загрузки сети.'),
+)
+
+
+def topup(user: dict, *, balance: int = 0, price: str = '',
+          methods: list[dict] | None = None, bonus: str = '',
+          tribute_bonus: str = '', support_url: str = '', photo: str = '',
+          boxed: bool = True) -> str:
+    """Экран пополнения: способы таблицей, у каждого — своя кнопка.
+
+    `methods` — по словарю на способ: title, fee, speed, button (готовый
+    html кнопки). Бонусы приходят строками: считает их не экран, а
+    TopupService, и выдумывать проценты здесь нельзя.
+    """
+    parts = [image(photo), f'<h3>{e("money")} Пополнение баланса</h3>']
+
+    head = [(f'{e("money")} На балансе', f'<b>{balance} ₽</b>', '')]
+    if price:
+        head.append((f'{e("payout")} Плата за подписку', price, ''))
+    parts.append(fields(head, boxed=boxed))
+
+    # Маркером, а не цитатой: цитата на экране означает «пояснение
+    # мелким шрифтом», а это, наоборот, то, ради чего стоит выбрать
+    # способ подороже.
+    for note in (bonus, tribute_bonus):
+        if note:
+            parts.append(f'<p><mark>{note}</mark></p>')
+
+    parts.append(methods_table(methods or [], boxed=boxed))
+
+    parts.append(
+        '<details><summary>Частые вопросы</summary>'
+        + ''.join(f'<p><b>{title}</b><br>{text}</p>' for title, text in FAQ)
+        + '</details>')
+
+    parts.append(row(button(f'{e("back")} В профиль', 'profile')))
+    parts.append(tail(support_url))
+    return ''.join(parts)
+
+
+def methods_table(methods: list[dict], *, boxed: bool = True) -> str:
+    """Способы оплаты: что берут сверху, когда зачислят и кнопка оплаты."""
+    if not methods:
+        return (f'<p>{e("cross")} Ни один способ оплаты сейчас не включён. '
+                f'Напишите в поддержку — пополним вручную.</p>')
+
+    if boxed:
+        head = ('<tr><th>Способ</th><th>Комиссия</th><th>Зачисление</th>'
+                '<th></th></tr>')
+        body = ''.join(
+            f'<tr><td>{m["title"]}</td><td>{escape(str(m.get("fee") or ""))}</td>'
+            f'<td>{escape(str(m.get("speed") or ""))}</td>'
+            f'<td align="right">{m.get("button") or ""}</td></tr>'
+            for m in methods)
+        return f'<table compact>{head}{body}</table>'
+
+    return '<p>' + '<br>'.join(
+        f'{m["title"]} — комиссия {escape(str(m.get("fee") or ""))}, '
+        f'{escape(str(m.get("speed") or ""))} {m.get("button") or ""}'
+        for m in methods) + '</p>'
 
 
 def showcase() -> str:

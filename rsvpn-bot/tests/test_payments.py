@@ -100,6 +100,19 @@ def test_wata_subtracts_gateway_fee():
     assert event.amount == 100 and event.user_id == 802421217
 
 
+def test_wata_tells_the_same_fee_it_charges():
+    """Экран оплаты показывает эту строку: разойдётся — человек узнает о
+    надбавке уже на странице банка."""
+    assert WataProvider('t', fee_rate=0.05).fee == '+5% сверху'
+    assert WataProvider('t', fee_rate=0.07).fee == '+7% сверху'
+    assert WataProvider('t', fee_rate=0).fee == 'нет'
+
+
+def test_other_providers_take_nothing_on_top():
+    assert HeleketProvider('k').fee == 'комиссия сети'
+    assert CloudPaymentsProvider('p', 's').fee == 'нет'
+
+
 def test_wata_ignores_unpaid():
     assert WataProvider('t').parse({'transactionStatus': 'Pending'}).handled is False
 

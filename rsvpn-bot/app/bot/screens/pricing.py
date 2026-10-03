@@ -47,11 +47,15 @@ def price_tag(full: int, price: int, *, html: bool = True) -> str:
     return f'{price}₽ вместо {old} {e("hot")} −{discount_percent(full, price)}%'
 
 
-async def price_line_for(c, user: dict) -> str:
-    """«150₽ за месяц + 225₽/мес за устройства».
+async def price_parts_for(c, user: dict) -> dict:
+    """Числа, из которых складывается плата: период, цена, полная, устройства.
 
-    Цена тарифа — со скидкой аудитории: на этом экране человек читает, сколько
-    с него спишут при следующем продлении, и полная цена здесь была бы враньём.
+    Отдельно от строки: экранам, где цена стоит в ячейке таблицы, нужны
+    именно числа, а собранная фраза с переносом строки туда не влезает.
+    Считается один раз здесь, чтобы цена на разных экранах не разошлась.
+
+    Цена тарифа — со скидкой аудитории: человек читает, сколько с него
+    спишут при следующем продлении, и полная цена здесь была бы враньём.
     """
     vpn = user.get('vpn') or {}
     days = int(vpn.get('period') or 0)
@@ -60,6 +64,12 @@ async def price_line_for(c, user: dict) -> str:
 
     full = int(plan['price']) if plan else 0
     price = (await c.discounts.price(user, plan)) if (plan and c.discounts) else full
-    return price_line(price, days,
-                      devices_price(int(vpn.get('hwidDeviceLimit') or 0), rules),
-                      full_price=full)
+    return {'days': days, 'price': int(price or 0), 'full': full,
+            'devices': devices_price(int(vpn.get('hwidDeviceLimit') or 0), rules)}
+
+
+async def price_line_for(c, user: dict) -> str:
+    """«150₽ за месяц + 225₽/мес за устройства»."""
+    parts = await price_parts_for(c, user)
+    return price_line(parts['price'], parts['days'], parts['devices'],
+                      full_price=parts['full'])

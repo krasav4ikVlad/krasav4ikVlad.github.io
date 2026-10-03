@@ -22,6 +22,15 @@ class WataProvider(PaymentProvider):
         self._fee_rate = fee_rate
         self._http = http
 
+    @property
+    def fee(self) -> str:
+        """Шлюз берёт сверху: оплатил 105 → на баланс 100 (см. create_invoice).
+
+        Считается из той же ставки, по которой выставляется счёт, — чтобы
+        на экране не осталось старое число, если ставку поменяют.
+        """
+        return f'+{round(self._fee_rate * 100)}% сверху' if self._fee_rate else 'нет'
+
     async def create_invoice(self, user_id: int, amount: int) -> Invoice:
         from uuid import uuid4
 

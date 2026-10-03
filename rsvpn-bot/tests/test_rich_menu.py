@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-from app.bot.callbacks import Menu
+from app.bot.callbacks import Menu, Payment
 from app.bot.screens import rich_menu
 from app.core.time import now
 
@@ -184,6 +184,108 @@ def test_what_a_person_typed_cannot_break_the_markup():
     assert '<b>до 3</b>' not in html
 
 
+# ── экран подписки ──────────────────────────────────────────────────────────
+#
+# Три вещи, ради которых экран переделан: таблица вместо строк, ссылка
+# моноширинным (её копируют в один тап) и инструкция в сворачиваемом блоке.
+# Кнопки стоят у своих строк: «Менеджер устройств» — у лимита, «Изменить
+# длительность» — у даты. Перепутать их местами легко, заметить трудно.
+LINK = 'https://connect.rsvps.tech/abcDEF123'
+
+
+def test_the_subscription_buttons_stand_by_their_own_lines():
+    html = rich_menu.my_subscription(user(), devices=10, connect=LINK)
+    line = rows(html)
+
+    assert Menu(screen='devices').pack() in line['устройств']
+    assert Menu(screen='period').pack() in line['до']
+
+
+def test_the_connect_link_is_one_tap_to_copy():
+    """Ссылка длинная и переносится: моноширинным её копируют нажатием."""
+    html = rich_menu.my_subscription(user(), connect=LINK)
+
+    assert f'<code>{LINK}</code>' in html
+
+
+def test_the_setup_notes_are_folded_away():
+    html = rich_menu.my_subscription(user(), connect=LINK)
+
+    block = re.search(r'<details><summary>(.*?)</summary>(.*?)</details>', html)
+    assert block and 'подключить' in block.group(1)
+    for platform in ('iPhone', 'Android', 'Компьютер'):
+        assert platform in block.group(2), platform
+
+
+def test_the_subscription_shows_both_prices():
+    html = rich_menu.my_subscription(user(), devices=10, price='150₽ за месяц',
+                                     devices_fee='225₽ в месяц')
+
+    assert '150₽ за месяц' in html and '225₽ в месяц' in html
+
+
+def test_a_person_without_a_link_is_offered_to_connect():
+    html = rich_menu.my_subscription(user(sub=False), connect='')
+
+    assert '<code>' not in html
+    assert Menu(screen='subscription').pack() in buttons(html)
+
+
+# ── экран пополнения ────────────────────────────────────────────────────────
+METHODS = [
+    {'title': '⚡️ СБП', 'fee': '+5% сверху', 'speed': 'обычно сразу',
+     'button': rich_menu.action('Оплатить', 'pay:wata', 'success')},
+    {'title': '💸 Криптовалюта', 'fee': 'комиссия сети',
+     'speed': 'после подтверждения сети',
+     'button': rich_menu.link('Оплатить', 'https://pay.example/1', 'success')},
+]
+
+
+def test_every_payment_method_is_a_row_with_its_own_button():
+    html = rich_menu.topup(user(), balance=270, methods=METHODS)
+
+    assert '<th>Комиссия</th>' in html and '<th>Зачисление</th>' in html
+    sbp = next(r for r in re.findall(r'<tr>(.*?)</tr>', html) if 'СБП' in r)
+    crypto = next(r for r in re.findall(r'<tr>(.*?)</tr>', html)
+                  if 'Криптовалюта' in r)
+
+    assert '+5% сверху' in sbp and 'pay:wata' in sbp
+    assert 'комиссия сети' in crypto and 'https://pay.example/1' in crypto
+
+
+def test_the_bonus_is_marked_not_quoted():
+    """Цитата читается как сноска мелким шрифтом, а это — повод выбрать."""
+    html = rich_menu.topup(user(), methods=METHODS, bonus='+10% сверху',
+                           tribute_bonus='Tribute — ещё +5%')
+
+    assert '<mark>+10% сверху</mark>' in html
+    assert '<mark>Tribute — ещё +5%</mark>' in html
+    assert '<blockquote>' not in html
+
+
+def test_the_questions_are_folded_away():
+    html = rich_menu.topup(user(), methods=METHODS)
+
+    block = re.search(r'<details><summary>(.*?)</summary>(.*?)</details>', html)
+    assert block and 'Не пришли деньги?' in block.group(2)
+    assert 'криптой' in block.group(2)
+
+
+def test_a_screen_without_any_method_does_not_pretend():
+    """Пустая таблица выглядит как поломка; человеку нужен выход."""
+    html = rich_menu.topup(user(), methods=[])
+
+    assert '<table' not in html.split('<details>')[0].split('</table>')[-1]
+    assert 'поддержку' in html
+
+
+def test_the_payment_rows_can_be_laid_out_in_lines():
+    html = rich_menu.topup(user(), methods=METHODS, boxed=False)
+
+    assert '<table' not in html and 'pay:wata' in html
+    assert 'комиссия сети' in html
+
+
 # ── витрина возможностей ────────────────────────────────────────────────────
 def test_the_showcase_has_every_element_worth_choosing():
     html = rich_menu.showcase()
@@ -257,6 +359,48 @@ async def test_the_command_sends_a_rich_message(admin_env, monkeypatch):
 
     assert spy.sent and '<tg-button' in spy.sent[0]
     assert 'Профиль' in spy.sent[0]
+
+
+async def test_the_subscription_screen_is_asked_for_by_word(admin_env,
+                                                            monkeypatch):
+    dp, bot, session, c = admin_env
+    await c.users.create({'user_data': {'user_id': ADMIN.id},
+                          'vpn': {'shortUuid': 'abc', 'hwidDeviceLimit': 10,
+                                  'expireAt': now() + timedelta(days=30)}})
+    spy = Spy()
+    monkeypatch.setattr(type(bot), 'send_rich_message', spy.send_rich_message,
+                        raising=False)
+
+    await dp.feed_update(bot, message('/rich подписка'))
+
+    assert 'Моя подписка' in spy.sent[0]
+    assert '<code>' in spy.sent[0] and 'abc</code>' in spy.sent[0]
+    assert Menu(screen='devices').pack() in buttons(spy.sent[0])
+
+
+async def test_the_topup_screen_lists_the_working_providers(admin_env,
+                                                            monkeypatch):
+    """Способы берутся из реестра: выключенный в админке не должен всплыть."""
+    dp, bot, session, c = admin_env
+
+    class Provider:
+        code, title = 'wata', '⚡️ СБП'
+        fee, speed, direct_url = '+5% сверху', 'обычно сразу', ''
+
+    class Registry:
+        async def available(self):
+            return [Provider()]
+
+    monkeypatch.setattr(c, 'payments', Registry())
+    spy = Spy()
+    monkeypatch.setattr(type(bot), 'send_rich_message', spy.send_rich_message,
+                        raising=False)
+
+    await dp.feed_update(bot, message('/rich pay'))
+
+    assert 'Пополнение баланса' in spy.sent[0]
+    assert 'СБП' in spy.sent[0] and '+5% сверху' in spy.sent[0]
+    assert Payment(provider='wata').pack() in buttons(spy.sent[0])
 
 
 async def test_the_showcase_is_asked_for_by_word(admin_env, monkeypatch):

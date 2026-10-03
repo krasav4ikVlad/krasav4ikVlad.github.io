@@ -16,6 +16,10 @@ PAID_STATUSES = {'paid', 'paid_over'}
 class HeleketProvider(PaymentProvider):
     code = 'heleket'
     title = f'{e("payout")} Криптовалюта'
+    # Сверху не берём мы, но берёт сеть, и размер зависит от монеты.
+    # Зачисление — после подтверждения перевода, а не после нажатия.
+    fee = 'комиссия сети'
+    speed = 'после подтверждения сети'
 
     def __init__(self, api_key: str, merchant_id: str = '', http=None):
         self._key = api_key
