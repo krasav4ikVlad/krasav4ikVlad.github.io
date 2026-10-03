@@ -78,3 +78,74 @@ async def test_a_refusal_explains_the_way_out(ready):
     await dp.feed_update(bot, message('/backup'))
 
     assert '/backup force' in session.last_text
+
+
+# ── /backupcheck ────────────────────────────────────────────────────────────
+#
+# Команда отвечает на два вопроса сразу: «работает ли хранилище» и «куда
+# именно уезжают копии». Второй нужен, когда те же ключи вписывают в другое
+# место — например, в бэкап панели. Секрет при этом показывать нельзя:
+# экран админки фотографируют и пересылают, а по паре ключей чужой человек
+# скачивает всю базу.
+
+class FakeStorage:
+    """Хранилище, которое отвечает, но никуда не ходит."""
+
+    def __init__(self, ready: bool = True, fail: str = ''):
+        from app.core.config import StorageConfig
+
+        self.ready = ready
+        self.fail = fail
+        self.config = StorageConfig(
+            endpoint='https://acc123.r2.cloudflarestorage.com',
+            bucket='rsvpn-db', key='AKIA0123456789abcdef',
+            secret='s3cr3t-value-nobody-should-see',
+            region='auto', prefix='rsvpn')
+
+    def check(self) -> str:
+        if self.fail:
+            raise RuntimeError(self.fail)
+        return 'rsvpn/probe.txt'
+
+
+async def test_the_check_shows_where_copies_go(ready):
+    dp, bot, session, c = ready
+    c.backup.storage = FakeStorage()
+
+    await dp.feed_update(bot, message('/backupcheck'))
+
+    text = session.last_text
+    assert 'acc123.r2.cloudflarestorage.com' in text
+    assert 'rsvpn-db' in text and 'auto' in text
+
+
+async def test_the_check_never_shows_the_secret(ready):
+    """Ключ — наполовину, секрет — никогда: по этой паре скачивают базу."""
+    dp, bot, session, c = ready
+    c.backup.storage = FakeStorage()
+
+    await dp.feed_update(bot, message('/backupcheck'))
+
+    text = session.last_text
+    assert 's3cr3t-value-nobody-should-see' not in text
+    assert 'AKIA0123456789abcdef' not in text
+    assert 'AKIA' in text and 'cdef' in text      # по краям — для узнавания
+
+
+async def test_the_check_names_the_reason_when_it_fails(ready):
+    dp, bot, session, c = ready
+    c.backup.storage = FakeStorage(fail='AccessDenied')
+
+    await dp.feed_update(bot, message('/backupcheck'))
+
+    assert 'AccessDenied' in session.last_text
+    assert 'Object Read' in session.last_text
+
+
+async def test_without_storage_the_env_lines_are_shown(ready):
+    dp, bot, session, c = ready
+    c.backup.storage = FakeStorage(ready=False)
+
+    await dp.feed_update(bot, message('/backupcheck'))
+
+    assert 'BACKUP_S3_ENDPOINT' in session.last_text

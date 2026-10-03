@@ -17,7 +17,7 @@ from pathlib import Path
 from aiogram import Router, types
 from aiogram.filters import Command, CommandObject
 
-from app.content import progress
+from app.content import ids, progress
 from app.content.emoji import e
 from app.core.time import fmt, now
 from app.services.backup import human_size
@@ -242,10 +242,30 @@ async def storage_check(message: types.Message, c, settings) -> None:
     await say(note, message,
               f'{e("ok")} <b>Хранилище работает</b>\n'
               f'Записал и удалил пробный файл: <code>{key}</code>\n\n'
+              + storage_card(storage.config) + '\n'
               + (f'Копии будут уезжать туда автоматически.'
                  if on else
                  f'{e("warning")} Но в настройках выключено «Увозить копию '
                  f'в хранилище» — включите.'))
+
+
+def storage_card(config) -> str:
+    """Куда именно уезжают копии — чтобы те же данные вписать в другое
+    место (например, в скрипт бэкапа панели) и не искать их по серверу.
+
+    Секрет не показывается никогда: экран админки фотографируют, пересылают
+    и оставляют открытым, а по этой паре ключей чужой человек получает всё
+    содержимое бакета — то есть всю базу целиком. Он лежит в .env, и
+    забрать его оттуда можно только с доступом к серверу.
+    """
+    return (f'<b>Адрес:</b> <code>{config.endpoint}</code>\n'
+            f'<b>Бакет:</b> <code>{config.bucket}</code>\n'
+            f'<b>Папка:</b> <code>{config.prefix}</code>\n'
+            f'<b>Регион:</b> <code>{config.region}</code>\n'
+            f'<b>Ключ:</b> <code>{ids.mask(config.key, 4, 4)}</code>\n'
+            f'<b>Секрет:</b> не показываю\n\n'
+            f'<blockquote>Ключ и секрет целиком — в <code>.env</code> бота:\n'
+            f'<code>grep BACKUP_S3 /home/rsvpn-bot/.env</code></blockquote>\n')
 
 
 def register(router: Router) -> None:
